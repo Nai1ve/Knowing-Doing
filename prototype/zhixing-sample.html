@@ -1,0 +1,754 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>知行 · 学习计划样例</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --chrome: #20272e;
+      --chrome-line: #3c4650;
+      --paper: #fbfaf4;
+      --paper-deep: #f0efe7;
+      --ink: #20262a;
+      --muted: #6f7874;
+      --line: #c9ccc5;
+      --blue: #304bd2;
+      --blue-soft: #e6e8fb;
+      --lavender: #f2f1fb;
+      --lavender-line: #8f91b5;
+      --orange: #d27b50;
+      --green: #6e9b7d;
+      --white: #ffffff;
+      --mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      --serif: Georgia, "Noto Serif SC", "Songti SC", serif;
+    }
+
+    * { box-sizing: border-box; }
+    html, body { min-height: 100%; margin: 0; }
+    body { background: #d8dbda; color: var(--ink); font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; }
+    button, a { font: inherit; }
+    button { cursor: pointer; }
+    button:focus-visible, a:focus-visible { outline: 3px solid #8f9bf0; outline-offset: 2px; }
+
+    .app-window { width: min(1440px, calc(100vw - 32px)); min-height: 820px; margin: 16px auto; overflow: hidden; border: 1px solid #48515b; border-radius: 10px; background: var(--paper); box-shadow: 0 18px 45px rgba(24, 30, 40, .18); }
+    .titlebar { display: grid; grid-template-columns: 180px 1fr 180px; align-items: center; height: 38px; padding: 0 14px; border-bottom: 1px solid var(--chrome-line); background: var(--chrome); color: #d8dce0; font-size: 10px; }
+    .traffic { display: flex; gap: 6px; }
+    .traffic i { width: 9px; height: 9px; border: 1px solid #89939b; border-radius: 50%; }
+    .window-title { text-align: center; letter-spacing: .3px; }
+    .window-tools { display: flex; justify-content: flex-end; gap: 11px; color: #aab4ba; }
+    .window-tools span:first-child::before { display: inline-block; width: 6px; height: 6px; margin-right: 5px; border-radius: 50%; background: var(--green); content: ""; }
+
+    .app-body { display: grid; grid-template-columns: 210px minmax(0, 1fr) 190px; min-height: 780px; }
+    .sidebar { padding: 16px 13px; border-right: 1px solid #d0d0c9; background: var(--paper-deep); }
+    .logo { display: flex; align-items: center; gap: 7px; padding: 4px 8px 17px; border-bottom: 1px solid #cbcfc9; color: #222a2e; font-family: var(--serif); font-size: 15px; }
+    .logo::before { width: 7px; height: 7px; background: var(--blue); content: ""; }
+    .sidebar-label { margin: 21px 8px 8px; color: #7a817e; font-family: var(--mono); font-size: 9px; letter-spacing: .4px; text-transform: uppercase; }
+    .page-nav { display: grid; gap: 2px; }
+    .page-nav button { display: flex; align-items: center; gap: 8px; width: 100%; min-height: 33px; padding: 6px 8px; border: 1px solid transparent; background: transparent; color: #596363; font-size: 11px; text-align: left; }
+    .page-nav button::before { width: 7px; height: 7px; border: 1px solid #8a9290; content: ""; }
+    .page-nav button[aria-pressed="true"] { border-color: #b8c1ec; background: var(--blue-soft); color: #2c43bc; }
+    .page-nav button[aria-pressed="true"]::before { border-color: var(--blue); background: var(--blue); }
+    .plan-chip { margin-top: 20px; padding: 12px 8px; border-top: 1px solid #cbcfc9; border-bottom: 1px solid #cbcfc9; }
+    .plan-chip small, .eyebrow, .panel-label, .tree-code, .lesson-step small { color: #6c65b7; font-family: var(--mono); font-size: 9px; letter-spacing: .5px; text-transform: uppercase; }
+    .plan-chip strong { display: block; margin-top: 7px; color: #222a2e; font-family: var(--serif); font-size: 13px; font-weight: 400; line-height: 1.4; }
+    .plan-chip p { margin: 8px 0 0; color: #7a817e; font-size: 10px; }
+    .sidebar-foot { margin-top: 26px; padding: 0 8px; color: #87908b; font-size: 10px; line-height: 1.5; }
+
+    .main { min-width: 0; padding: 32px 40px 52px; background: var(--paper); }
+    .page { display: none; max-width: 840px; margin: 0 auto; }
+    .page.is-active { display: block; }
+    .page-header { padding-bottom: 18px; border-bottom: 2px solid var(--blue); }
+    .page-header h1 { margin: 11px 0 0; color: #2e48cc; font-family: var(--serif); font-size: clamp(26px, 3vw, 38px); font-weight: 400; line-height: 1.18; }
+    .page-header p { max-width: 700px; margin: 10px 0 0; color: var(--muted); font-size: 13px; line-height: 1.6; }
+    .meta { display: flex; flex-wrap: wrap; gap: 15px; margin-top: 14px; color: #7d8581; font-family: var(--mono); font-size: 9px; }
+    .section { margin-top: 26px; }
+    .section-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; padding-bottom: 9px; border-bottom: 1px solid var(--line); }
+    .section-heading h2 { margin: 0; color: #303738; font-family: var(--serif); font-size: 21px; font-weight: 400; }
+    .section-heading span { color: #858c87; font-size: 10px; }
+    .panel { margin-top: 18px; border: 1px solid var(--lavender-line); background: var(--lavender); }
+    .panel-header { display: flex; justify-content: space-between; gap: 12px; padding: 10px 13px; border-bottom: 1px solid #c1c1de; color: #383b5b; font-family: var(--mono); font-size: 9px; text-transform: uppercase; }
+    .panel-body { padding: 16px; }
+    .panel-body h2 { margin: 0; color: #303442; font-family: var(--serif); font-size: 20px; font-weight: 400; line-height: 1.35; }
+    .panel-body p { margin: 8px 0 0; color: var(--muted); font-size: 12px; line-height: 1.6; }
+    .next-lesson { display: block; width: 100%; padding: 0; border: 1px solid var(--lavender-line); background: var(--lavender); color: inherit; text-align: left; }
+    .next-lesson:hover { border-color: var(--blue); background: #eeeffb; }
+    .next-lesson .panel-body { display: grid; grid-template-columns: 1fr auto; align-items: end; gap: 18px; }
+    .next-lesson-action { align-self: end; color: var(--blue); font-size: 11px; white-space: nowrap; }
+
+    .overview-status { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-top: 20px; }
+    .status-block { padding-top: 14px; border-top: 1px solid var(--line); }
+    .status-block h2 { margin: 0; color: #313838; font-size: 14px; font-weight: 500; }
+    .status-number { display: flex; align-items: baseline; gap: 9px; margin-top: 10px; }
+    .status-number strong { color: var(--blue); font-family: var(--serif); font-size: 34px; font-weight: 400; }
+    .status-number span { color: #7c8580; font-size: 10px; }
+    .progress-line { height: 5px; margin-top: 8px; border: 1px solid #c1c5c0; background: var(--paper); }
+    .progress-line span { display: block; width: 42%; height: 100%; background: var(--blue); }
+    .status-block p { margin: 9px 0 0; color: var(--muted); font-size: 11px; line-height: 1.55; }
+    .current-node { padding: 14px; border-left: 3px solid var(--blue); background: #f5f5ee; }
+    .current-node strong { display: block; margin-top: 8px; color: #292f30; font-family: var(--serif); font-size: 18px; font-weight: 400; line-height: 1.35; }
+    .current-node p { margin: 7px 0 0; color: #737d78; font-size: 11px; line-height: 1.5; }
+
+    .overview-route { display: grid; grid-template-columns: repeat(4, 1fr); margin-top: 14px; border: 1px solid #bfc3ba; }
+    .overview-phase { min-height: 128px; padding: 12px 11px; border-right: 1px solid #bfc3ba; background: #faf9f1; }
+    .overview-phase:last-child { border-right: 0; }
+    .overview-phase.current { background: var(--blue-soft); }
+    .overview-phase strong { display: block; margin-top: 7px; color: #303738; font-size: 12px; font-weight: 500; line-height: 1.4; }
+    .overview-phase p { margin: 8px 0 0; color: #7c8580; font-size: 10px; line-height: 1.45; }
+    .overview-phase b { display: block; margin-top: 10px; color: #5d65b4; font-size: 10px; font-weight: 400; }
+
+    .tree-wrap { margin-top: 18px; padding: 16px 13px 18px; border: 1px solid #aaaec3; background: #f7f6ff; }
+    .tree-root { display: block; width: min(360px, 100%); margin: 0 auto; padding: 12px 14px; border: 1px solid var(--blue); background: #e8eafe; color: #283caa; font-family: var(--serif); font-size: 16px; font-weight: 400; text-align: center; }
+    .tree-root small { display: block; margin-bottom: 5px; color: #6c65b7; font-family: var(--mono); font-size: 9px; text-transform: uppercase; }
+    .tree-branches { position: relative; display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-top: 27px; }
+    .tree-branches::before { position: absolute; top: -14px; right: 12%; left: 12%; height: 1px; background: #9ea5d0; content: ""; }
+    .tree-branch { position: relative; padding-top: 13px; }
+    .tree-branch::before { position: absolute; top: -14px; left: 50%; width: 1px; height: 14px; background: #9ea5d0; content: ""; }
+    .tree-phase { width: 100%; min-height: 60px; padding: 8px; border: 1px solid #bbbfd6; background: #fff; color: #333957; font-size: 11px; text-align: left; }
+    .tree-phase.current { border-color: var(--blue); background: #e6e8fb; }
+    .tree-phase small { display: block; margin-bottom: 5px; color: #6c65b7; font-family: var(--mono); font-size: 8px; }
+    .tree-leaves { display: grid; gap: 5px; margin: 7px 0 0 10px; padding-left: 10px; border-left: 1px solid #b9bed4; }
+    .tree-leaf { min-height: 28px; padding: 5px 7px; border: 1px solid #d0d2dd; background: #fff; color: #67716d; font-size: 10px; text-align: left; }
+    .tree-leaf.current { border-color: var(--orange); background: #fff4ed; color: #9b4f34; }
+    .tree-leaf:hover, .tree-phase:hover { border-color: var(--blue); }
+    .route-detail { display: grid; grid-template-columns: 1fr 260px; gap: 18px; margin-top: 20px; }
+    .route-detail-copy { padding-top: 13px; border-top: 1px solid var(--line); }
+    .route-detail-copy h2 { margin: 0; color: #303738; font-family: var(--serif); font-size: 20px; font-weight: 400; }
+    .route-detail-copy p { margin: 8px 0 0; color: var(--muted); font-size: 12px; line-height: 1.6; }
+    .route-detail-side { padding: 13px; border-left: 3px solid var(--orange); background: #f4eee5; }
+    .route-detail-side strong { display: block; color: #4c5651; font-size: 12px; font-weight: 500; }
+    .route-detail-side p { margin: 7px 0 0; color: #727c76; font-size: 10px; line-height: 1.5; }
+
+    .linear-steps { display: grid; grid-template-columns: repeat(5, 1fr); margin-top: 18px; border: 1px solid var(--lavender-line); }
+    .lesson-step { position: relative; min-height: 76px; padding: 11px 10px; border-right: 1px solid #c2c4d9; background: #fbfaff; }
+    .lesson-step:last-child { border-right: 0; }
+    .lesson-step.current { background: var(--blue-soft); }
+    .lesson-step strong { display: block; margin-top: 8px; color: #34364d; font-size: 12px; font-weight: 500; }
+    .session-strip { display: grid; grid-template-columns: 1fr 150px; gap: 18px; margin-top: 18px; padding: 13px 14px; border-left: 3px solid var(--blue); background: #f5f5ee; }
+    .session-strip strong { display: block; margin-top: 6px; color: #303738; font-family: var(--serif); font-size: 17px; font-weight: 400; line-height: 1.35; }
+    .session-strip p { margin: 6px 0 0; color: var(--muted); font-size: 11px; line-height: 1.5; }
+    .session-progress { align-self: center; }
+    .session-progress span { display: block; color: #777f7b; font-family: var(--mono); font-size: 9px; }
+    .session-progress strong { margin-top: 7px; color: var(--blue); font-family: var(--mono); font-size: 11px; }
+    .session-progress-line { height: 4px; margin-top: 7px; border: 1px solid #c1c5c0; background: var(--paper); }
+    .session-progress-line span { display: block; width: 33%; height: 100%; background: var(--blue); }
+    .session-tools { display: grid; gap: 5px; align-content: center; min-width: 150px; }
+    .session-tools > span { color: #777f7b; font-family: var(--mono); font-size: 9px; }
+    .session-tool-links { display: flex; flex-wrap: wrap; gap: 5px; }
+    .session-tool-link { padding: 5px 7px; border: 1px solid #b8c1ec; background: transparent; color: #3347af; font-size: 9px; }
+    .session-tool-link:hover { background: var(--blue-soft); }
+    .tool-dock { margin-top: 22px; padding-top: 13px; border-top: 1px solid var(--line); }
+    .tool-dock-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
+    .tool-dock-heading h2 { margin: 0; color: #303738; font-family: var(--serif); font-size: 19px; font-weight: 400; }
+    .tool-dock-heading span { color: #858c87; font-size: 10px; }
+    .tool-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-top: 11px; }
+    .tool-launch { display: grid; gap: 4px; min-height: 68px; padding: 9px; border: 1px solid #c5c9c2; background: #f7f7f0; color: #46514d; text-align: left; }
+    .tool-launch:hover { border-color: var(--blue); background: var(--blue-soft); }
+    .tool-launch small { color: #6c65b7; font-family: var(--mono); font-size: 8px; letter-spacing: .4px; text-transform: uppercase; }
+    .tool-launch strong { font-size: 11px; font-weight: 500; }
+    .tool-launch span { color: #777f7b; font-size: 9px; }
+    .tool-status { min-height: 15px; margin-top: 7px; color: #7a817e; font-size: 9px; }
+    .lesson-body { display: grid; grid-template-columns: 1fr 256px; gap: 18px; margin-top: 24px; }
+    .lesson-copy h2 { margin: 0; color: #303738; font-family: var(--serif); font-size: 21px; font-weight: 400; }
+    .lesson-copy p { margin: 9px 0; color: var(--muted); font-size: 12px; line-height: 1.65; }
+    .code-block { margin-top: 13px; padding: 14px; border: 1px solid #c7c8bd; background: #eeece0; color: #3f4a4a; font-family: var(--mono); font-size: 10px; line-height: 1.65; }
+    .code-block b { display: block; margin-bottom: 8px; color: var(--blue); font-size: 9px; font-weight: 500; }
+    .lesson-source { padding: 13px; border-top: 2px solid var(--blue); background: #f0f0e8; }
+    .lesson-source h2 { margin: 0; color: #303738; font-family: var(--serif); font-size: 16px; font-weight: 400; }
+    .lesson-source article { padding: 10px 0; border-bottom: 1px solid var(--line); }
+    .lesson-source article:last-child { border-bottom: 0; }
+    .lesson-source small { color: #a45836; font-family: var(--mono); font-size: 8px; }
+    .lesson-source strong { display: block; margin-top: 4px; color: #454e4a; font-size: 11px; font-weight: 500; line-height: 1.4; }
+    .workbench-block { padding-top: 13px; border-top: 1px solid var(--line); }
+    .workbench-block + .workbench-block { margin-top: 18px; }
+    .workbench-block h3 { margin: 0; color: #303738; font-family: var(--serif); font-size: 16px; font-weight: 400; }
+    .task-list { display: grid; gap: 8px; margin-top: 10px; }
+    .task-check { display: flex; align-items: flex-start; gap: 7px; color: #58635e; font-size: 10px; line-height: 1.45; }
+    .task-check input { flex: 0 0 auto; width: 13px; height: 13px; margin: 1px 0 0; accent-color: var(--blue); }
+    .workbench-note p { margin: 6px 0 8px; color: var(--muted); font-size: 10px; line-height: 1.45; }
+    .workbench-note textarea { display: block; width: 100%; min-height: 72px; resize: vertical; padding: 8px; border: 1px solid #c8cbc2; border-radius: 0; background: #fff; color: #4d5753; font: 10px/1.5 inherit; }
+    .workbench-note textarea:focus { border-color: var(--blue); outline: 2px solid #cdd3ff; outline-offset: 1px; }
+    .note-save { margin-top: 8px; padding: 6px 9px; border: 1px solid #aab4e5; background: transparent; color: #3347af; font-size: 10px; }
+    .note-save:hover { background: var(--blue-soft); }
+    .note-status { display: block; min-height: 15px; margin-top: 5px; color: var(--green); font-size: 9px; }
+    .lesson-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--line); }
+    .primary-action, .secondary-action { min-height: 32px; padding: 7px 11px; font-size: 10px; }
+    .primary-action { border: 1px solid var(--blue); background: var(--blue); color: var(--white); }
+    .primary-action:hover { background: #263faf; }
+    .secondary-action { border: 1px solid #b8bec0; background: transparent; color: #5d6863; }
+    .secondary-action:hover { border-color: var(--blue); color: var(--blue); }
+    .action-status { color: var(--green); font-size: 10px; }
+    .visually-hidden { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
+    .rail-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+    .rail-heading span { color: #7d8581; font-family: var(--mono); font-size: 8px; }
+    .ai-context { margin: 8px 0 0; color: var(--muted); font-size: 10px; line-height: 1.5; }
+    .ai-question { margin-top: 10px; padding: 9px; border-left: 2px solid var(--blue); background: #f5f5ee; color: #3f4946; font-size: 11px; line-height: 1.5; }
+    .ai-prompts { display: grid; gap: 5px; margin-top: 9px; }
+    .ai-prompt { padding: 6px 7px; border: 1px solid #c8ccdc; background: transparent; color: #5a6560; font-size: 9px; text-align: left; }
+    .ai-prompt:hover { border-color: var(--blue); color: #3347af; background: var(--blue-soft); }
+    .ai-response { min-height: 15px; margin-top: 7px; color: var(--green); font-size: 9px; line-height: 1.45; }
+    .ai-thread { display: grid; gap: 7px; max-height: 170px; margin-top: 10px; overflow-y: auto; padding-right: 2px; }
+    .chat-message { padding: 8px; border: 1px solid #c8ccdc; color: #4d5753; font-size: 10px; line-height: 1.5; }
+    .chat-message.ai { border-left: 2px solid var(--blue); background: #f5f5ee; }
+    .chat-message.user { border-right: 2px solid var(--orange); background: #f1f2fb; }
+    .chat-message p { margin: 0; }
+    .message-meta { display: flex; align-items: center; justify-content: space-between; gap: 6px; margin-top: 6px; color: #7d8581; font-family: var(--mono); font-size: 8px; }
+    .pin-control { padding: 0; border: 0; background: transparent; color: #8f6b56; font-size: 8px; }
+    .pin-control:hover, .pin-control[aria-pressed="true"] { color: var(--orange); text-decoration: underline; }
+    .ai-composer { display: grid; grid-template-columns: 1fr auto; gap: 6px; margin-top: 9px; }
+    .ai-composer textarea { width: 100%; min-height: 42px; resize: vertical; padding: 7px; border: 1px solid #c8cbc2; border-radius: 0; background: #fff; color: #4d5753; font: 10px/1.45 inherit; }
+    .ai-composer textarea:focus { border-color: var(--blue); outline: 2px solid #cdd3ff; outline-offset: 1px; }
+    .ai-send { align-self: end; min-height: 30px; padding: 6px 8px; border: 1px solid var(--blue); background: var(--blue); color: var(--white); font-size: 9px; }
+    .ai-send:hover { background: #263faf; }
+    .zhihu-query-line { display: flex; align-items: center; gap: 6px; margin-top: 9px; }
+    .zhihu-panel { display: none; }
+    .zhihu-query { flex: 1; min-width: 0; padding: 6px 7px; border: 1px solid #c8cbc2; background: #fff; color: #5d6863; font-family: var(--mono); font-size: 8px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .zhihu-refresh { flex: 0 0 auto; padding: 6px 7px; border: 1px solid #b8c1ec; background: transparent; color: #3347af; font-size: 9px; }
+    .zhihu-refresh:hover { background: var(--blue-soft); }
+    .zhihu-source { padding: 9px 0; border-bottom: 1px solid var(--line); }
+    .zhihu-source:last-child { border-bottom: 0; }
+    .zhihu-source strong { display: block; margin-top: 4px; color: #454e4a; font-size: 10px; font-weight: 500; line-height: 1.4; }
+    .zhihu-source p { margin: 5px 0 0; color: var(--muted); font-size: 9px; line-height: 1.5; }
+    .source-link { margin-top: 6px; padding: 0; border: 0; background: transparent; color: #3347af; font-size: 9px; }
+    .source-link:hover { text-decoration: underline; }
+    .source-pin { margin-inline-start: 8px; }
+    .pin-board { padding: 11px; border-top: 2px solid var(--orange); background: #f4eee5; }
+    .pin-board h3 { margin: 0; color: #4c5651; font-family: var(--serif); font-size: 16px; font-weight: 400; }
+    .pin-board p { margin: 4px 0 0; color: #777f7b; font-size: 9px; line-height: 1.45; }
+    .pinned-list { display: grid; gap: 7px; margin-top: 9px; }
+    .pinned-item { padding-top: 7px; border-top: 1px solid #d7cabc; }
+    .pinned-item:first-child { padding-top: 0; border-top: 0; }
+    .pinned-item strong { display: block; color: #4d5753; font-size: 10px; font-weight: 500; line-height: 1.4; }
+    .pinned-item p { margin: 3px 0 0; color: #6f7874; font-size: 9px; }
+    .pinned-item button { margin-top: 4px; padding: 0; border: 0; background: transparent; color: #a45836; font-size: 8px; }
+    .pinned-item button:hover { text-decoration: underline; }
+    .pin-board { margin-top: 18px; padding: 13px 14px; }
+    .pin-board .pinned-list { grid-template-columns: repeat(3, 1fr); }
+    .chat-message.source { border-left: 2px solid var(--orange); background: #f4eee5; }
+    .source-label { color: #a45836; font-family: var(--mono); font-size: 8px; }
+    .notes-layout { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; margin-top: 22px; }
+    .note-editor, .note-preview { padding: 14px; border-top: 2px solid var(--blue); background: #f0f0e8; }
+    .note-editor h2, .note-preview h2 { margin: 0; color: #303738; font-family: var(--serif); font-size: 19px; font-weight: 400; }
+    .note-editor p, .note-preview p { color: var(--muted); font-size: 11px; line-height: 1.55; }
+    .note-editor textarea { display: block; width: 100%; min-height: 250px; resize: vertical; padding: 10px; border: 1px solid #c8cbc2; border-radius: 0; background: #fff; color: #4d5753; font: 11px/1.65 inherit; }
+    .note-editor textarea:focus { border-color: var(--blue); outline: 2px solid #cdd3ff; outline-offset: 1px; }
+    .note-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 9px; margin-top: 10px; }
+    .note-preview-content { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line); }
+    .note-preview-content h3 { margin: 14px 0 4px; color: #4d5753; font-size: 11px; font-weight: 500; }
+    .note-preview-content h3:first-child { margin-top: 0; }
+    .note-preview-content p { margin: 0; }
+    .notes-workflow { display: grid; grid-template-columns: repeat(3, 1fr); margin-top: 22px; border-bottom: 1px solid var(--line); }
+    .note-stage { min-height: 54px; padding: 9px 11px; border: 1px solid transparent; border-bottom: 0; background: transparent; color: #6f7874; text-align: left; }
+    .note-stage:hover { color: var(--blue); background: #f5f5ee; }
+    .note-stage[aria-pressed="true"] { border-color: var(--lavender-line); background: var(--lavender); color: #3347af; }
+    .note-stage strong, .note-stage span { display: block; }
+    .note-stage strong { font-family: var(--mono); font-size: 9px; font-weight: 500; letter-spacing: .2px; }
+    .note-stage span { margin-top: 5px; font-size: 10px; }
+    .note-stage-panel { display: none; margin-top: 18px; }
+    .note-stage-panel.is-active { display: block; }
+    .note-panel-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; padding-bottom: 10px; border-bottom: 1px solid var(--line); }
+    .note-panel-head h2 { margin: 0; color: #303738; font-family: var(--serif); font-size: 21px; font-weight: 400; }
+    .note-panel-head p { margin: 6px 0 0; color: var(--muted); font-size: 11px; line-height: 1.5; }
+    .note-panel-action { flex: 0 0 auto; padding: 6px 8px; border: 1px solid #b8c1ec; background: transparent; color: #3347af; font-size: 9px; }
+    .note-panel-action:hover { background: var(--blue-soft); }
+    .note-stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-top: 14px; }
+    .note-stat { padding: 10px; border-top: 2px solid #b6bad2; background: #f0f0e8; }
+    .note-stat strong { display: block; color: #303738; font-family: var(--serif); font-size: 20px; font-weight: 400; }
+    .note-stat span { display: block; margin-top: 4px; color: #777f7b; font-size: 9px; }
+    .note-capture-layout, .note-outline-layout, .note-article-layout { display: grid; grid-template-columns: minmax(0, 1fr) 255px; gap: 18px; margin-top: 18px; }
+    .note-log, .note-side-panel, .outline-editor, .article-editor, .article-preview { min-width: 0; }
+    .note-log h3, .note-side-panel h3, .outline-editor h3, .article-editor h3, .article-preview h3 { margin: 0; color: #303738; font-family: var(--serif); font-size: 17px; font-weight: 400; }
+    .note-log-intro, .note-side-panel p, .outline-editor p, .article-editor p, .article-preview p { margin: 6px 0 0; color: var(--muted); font-size: 10px; line-height: 1.5; }
+    .note-filters { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 11px; }
+    .note-filter { padding: 5px 7px; border: 1px solid #c8ccdc; background: transparent; color: #66716d; font-size: 9px; }
+    .note-filter:hover, .note-filter[aria-pressed="true"] { border-color: var(--blue); background: var(--blue-soft); color: #3347af; }
+    .note-events { display: grid; gap: 0; margin-top: 10px; border-top: 1px solid var(--line); }
+    .note-event { display: grid; grid-template-columns: 64px 1fr auto; gap: 10px; padding: 11px 0; border-bottom: 1px solid var(--line); }
+    .note-event[hidden] { display: none; }
+    .note-event-type { color: #6c65b7; font-family: var(--mono); font-size: 8px; line-height: 1.35; text-transform: uppercase; }
+    .note-event strong { display: block; color: #454e4a; font-size: 11px; font-weight: 500; line-height: 1.4; }
+    .note-event p { margin: 4px 0 0; color: var(--muted); font-size: 10px; line-height: 1.5; }
+    .note-event-source { color: #8a918c; font-size: 9px; white-space: nowrap; }
+    .note-side-panel { padding: 13px; border-top: 2px solid var(--orange); background: #f4eee5; }
+    .note-side-panel ul { display: grid; gap: 7px; margin: 11px 0 0; padding: 0; list-style: none; }
+    .note-side-panel li { padding-top: 7px; border-top: 1px solid #d7cabc; color: #5f6965; font-size: 10px; line-height: 1.45; }
+    .note-side-panel li:first-child { padding-top: 0; border-top: 0; }
+    .note-side-panel b { color: #a45836; font-weight: 500; }
+    .outline-editor, .article-editor { padding: 14px; border-top: 2px solid var(--blue); background: #f0f0e8; }
+    .outline-editor textarea, .article-editor textarea { display: block; width: 100%; min-height: 290px; margin-top: 13px; resize: vertical; padding: 10px; border: 1px solid #c8cbc2; border-radius: 0; background: #fff; color: #4d5753; font: 11px/1.65 inherit; }
+    .outline-editor textarea:focus, .article-editor textarea:focus { border-color: var(--blue); outline: 2px solid #cdd3ff; outline-offset: 1px; }
+    .outline-editor .note-actions, .article-editor .note-actions { margin-top: 10px; }
+    .outline-side { padding: 13px; border-top: 2px solid var(--orange); background: #f4eee5; }
+    .outline-side strong { display: block; color: #4c5651; font-size: 12px; font-weight: 500; }
+    .outline-side p { margin: 7px 0 0; }
+    .outline-side ol { display: grid; gap: 8px; margin: 12px 0 0; padding-left: 18px; color: #5f6965; font-size: 10px; line-height: 1.45; }
+    .article-preview { padding: 14px; border-top: 2px solid var(--green); background: #f0f0e8; }
+    .article-preview-content { min-height: 290px; margin-top: 13px; padding: 14px; border: 1px solid #c8cbc2; background: #fff; color: #4d5753; font-size: 11px; line-height: 1.7; white-space: pre-wrap; }
+    .publish-strip { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 18px; padding: 12px 14px; border-left: 3px solid var(--orange); background: #f4eee5; }
+    .publish-strip strong { color: #4c5651; font-size: 11px; font-weight: 500; }
+    .publish-strip span { color: #777f7b; font-size: 9px; }
+    .publish-action { flex: 0 0 auto; padding: 7px 10px; border: 1px solid var(--blue); background: var(--blue); color: #fff; font-size: 9px; }
+    .publish-action:hover { background: #263faf; }
+    .checkpoint { margin-top: 22px; padding: 15px; border: 1px solid #8e9de0; background: #f5f6ff; }
+    .checkpoint p { margin: 8px 0; color: #4d5753; font-size: 12px; line-height: 1.5; }
+    .choice { display: block; width: 100%; margin-top: 8px; padding: 9px; border: 1px solid #d2d4df; background: #fff; color: #646e6a; font-size: 10px; text-align: left; }
+    .choice::before { display: inline-block; width: 12px; height: 12px; margin-right: 7px; border: 1px solid #929b95; vertical-align: -2px; content: ""; }
+    .choice.selected { border-color: var(--blue); background: #e8eafe; color: #3347af; }
+    .choice.selected::before { border-color: var(--blue); background: var(--blue); box-shadow: inset 0 0 0 3px #e8eafe; }
+
+    .review-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-top: 20px; }
+    .review-cell { padding: 14px; border-top: 2px solid var(--blue); background: #f0f0e8; }
+    .review-cell small { color: #7c8580; font-size: 9px; }
+    .review-cell strong { display: block; margin-top: 7px; color: #2b3434; font-family: var(--serif); font-size: 24px; font-weight: 400; }
+    .review-cell p { margin: 5px 0 0; color: #7c8580; font-size: 9px; }
+    .review-list { display: grid; gap: 0; margin-top: 14px; border-top: 1px solid var(--line); }
+    .review-row { display: grid; grid-template-columns: 80px 1fr 68px; gap: 12px; padding: 13px 0; border-bottom: 1px solid var(--line); }
+    .review-row small { color: #6c65b7; font-family: var(--mono); font-size: 9px; }
+    .review-row strong { color: #303738; font-size: 12px; font-weight: 500; }
+    .review-row p { margin: 4px 0 0; color: var(--muted); font-size: 10px; }
+    .review-row span { color: #7c8580; font-size: 10px; text-align: right; }
+    .adjustment { margin-top: 20px; padding: 14px; border-left: 3px solid var(--orange); background: #f4eee5; color: #5f6965; font-size: 11px; line-height: 1.6; }
+
+    .toc { padding: 25px 14px; border-left: 1px solid #d0d0c9; background: #f4f3eb; }
+    .toc-title { padding-bottom: 9px; border-bottom: 1px solid #cbcec6; color: #727b76; font-family: var(--mono); font-size: 9px; letter-spacing: .4px; text-transform: uppercase; }
+    .toc-list { display: grid; gap: 10px; margin-top: 12px; }
+    .toc-list[hidden] { display: none; }
+    .toc-list a { padding-left: 8px; border-left: 2px solid transparent; color: #777f7b; font-size: 10px; line-height: 1.35; text-decoration: none; }
+    .toc-list a.active { border-left-color: var(--blue); color: var(--blue); }
+    .toc-note { margin-top: 30px; padding-top: 12px; border-top: 1px solid #cbcec6; color: #828a85; font-size: 10px; line-height: 1.55; }
+
+    @media (max-width: 980px) {
+      .app-body { grid-template-columns: 64px minmax(0, 1fr); grid-template-rows: auto auto; }
+      .sidebar { padding: 16px 9px; }
+      .logo { justify-content: center; padding: 4px 0 17px; font-size: 0; }
+      .sidebar-label, .plan-chip, .sidebar-foot { display: none; }
+      .page-nav button { justify-content: center; padding: 9px 0; font-size: 0; }
+      .page-nav button::before { width: 9px; height: 9px; }
+      .toc { grid-column: 2; border-top: 1px solid #d0d0c9; border-left: 0; }
+      .toc-list { grid-template-columns: repeat(3, 1fr); }
+      .toc-note { display: none; }
+    }
+    @media (max-width: 1100px) and (min-width: 701px) {
+      .tool-grid { grid-template-columns: 1fr; }
+      .lesson-body { grid-template-columns: 1fr; }
+      .note-capture-layout, .note-outline-layout, .note-article-layout { grid-template-columns: 1fr; }
+    }
+    @media (max-width: 700px) {
+      .app-window { width: 100%; min-height: 100vh; margin: 0; border-radius: 0; }
+      .titlebar { grid-template-columns: 65px 1fr 65px; }
+      .window-tools span:first-child { display: none; }
+      .main { padding: 25px 17px 38px; }
+      .overview-status, .lesson-body { grid-template-columns: 1fr; }
+      .next-lesson .panel-body, .session-strip { grid-template-columns: 1fr; }
+      .next-lesson-action { margin-top: 4px; }
+      .tool-grid { grid-template-columns: 1fr; }
+      .session-tools { min-width: 0; }
+      .pin-board .pinned-list, .notes-layout { grid-template-columns: 1fr; }
+      .notes-workflow { grid-template-columns: 1fr; }
+      .note-stage { border-bottom: 1px solid #d5d7d0; }
+      .note-stage[aria-pressed="true"] { border-bottom-color: var(--lavender-line); }
+      .note-stats { grid-template-columns: 1fr 1fr; }
+      .note-capture-layout, .note-outline-layout, .note-article-layout { grid-template-columns: 1fr; }
+      .note-event { grid-template-columns: 56px 1fr; }
+      .note-event-source { grid-column: 2; }
+      .publish-strip { align-items: flex-start; flex-direction: column; }
+      .overview-route { grid-template-columns: 1fr 1fr; }
+      .overview-phase:nth-child(2) { border-right: 0; }
+      .overview-phase:nth-child(-n+2) { border-bottom: 1px solid #bfc3ba; }
+      .tree-branches { grid-template-columns: 1fr 1fr; }
+      .tree-branches::before { right: 25%; left: 25%; }
+      .tree-branch:nth-child(3)::before, .tree-branch:nth-child(4)::before { display: none; }
+      .linear-steps, .review-grid { grid-template-columns: 1fr 1fr; }
+      .lesson-step:nth-child(2) { border-right: 0; }
+      .lesson-step:nth-child(-n+3) { border-bottom: 1px solid #c2c4d9; }
+      .route-detail { grid-template-columns: 1fr; }
+      .review-row { grid-template-columns: 60px 1fr; }
+      .review-row span { grid-column: 2; text-align: left; }
+      .toc-list { grid-template-columns: 1fr 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <main class="app-window" aria-label="知行学习计划样例">
+    <header class="titlebar"><div class="traffic" aria-hidden="true"><i></i><i></i><i></i></div><div class="window-title">知行 · Kubernetes 系统学习</div><div class="window-tools"><span>知乎知识已同步</span><span>林</span></div></header>
+    <div class="app-body">
+      <aside class="sidebar" aria-label="页面导航">
+        <div class="logo">知行</div>
+        <div class="sidebar-label">学习计划 · 01</div>
+        <nav class="page-nav" aria-label="学习页面">
+          <button type="button" data-page="overview" aria-current="page" aria-pressed="true">总览</button>
+          <button type="button" data-page="route" aria-pressed="false">整体路线</button>
+          <button type="button" data-page="lesson" aria-pressed="false">当前学习</button>
+          <button type="button" data-page="review" aria-pressed="false">周复盘</button>
+          <button type="button" data-page="notes" aria-pressed="false">学习笔记</button>
+        </nav>
+        <div class="plan-chip"><small>Current plan</small><strong>Kubernetes 系统学习</strong><p>第 2 周 / 共 4 周</p><p>知乎知识 + 知行 AI</p></div>
+        <div class="sidebar-foot">根据你的目标、简历与诊断结果生成。<br>计划可以被确认和调整。</div>
+      </aside>
+
+      <section class="main">
+        <article class="page is-active" data-view="overview">
+          <header class="page-header"><div class="eyebrow">PLAN 01 · OVERVIEW</div><h1>Kubernetes 系统学习</h1><p>在四周内建立可部署、可解释、可排障的 Kubernetes 能力。</p><div class="meta"><span>开始于 2026.08.10</span><span>预计完成 2026.09.06</span><span>每周 150 分钟</span></div></header>
+          <section class="panel" id="overview-goal"><div class="panel-header"><span>总目标 · Target outcome</span><span>已确认</span></div><div class="panel-body"><h2>能够独立部署一个服务，并解释它为什么运行、为什么失败。</h2><p>不是完成一组课程，而是从概念、配置、观察到故障排查形成完整能力。</p></div></section>
+          <div class="overview-status" id="overview-status"><section class="status-block"><h2>当前状况</h2><div class="status-number"><strong>42%</strong><span>8 / 19 个学习单元</span></div><div class="progress-line"><span></span></div><p>进度正常。基础对象已掌握，调度和资源限制需要实践验证。</p></section><section class="current-node" id="overview-node"><div class="eyebrow">Current node · 当前节点</div><strong>2.2 Deployment 与 ReplicaSet</strong><p>今天的学习单元<br>预计 35 分钟</p></section></div>
+          <section class="section" id="overview-route"><div class="section-heading"><h2>整体学习路线</h2><span>4 个里程碑 · 19 个单元</span></div><div class="overview-route"><div class="overview-phase"><div class="tree-code">01 · 已完成</div><strong>建立心智模型</strong><p>控制面、Node、Pod 与期望状态</p><b>5 / 5</b></div><div class="overview-phase current"><div class="tree-code">02 · 进行中</div><strong>部署应用</strong><p>工作负载、Service 与配置</p><b>3 / 5 · 当前</b></div><div class="overview-phase"><div class="tree-code">03 · 未开始</div><strong>稳定运行</strong><p>资源、发布与健康检查</p><b>0 / 5</b></div><div class="overview-phase"><div class="tree-code">04 · 未开始</div><strong>排障与迁移</strong><p>综合实践与能力迁移</p><b>0 / 4</b></div></div></section>
+          <section class="section"><div class="section-heading"><h2>今天下一步</h2><span>从这里开始</span></div><button class="next-lesson" type="button" data-page="lesson" aria-label="开始当前学习：读懂一份最小 YAML"><div class="panel-body"><div><div class="panel-label">LESSON 02.03 · 35 MIN</div><h2>读懂一份最小 YAML</h2><p>理解 Deployment、ReplicaSet 与 Pod 如何共同维护期望状态。</p></div><span class="next-lesson-action">开始当前学习 →</span></div></button></section>
+        </article>
+
+        <article class="page" data-view="route">
+          <header class="page-header"><div class="eyebrow">PLAN 01 · KNOWLEDGE TREE</div><h1>整体学习路线</h1><p>整体路线用树形结构表达知识分支；当前节点只是树上的一个位置，不会把整条路线压成一条线。</p><div class="meta"><span>4 个里程碑</span><span>19 个学习单元</span><span>当前节点：02.03</span></div></header>
+          <section class="tree-wrap" aria-label="Kubernetes 学习知识树"><button class="tree-root" type="button" data-node="goal"><small>Target outcome · 总目标</small>独立部署并排查一个服务</button><div class="tree-branches"><section class="tree-branch"><button class="tree-phase" type="button" data-node="foundation"><small>01 · 已完成</small>建立心智模型</button><div class="tree-leaves"><button class="tree-leaf" type="button" data-node="desired">期望状态</button><button class="tree-leaf" type="button" data-node="pod">Pod / Node</button><button class="tree-leaf" type="button" data-node="scheduler">调度过程</button></div></section><section class="tree-branch"><button class="tree-phase current" type="button" data-node="deploy"><small>02 · 进行中</small>部署应用</button><div class="tree-leaves"><button class="tree-leaf" type="button" data-node="workload">工作负载</button><button class="tree-leaf current" type="button" data-node="replicaset">Deployment / ReplicaSet</button><button class="tree-leaf" type="button" data-node="service">Service / 配置</button></div></section><section class="tree-branch"><button class="tree-phase" type="button" data-node="runtime"><small>03 · 未开始</small>稳定运行</button><div class="tree-leaves"><button class="tree-leaf" type="button" data-node="resource">资源限制</button><button class="tree-leaf" type="button" data-node="release">发布与回滚</button><button class="tree-leaf" type="button" data-node="probe">健康检查</button></div></section><section class="tree-branch"><button class="tree-phase" type="button" data-node="transfer"><small>04 · 未开始</small>排障与迁移</button><div class="tree-leaves"><button class="tree-leaf" type="button" data-node="pending">Pod Pending</button><button class="tree-leaf" type="button" data-node="crash">CrashLoopBackOff</button><button class="tree-leaf" type="button" data-node="practice">综合实践</button></div></section></div></section>
+          <section class="route-detail"><div class="route-detail-copy"><div class="eyebrow">SELECTED NODE · 当前节点</div><h2 id="node-title">Deployment / ReplicaSet</h2><p id="node-description">当前正在学习：理解控制器如何共同维护期望副本数，并将这个原理迁移到一份最小部署配置。</p></div><aside class="route-detail-side"><strong id="node-status">进行中 · 学习单元 02.03</strong><p id="node-next">下一步：阅读 YAML 并完成配置预测。</p></aside></section>
+        </article>
+
+        <article class="page" data-view="lesson">
+          <header class="page-header"><div class="eyebrow">LESSON 02.03 · CURRENT NODE</div><h1>读懂一份最小 YAML</h1><p>单独学习一个节点时，内容按照线性步骤推进，完成后再回到树形路线。</p><div class="meta"><span>约 35 分钟</span><span>原理 · 阅读 · 检查点</span><span>来源 2 条</span></div></header>
+          <div class="session-strip"><div><div class="eyebrow">WORK SESSION · 02.03</div><strong>部署判断实验</strong><p>把一个概念变成可解释的部署判断，再用外部工具验证。</p></div><div class="session-tools"><span>外部工具</span><div class="session-tool-links"><button class="session-tool-link" type="button" data-tool="editor">编辑器 ↗</button><button class="session-tool-link" type="button" data-tool="terminal">终端 ↗</button><button class="session-tool-link" type="button" data-tool="data">运行数据 ↗</button></div></div></div>
+          <div class="lesson-body"><section class="lesson-copy"><section class="tool-dock" id="lesson-tools" aria-label="执行工具"><div class="tool-dock-heading"><h2>执行工具</h2><span>外部打开，不嵌入知行</span></div><div class="tool-grid"><button class="tool-launch" type="button" data-tool="editor"><small>CODE · LOCAL</small><strong>打开编辑器</strong><span>编写 deployment.yaml</span></button><button class="tool-launch" type="button" data-tool="terminal"><small>SHELL · LOCAL</small><strong>打开终端</strong><span>执行 kubectl 命令</span></button><button class="tool-launch" type="button" data-tool="data"><small>OBSERVE · LOCAL</small><strong>查看运行数据</strong><span>核对 Pod 与 Events</span></button></div><p class="tool-status" id="tool-status" role="status" aria-live="polite">工具在本地环境运行，知行提供任务上下文与记录。</p></section><div class="section-heading"><h2 id="lesson-title">学习目标</h2><span id="lesson-step-label">Step 01 / 05</span></div><p id="lesson-description">完成后，你应该能够说明 Deployment 与 ReplicaSet 的关系；期望副本数由谁维护；当实际副本数不符合预期时，首先查看哪些证据。</p><div class="code-block"><b>YAML · READ THIS</b>spec:<br>&nbsp;&nbsp;replicas: 3<br>&nbsp;&nbsp;template:<br>&nbsp;&nbsp;&nbsp;&nbsp;spec:<br>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;containers:<br>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;- name: api<br>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;image: demo/api:v1</div><section class="checkpoint"><div class="eyebrow">QUESTION 1 OF 2</div><p>如果 replicas 设置为 3，但只有 2 个 Pod Ready，你下一步先观察什么？</p><button class="choice" type="button">Deployment 的期望副本数和当前状态</button><button class="choice" type="button">只修改 image 标签</button><button class="choice" type="button">直接重新创建整个集群</button></section><div class="lesson-actions"><button class="primary-action" id="complete-lesson" type="button">完成本单元</button><button class="secondary-action" type="button" data-page="route">查看整体路线</button><span class="action-status" id="lesson-action-status" role="status" aria-live="polite"></span></div></section><aside class="lesson-source" aria-label="AI 与知乎学习辅助"><section class="workbench-block ai-panel" id="lesson-ai"><div class="rail-heading"><h3>知行 AI</h3><span>追问中</span></div><p class="ai-context" id="ai-context">我已读到你的当前节点和 YAML；接下来要确认你是否理解“期望状态”如何变成实际副本。</p><div class="ai-question" id="ai-question">如果 replicas 设置为 3，但只有 2 个 Pod Ready，你先看什么？</div><div class="ai-prompts"><button class="ai-prompt" type="button" data-ai-prompt="先用一个反例说明：为什么不能只改 image 标签？">我不懂为什么</button><button class="ai-prompt" type="button" data-ai-prompt="请把这个问题拆成期望值、当前值和证据三步。">把问题拆开</button><button class="ai-prompt" type="button" data-ai-prompt="请用知乎相关回答对照一下我的判断。">用知乎回答对照</button></div><p class="ai-response" id="ai-response" role="status" aria-live="polite"></p></section><section class="workbench-block zhihu-panel" id="lesson-zhihu"><div class="rail-heading"><h3>知乎知识</h3><span>查询汇总 · 3 条</span></div><div class="zhihu-query-line"><span class="zhihu-query">Deployment ReplicaSet 副本数 Ready 排查</span><button class="zhihu-refresh" id="refresh-zhihu" type="button">检索</button></div><article class="zhihu-source"><small>原理回答 · 相关</small><strong>Deployment、ReplicaSet 与 Pod 的关系</strong><p>Deployment 管理发布与期望状态，ReplicaSet 负责维持指定副本数。</p><button class="source-link" type="button" data-source="Deployment、ReplicaSet 与 Pod 的关系">查看摘要 →</button></article><article class="zhihu-source"><small>实践回答 · 相关</small><strong>副本数不符合预期时先看什么</strong><p>先对照期望副本、当前副本和 Ready 状态，再看 Events 与容器状态。</p><button class="source-link" type="button" data-source="副本数不符合预期时先看什么">查看摘要 →</button></article><p class="note-status" id="zhihu-status" role="status" aria-live="polite"></p></section><section class="workbench-block"><h3>本次任务</h3><div class="task-list"><label class="task-check"><input type="checkbox">读出 replicas、template 和控制器关系</label><label class="task-check"><input type="checkbox">预测 3 个副本应该如何被维护</label><label class="task-check"><input type="checkbox">写下一条排查时要看的证据</label></div></section><section class="workbench-block workbench-note"><h3>留下证据</h3><p>用自己的话记录一个判断，复盘时会回到这里。</p><label for="lesson-note" class="visually-hidden">本次学习证据</label><textarea id="lesson-note" placeholder="例如：先比较期望副本数与当前状态，再看 Events。"></textarea><button class="note-save" id="save-note" type="button">保存记录</button><span class="note-status" id="note-status" role="status" aria-live="polite"></span></section></aside></div>
+        </article>
+
+        <article class="page" data-view="notes">
+          <header class="page-header"><div class="eyebrow">PLAN 01 · PRACTICE TO ARTICLE</div><h1>实践笔记</h1><p>知行先记录你在实践中参考了什么、问了什么、错在哪里，再把素材整理成可以发布的知识文章。</p><div class="meta"><span>当前节点：02.03</span><span id="notes-meta-count">8 条实践素材</span><span>文章未发布</span></div></header>
+          <nav class="notes-workflow" aria-label="笔记工作流"><button class="note-stage" type="button" data-note-stage="capture" aria-pressed="true"><strong>01 · 实践记录</strong><span>自动收集过程素材</span></button><button class="note-stage" type="button" data-note-stage="outline" aria-pressed="false"><strong>02 · 整理大纲</strong><span>AI 归纳，人来调整</span></button><button class="note-stage" type="button" data-note-stage="article" aria-pressed="false"><strong>03 · 成文发布</strong><span>模型或人完成文章</span></button></nav>
+          <section class="note-stage-panel is-active" data-note-stage-panel="capture" id="note-capture"><div class="note-panel-head"><div><h2>实践记录</h2><p>素材来自当前工作台的工具入口、Tutor Agent 对话、知乎摘要和检查点。</p></div><button class="note-panel-action" id="sync-notes" type="button">同步当前工作台</button></div><div class="note-stats"><div class="note-stat"><strong id="note-reference-count">3</strong><span>参考内容</span></div><div class="note-stat"><strong id="note-question-count">2</strong><span>提出问题</span></div><div class="note-stat"><strong id="note-error-count">1</strong><span>遇到错误</span></div><div class="note-stat"><strong id="note-observation-count">2</strong><span>实践观察</span></div></div><div class="note-capture-layout"><section class="note-log"><h3>素材流</h3><p class="note-log-intro">系统先保留原始事实和来源，避免模型过早替你下结论。</p><div class="note-filters" role="group" aria-label="素材类型"><button class="note-filter" type="button" data-event-filter="all" aria-pressed="true">全部</button><button class="note-filter" type="button" data-event-filter="reference" aria-pressed="false">参考</button><button class="note-filter" type="button" data-event-filter="question" aria-pressed="false">问题</button><button class="note-filter" type="button" data-event-filter="error" aria-pressed="false">错误</button><button class="note-filter" type="button" data-event-filter="observation" aria-pressed="false">观察</button></div><div class="note-events" id="note-events"><article class="note-event" data-event-type="reference"><span class="note-event-type">参考</span><div><strong>Deployment、ReplicaSet 与 Pod 的关系</strong><p>Deployment 管理发布和期望状态，ReplicaSet 负责维持副本数。</p></div><span class="note-event-source">知乎摘要</span></article><article class="note-event" data-event-type="reference"><span class="note-event-type">参考</span><div><strong>最小 Deployment YAML</strong><p>replicas: 3；template 中声明实际运行的 api 容器。</p></div><span class="note-event-source">工作台固定</span></article><article class="note-event" data-event-type="reference"><span class="note-event-type">参考</span><div><strong>常用排查顺序</strong><p>先比较期望副本、当前副本和 Ready，再看 Events。</p></div><span class="note-event-source">工作台固定</span></article><article class="note-event" data-event-type="question"><span class="note-event-type">问题</span><div><strong>为什么 replicas 是 3，却只有 2 个 Pod Ready？</strong><p>需要区分期望状态、当前状态和就绪状态。</p></div><span class="note-event-source">检查点</span></article><article class="note-event" data-event-type="question"><span class="note-event-type">问题</span><div><strong>为什么不能只修改 image 标签？</strong><p>先确认是哪一个控制器和哪一层状态没有达到期望。</p></div><span class="note-event-source">Tutor Agent</span></article><article class="note-event" data-event-type="error"><span class="note-event-type">错误</span><div><strong>deployment.yaml 缩进错误</strong><p>kubectl apply 报错，说明配置文件还没有成为可验证的部署对象。</p></div><span class="note-event-source">终端观察 · 示例</span></article><article class="note-event" data-event-type="observation"><span class="note-event-type">观察</span><div><strong>kubectl get deployment 显示 3 个期望副本</strong><p>控制器已经接收到配置，但还要继续核对 Ready 状态。</p></div><span class="note-event-source">运行数据 · 示例</span></article><article class="note-event" data-event-type="observation"><span class="note-event-type">观察</span><div><strong>Events 比 Pod 数量更能解释失败原因</strong><p>当实际状态没有收敛时，事件记录提供下一步排查证据。</p></div><span class="note-event-source">Tutor Agent 对照</span></article></div></section><aside class="note-side-panel"><h3>系统如何记录</h3><p>原始素材保留来源，模型只在下一步负责归纳和改写。</p><ul><li><b>参考</b> 知乎摘要、固定 YAML、外部文档</li><li><b>问题</b> 你的追问、检查点和 Tutor Agent 对话</li><li><b>错误</b> 终端错误、状态异常和失败尝试</li><li><b>观察</b> 命令输出、运行结果和你的判断</li></ul></aside></div></section>
+          <section class="note-stage-panel" data-note-stage-panel="outline" id="note-outline"><div class="note-panel-head"><div><h2>整理文章大纲</h2><p>AI 根据素材流生成结构，人可以删改、调序和补充自己的观点。</p></div><button class="note-panel-action" id="generate-outline" type="button">AI 整理大纲</button></div><div class="note-outline-layout"><section class="outline-editor"><h3>可编辑大纲</h3><p>先确认事实顺序，再决定文章想让读者学会什么。</p><label for="outline-note" class="visually-hidden">文章大纲</label><textarea id="outline-note"></textarea><div class="note-actions"><button class="primary-action" id="save-outline" type="button">保存大纲</button><span class="action-status" id="outline-status" role="status" aria-live="polite"></span></div></section><aside class="outline-side"><strong>大纲确认清单</strong><p>文章完成前，先确认它不是流水账。</p><ol><li>读者能看见真实问题</li><li>错误有原始证据和修正过程</li><li>知乎内容成为解释依据，而不是装饰</li><li>结论能迁移到下一个部署问题</li></ol></aside></div></section>
+          <section class="note-stage-panel" data-note-stage-panel="article" id="note-article"><div class="note-panel-head"><div><h2>成文与发布</h2><p>可以让模型依据已确认的大纲完成文章，也可以直接由人继续写作。</p></div><button class="note-panel-action" id="complete-article" type="button">AI 完成文章</button></div><div class="note-article-layout"><section class="article-editor"><h3>文章编辑</h3><p>保留你的实践语气；模型只补齐结构、过渡和必要解释。</p><label for="article-note" class="visually-hidden">知乎文章正文</label><textarea id="article-note"></textarea><div class="note-actions"><button class="secondary-action" id="save-article" type="button">保存文章草稿</button><span class="action-status" id="article-status" role="status" aria-live="polite"></span></div></section><section class="article-preview"><h3>文章预览</h3><p>发布前检查标题、事实、证据和可复现步骤。</p><div class="article-preview-content" id="article-preview"></div></section></div><div class="publish-strip"><div><strong>知乎发布</strong><span>当前为本地样例：发布前仍需检查来源、隐私和文章内容。</span></div><button class="publish-action" id="publish-zhihu" type="button">发布到知乎</button></div></section>
+        </article>
+
+        <article class="page" data-view="review">
+          <header class="page-header"><div class="eyebrow">PLAN 01 · WEEKLY REVIEW</div><h1>第 2 周复盘</h1><p>单独查看计划与实际的差异，以及下一周是否需要调整。</p><div class="meta"><span>复盘周期 08.17–08.23</span><span>已完成 6 / 8 单元</span></div></header>
+          <div class="review-grid"><div class="review-cell"><small>计划时间</small><strong>150m</strong><p>本周预计投入</p></div><div class="review-cell"><small>实际学习</small><strong>126m</strong><p>完成率 84%</p></div><div class="review-cell"><small>迁移表现</small><strong>2 / 3</strong><p>检查点通过</p></div></div>
+          <section class="section"><div class="section-heading"><h2>掌握变化</h2><span>基于练习和检查点</span></div><div class="review-list"><div class="review-row"><small>已掌握</small><div><strong>Pod、Deployment 基础关系</strong><p>能够解释期望状态与实际状态的区别。</p></div><span>稳定</span></div><div class="review-row"><small>待验证</small><div><strong>调度器与 Node 资源</strong><p>概念题正确，但还没有在部署实践中验证。</p></div><span>补实践</span></div><div class="review-row"><small>待复习</small><div><strong>Service 的访问路径</strong><p>间隔复习后再进入网络故障场景。</p></div><span>下周一</span></div></div></section>
+          <div class="adjustment"><strong>计划调整建议：</strong>将下周第一个学习单元调整为“资源限制与 Pending 排查”，保留原有 Service 内容顺延半天。调整原因：当前节点的迁移练习尚未覆盖资源证据。</div>
+        </article>
+      </section>
+
+      <aside class="toc" aria-label="当前页面目录"><div class="toc-title">On this page</div><nav class="toc-list" data-toc="overview"><a class="active" href="#overview-goal">总目标</a><a href="#overview-status">当前状况</a><a href="#overview-route">整体学习路线</a><a href="#overview-node">当前节点</a></nav><nav class="toc-list" data-toc="route" hidden><a class="active" href="#tree">知识树</a><a href="#route-selected">当前节点</a></nav><nav class="toc-list" data-toc="lesson" hidden><a class="active" href="#lesson-steps">线性步骤</a><a href="#lesson-content">学习内容</a><a href="#lesson-checkpoint">检查点</a></nav><nav class="toc-list" data-toc="review" hidden><a class="active" href="#review-stats">学习数据</a><a href="#review-change">掌握变化</a><a href="#review-adjustment">计划调整</a></nav><div class="toc-note">总览负责定位。<br>路线负责理解全局。<br>当前学习负责执行。<br>复盘负责调整。</div></aside>
+    </div>
+  </main>
+  <script>
+    const app = document.querySelector(".app-window");
+    const pageButtons = [...app.querySelectorAll("[data-page]")];
+    const pages = [...app.querySelectorAll("[data-view]")];
+    app.querySelector(".toc").insertAdjacentHTML("beforeend", '<nav class="toc-list" data-toc="notes" hidden><a class="active" href="#note-capture">实践记录</a><a href="#note-outline">整理大纲</a><a href="#note-article">成文发布</a></nav>');
+    const tocs = [...app.querySelectorAll("[data-toc]")];
+    const anchorTargets = {
+      tree: ".tree-wrap",
+      "route-selected": ".route-detail",
+      "lesson-steps": ".linear-steps",
+      "lesson-content": ".lesson-body",
+      "lesson-checkpoint": ".checkpoint",
+      "review-stats": ".review-grid",
+      "review-change": ".page[data-view=review] .section",
+      "review-adjustment": ".adjustment"
+    };
+    Object.entries(anchorTargets).forEach(([id, selector]) => document.querySelector(selector)?.setAttribute("id", id));
+    const nodeData = {
+      goal: ["独立部署并排查一个服务", "总目标：建立从原理、配置到排障的完整能力。", "目标 · 四周计划"],
+      foundation: ["建立心智模型", "已完成：可以解释声明式状态、Pod、Node 和调度的基本关系。", "已完成 · 5 / 5"],
+      deploy: ["部署应用", "当前里程碑：将服务目标转成可阅读、可修改、可验证的部署配置。", "进行中 · 第 2 周"],
+      replicaset: ["Deployment / ReplicaSet", "当前节点：理解控制器如何共同维护期望副本数，并迁移到最小 YAML。", "进行中 · 学习单元 02.03"],
+      runtime: ["稳定运行", "后续里程碑：资源限制、发布、健康检查和可观测性。", "未开始 · 第 3 周"],
+      transfer: ["排障与迁移", "后续里程碑：用真实部署和异常场景验证能否独立定位问题。", "未开始 · 第 4 周"],
+      pending: ["Pod Pending", "任务分支：从资源、调度约束和 Events 开始定位。", "后续实践 · 任务分支"],
+      practice: ["综合实践", "最终检查：完成部署、观察状态、解释异常并进行修复。", "后续实践 · 综合检查"]
+    };
+    function showPage(name) {
+      pageButtons.forEach((button) => {
+        const isCurrent = button.dataset.page === name;
+        button.setAttribute("aria-pressed", String(isCurrent));
+        if (isCurrent) button.setAttribute("aria-current", "page");
+        else button.removeAttribute("aria-current");
+      });
+      pages.forEach((page) => page.classList.toggle("is-active", page.dataset.view === name));
+      tocs.forEach((toc) => { toc.hidden = toc.dataset.toc !== name; });
+    }
+    pageButtons.forEach((button) => button.addEventListener("click", () => showPage(button.dataset.page)));
+    const noteStageButtons = [...app.querySelectorAll("[data-note-stage]")];
+    const noteStagePanels = [...app.querySelectorAll("[data-note-stage-panel]")];
+    const outlineDefault = [
+      "# 从一份最小 YAML 理解 Deployment 的期望状态",
+      "",
+      "## 1. 我原本的问题",
+      "- 为什么 replicas 是 3，却可能只有 2 个 Pod Ready？",
+      "- 期望状态、当前状态和 Ready 状态分别意味着什么？",
+      "",
+      "## 2. 我参考了什么",
+      "- Deployment、ReplicaSet 与 Pod 的控制关系",
+      "- 最小 Deployment YAML",
+      "- 先看期望、当前、Ready，再看 Events 的排查顺序",
+      "",
+      "## 3. 实践中遇到的错误",
+      "- deployment.yaml 缩进错误，kubectl apply 无法通过",
+      "- 修正配置后，继续检查实际状态是否收敛",
+      "",
+      "## 4. 我最终形成的判断",
+      "- 先描述现象，再列证据，最后说明哪个控制器负责恢复期望状态",
+      "",
+      "## 5. 给读者的可复现练习",
+      "- 写一份 replicas: 3 的最小 Deployment",
+      "- 用 kubectl get deployment、kubectl get pods 和 kubectl describe 验证"
+    ].join("\n");
+    const articleDefault = [
+      "# 从一份最小 YAML 理解 Deployment 的期望状态",
+      "",
+      "我最近在本地集群里写一份最小 deployment.yaml。真正让我卡住的不是 replicas: 3 怎么写，而是当只有 2 个 Pod Ready 时，我应该先相信什么证据。",
+      "",
+      "## 先区分三个状态",
+      "Deployment 描述发布和期望状态，ReplicaSet 负责维持副本数，Pod 才是实际运行单元。于是排查不能直接跳到“改镜像”，而要先对照期望副本、当前副本和 Ready 状态。",
+      "",
+      "## 错误是学习记录的一部分",
+      "实践中我先遇到了 deployment.yaml 缩进错误。这个错误提醒我，配置文件必须先成为 Kubernetes 能理解的对象，后面的控制器关系和运行状态才有意义。",
+      "",
+      "## 一条可以复用的排查顺序",
+      "先看期望，再看当前和 Ready，最后通过 Events 解释为什么没有收敛。下一次遇到 Pending 或 CrashLoopBackOff 时，我会沿着同样的证据链继续定位。",
+      "",
+      "## 可复现练习",
+      "写一份 replicas: 3 的最小 Deployment，并记录 kubectl get deployment、kubectl get pods 和 kubectl describe 的输出。"
+    ].join("\n");
+    document.querySelector("#outline-note").value = outlineDefault;
+    document.querySelector("#article-note").value = articleDefault;
+    document.querySelector("#article-preview").textContent = articleDefault;
+    function showNoteStage(name) {
+      noteStageButtons.forEach((button) => button.setAttribute("aria-pressed", String(button.dataset.noteStage === name)));
+      noteStagePanels.forEach((panel) => panel.classList.toggle("is-active", panel.dataset.noteStagePanel === name));
+    }
+    noteStageButtons.forEach((button) => button.addEventListener("click", () => showNoteStage(button.dataset.noteStage)));
+    const eventLabels = { reference: "参考", question: "问题", error: "错误", observation: "观察" };
+    function refreshNoteCounts() {
+      const events = [...document.querySelectorAll("#note-events .note-event")];
+      Object.keys(eventLabels).forEach((type) => {
+        document.querySelector(`#note-${type}-count`).textContent = events.filter((event) => event.dataset.eventType === type).length;
+      });
+      document.querySelector("#notes-meta-count").textContent = `${events.length} 条实践素材`;
+    }
+    function recordPracticeEvent(type, title, body, source, key) {
+      const events = document.querySelector("#note-events");
+      if (key && events.querySelector(`[data-event-key="${key}"]`)) return;
+      const event = document.createElement("article");
+      event.className = "note-event";
+      event.dataset.eventType = type;
+      if (key) event.dataset.eventKey = key;
+      event.innerHTML = '<span class="note-event-type"></span><div><strong></strong><p></p></div><span class="note-event-source"></span>';
+      event.querySelector(".note-event-type").textContent = eventLabels[type] || type;
+      event.querySelector("strong").textContent = title;
+      event.querySelector("p").textContent = body;
+      event.querySelector(".note-event-source").textContent = source;
+      events.append(event);
+      refreshNoteCounts();
+    }
+    app.querySelectorAll("[data-event-filter]").forEach((filter) => filter.addEventListener("click", () => {
+      const selected = filter.dataset.eventFilter;
+      app.querySelectorAll("[data-event-filter]").forEach((item) => item.setAttribute("aria-pressed", String(item === filter)));
+      document.querySelectorAll("#note-events .note-event").forEach((event) => { event.hidden = selected !== "all" && event.dataset.eventType !== selected; });
+    }));
+    document.querySelector("#sync-notes").addEventListener("click", () => {
+      recordPracticeEvent("observation", "工作台上下文已同步", "已把当前固定参考、Tutor Agent 对话和学习证据纳入本次笔记素材。", "知行工作台", "workspace-sync");
+      document.querySelector("#notes-meta-count").textContent = `${document.querySelectorAll("#note-events .note-event").length} 条实践素材 · 刚刚同步`;
+    });
+    app.querySelectorAll("[data-node]").forEach((node) => node.addEventListener("click", () => {
+      const detail = nodeData[node.dataset.node];
+      if (!detail) return;
+      document.querySelector("#node-title").textContent = detail[0];
+      document.querySelector("#node-description").textContent = detail[1];
+      document.querySelector("#node-status").textContent = detail[2];
+      document.querySelector("#node-next").textContent = node.dataset.node === "replicaset" ? "下一步：阅读 YAML 并完成配置预测。" : "点击左侧“当前学习”进入线性学习单元。";
+    }));
+    app.querySelectorAll(".choice").forEach((choice) => choice.addEventListener("click", () => {
+      app.querySelectorAll(".choice").forEach((item) => { item.classList.remove("selected"); item.setAttribute("aria-pressed", "false"); });
+      choice.classList.add("selected");
+      choice.setAttribute("aria-pressed", "true");
+    }));
+    const lessonCopy = {
+      understand: ["学习目标", "完成后，你应该能够说明 Deployment 与 ReplicaSet 的关系；期望副本数由谁维护；当实际副本数不符合预期时，首先查看哪些证据。", "Step 01 / 05"],
+      build: ["构建理解", "把目标副本数、模板和控制器关系标记在 YAML 上，形成一份自己的因果图。", "Step 02 / 05"],
+      run: ["运行观察", "观察资源创建后的实际状态，区分期望值、当前值和 Ready 状态。", "Step 03 / 05"],
+      prove: ["证明掌握", "完成一个相似配置题，并解释为什么不能只修改镜像标签。", "Step 04 / 05"],
+      continue: ["继续迁移", "进入下一个节点：Service 与配置，继续把概念连接到可运行的服务。", "Step 05 / 05"]
+    };
+    app.querySelectorAll("[data-step]").forEach((step) => step.addEventListener("click", () => {
+      app.querySelectorAll("[data-step]").forEach((item) => { item.classList.toggle("current", item === step); item.setAttribute("aria-pressed", String(item === step)); });
+      const copy = lessonCopy[step.dataset.step];
+      document.querySelector("#lesson-title").textContent = copy[0];
+      document.querySelector("#lesson-description").textContent = copy[1];
+      document.querySelector("#lesson-step-label").textContent = copy[2];
+    }));
+    const toolLabels = {
+      editor: "已准备编辑器上下文：deployment.yaml",
+      terminal: "已准备终端上下文：kubectl 观察命令",
+      data: "已准备运行数据视图：Pod、ReplicaSet 与 Events"
+    };
+    app.querySelectorAll("[data-tool]").forEach((tool) => tool.addEventListener("click", () => {
+      document.querySelector("#tool-status").textContent = `${toolLabels[tool.dataset.tool]}；将在本地工具中打开。`;
+      const toolEvents = {
+        editor: ["reference", "编辑器上下文：deployment.yaml", "系统记录了本次实践使用的配置文件和当前学习节点。", "外部编辑器"],
+        terminal: ["observation", "终端上下文：kubectl 观察命令", "系统记录了本次实践准备观察 Deployment、Pod 和 Events。", "外部终端"],
+        data: ["observation", "运行数据上下文：Pod、ReplicaSet 与 Events", "系统记录了本次实践要核对的实际状态证据。", "运行数据工具"]
+      };
+      const event = toolEvents[tool.dataset.tool];
+      recordPracticeEvent(event[0], event[1], event[2], event[3], `tool-${tool.dataset.tool}`);
+    }));
+    document.querySelector("#lesson-ai h3").textContent = "Tutor Agent · 知行";
+    document.querySelector("#lesson-ai .rail-heading span").textContent = "对话中 · 知乎知识";
+    const aiQuestion = document.querySelector("#ai-question");
+    aiQuestion.insertAdjacentHTML("afterend", '<div class="message-meta" id="ai-question-meta"><span>当前讨论问题</span><button class="pin-control" type="button" aria-pressed="false">固定问题</button></div><div class="ai-thread" id="ai-thread" aria-live="polite"><article class="chat-message source" id="tutor-source"><p><span class="source-label">知乎知识 · Tutor Agent 已整理</span><br>Deployment 管理发布和期望状态，ReplicaSet 负责维持副本数；排查时先对照期望、当前和 Ready，再看 Events。</p><div class="message-meta"><span>2 条相关摘要</span><button class="pin-control" type="button" aria-pressed="false">固定摘要</button></div></article></div><form class="ai-composer" id="ai-composer"><label class="visually-hidden" for="ai-input">继续追问 Tutor Agent</label><textarea id="ai-input" rows="2" placeholder="继续追问当前问题..."></textarea><button class="ai-send" type="submit">发送</button></form>');
+    document.querySelector(".lesson-body").insertAdjacentHTML("beforebegin", '<section class="workbench-block pin-board" id="pinned-board" aria-label="已固定内容"><div class="rail-heading"><h3>工作台固定参考</h3><span id="pin-count">0 条</span></div><p>先把本次任务会用到的示例放在这里；对话中出现新的高价值内容时继续固定。</p><div class="pinned-list" id="pinned-list"></div><p class="note-status" id="pin-status" role="status" aria-live="polite"></p></section>');
+    const pinnedList = document.querySelector("#pinned-list");
+    const pinCount = document.querySelector("#pin-count");
+    function refreshPinnedState() {
+      const items = [...pinnedList.querySelectorAll(".pinned-item")];
+      pinCount.textContent = `${items.length} 条`;
+      if (!items.length) pinnedList.innerHTML = '<p class="pin-empty">暂未固定内容。</p>';
+      else pinnedList.querySelector(".pin-empty")?.remove();
+    }
+    function pinContent(id, title, body) {
+      if (pinnedList.querySelector(`[data-pinned-id="${id}"]`)) {
+        document.querySelector("#pin-status").textContent = "这条内容已经在工作台中。";
+        return;
+      }
+      const item = document.createElement("article");
+      item.className = "pinned-item";
+      item.dataset.pinnedId = id;
+      item.innerHTML = `<strong></strong><p></p><button type="button">取消固定</button>`;
+      item.querySelector("strong").textContent = title;
+      item.querySelector("p").textContent = body;
+      item.querySelector("button").addEventListener("click", () => {
+        item.remove();
+        refreshPinnedState();
+        document.querySelector("#pin-status").textContent = "已取消固定。";
+        const pinButton = document.querySelector(`[data-pin-id="${id}"]`);
+        pinButton?.setAttribute("aria-pressed", "false");
+        if (pinButton) pinButton.textContent = pinButton.dataset.unpinLabel || "固定";
+      });
+      pinnedList.append(item);
+      refreshPinnedState();
+      document.querySelector("#pin-status").textContent = "已固定到本次工作台。";
+    }
+    pinContent("yaml-example", "最小 Deployment YAML", "replicas: 3；template 中声明实际运行的 api 容器。 ");
+    pinContent("common-evidence", "常用排查顺序", "先比较期望副本、当前副本和 Ready 状态，再看 Events。");
+    pinContent("judgement-template", "判断句式", "先描述现象，再列证据，最后说明哪个控制器负责把状态拉回期望值。");
+    function appendChat(role, text) {
+      const message = document.createElement("article");
+      const id = `chat-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+      message.className = `chat-message ${role}`;
+      message.dataset.chatId = id;
+      message.innerHTML = '<p></p><div class="message-meta"><span></span><button class="pin-control" type="button" aria-pressed="false">固定</button></div>';
+      message.querySelector("p").textContent = text;
+      message.querySelector(".message-meta span").textContent = role === "user" ? "你 · 刚刚" : "知行 AI · 刚刚";
+      const messagePin = message.querySelector(".pin-control");
+      messagePin.dataset.pinId = id;
+      messagePin.dataset.unpinLabel = "固定";
+      messagePin.addEventListener("click", (event) => {
+        const button = event.currentTarget;
+        pinContent(id, role === "user" ? "我的问题" : "知行 AI 的回答", text);
+        button.setAttribute("aria-pressed", "true");
+        button.textContent = "已固定";
+      });
+      document.querySelector("#ai-thread").append(message);
+      document.querySelector("#ai-thread").scrollTop = document.querySelector("#ai-thread").scrollHeight;
+      if (role === "user") recordPracticeEvent("question", text, "这条追问来自当前学习中的 Tutor Agent 对话。", "Tutor Agent", id);
+    }
+    const tutorSourcePin = document.querySelector("#tutor-source .pin-control");
+    tutorSourcePin.dataset.pinId = "tutor-source";
+    tutorSourcePin.dataset.unpinLabel = "固定摘要";
+    tutorSourcePin.addEventListener("click", (event) => {
+      pinContent("tutor-source", "Tutor Agent 的知乎摘要", "Deployment 管理期望状态，ReplicaSet 维持副本数；排查先看期望、当前、Ready 和 Events。");
+      event.currentTarget.setAttribute("aria-pressed", "true");
+      event.currentTarget.textContent = "已固定";
+    });
+    const currentQuestionPin = document.querySelector("#ai-question-meta .pin-control");
+    currentQuestionPin.dataset.pinId = "current-question";
+    currentQuestionPin.dataset.unpinLabel = "固定问题";
+    currentQuestionPin.addEventListener("click", (event) => {
+      pinContent("current-question", "当前讨论问题", aiQuestion.textContent);
+      event.currentTarget.setAttribute("aria-pressed", "true");
+      event.currentTarget.textContent = "已固定";
+    });
+    document.querySelector("#ai-composer").addEventListener("submit", (event) => {
+      event.preventDefault();
+      const input = document.querySelector("#ai-input");
+      const value = input.value.trim();
+      if (!value) return;
+      appendChat("user", value);
+      appendChat("ai", value.includes("replicas") ? "先把问题拆成三层：期望副本数、当前副本数、Ready 状态；之后再用 Events 判断哪个环节没有达到期望。" : "继续围绕当前 YAML 追问，我会把你的问题连接到本节点的概念和知乎摘要。 ");
+      input.value = "";
+    });
+    app.querySelectorAll("[data-ai-prompt]").forEach((prompt) => prompt.addEventListener("click", () => {
+      document.querySelector("#ai-question").textContent = prompt.dataset.aiPrompt;
+      document.querySelector("#ai-response").textContent = "知行 AI 已根据当前节点调整追问。回答后再回到检查点。";
+      appendChat("user", prompt.dataset.aiPrompt);
+      appendChat("ai", "这个追问会连接到当前 YAML；先说出你的判断，再用运行数据验证它。 ");
+    }));
+    document.querySelector("#refresh-zhihu").addEventListener("click", () => {
+      document.querySelector("#zhihu-status").textContent = "已按当前问题整理知乎相关回答摘要。";
+    });
+    app.querySelectorAll("[data-source]").forEach((source) => source.addEventListener("click", () => {
+      document.querySelector("#zhihu-status").textContent = `已展开摘要：${source.dataset.source}`;
+    }));
+    document.querySelectorAll(".zhihu-source").forEach((source, index) => {
+      const pin = document.createElement("button");
+      pin.className = "pin-control source-pin";
+      pin.type = "button";
+      pin.setAttribute("aria-pressed", "false");
+      pin.textContent = "固定摘要";
+      pin.dataset.pinId = `zhihu-${index}`;
+      pin.dataset.unpinLabel = "固定摘要";
+      pin.addEventListener("click", (event) => {
+        const title = source.querySelector("strong").textContent;
+        const body = source.querySelector("p").textContent;
+        pinContent(`zhihu-${index}`, title, body);
+        event.currentTarget.setAttribute("aria-pressed", "true");
+        event.currentTarget.textContent = "已固定";
+      });
+      source.append(pin);
+    });
+    const taskHeading = document.querySelector(".task-list")?.parentElement?.querySelector("h3");
+    taskHeading?.classList.add("rail-heading");
+    taskHeading?.insertAdjacentHTML("beforeend", '<span id="task-progress">0 / 3 项</span>');
+    taskHeading?.insertAdjacentHTML("afterend", '<div class="session-progress-line" aria-hidden="true"><span id="task-progress-line"></span></div>');
+    const taskChecks = [...app.querySelectorAll(".task-check input")];
+    const taskProgress = document.querySelector("#task-progress");
+    const taskProgressLine = document.querySelector("#task-progress-line");
+    function updateTaskProgress() {
+      const completed = taskChecks.filter((task) => task.checked).length;
+      taskProgress.textContent = `${completed} / ${taskChecks.length} 项`;
+      taskProgressLine.style.width = `${(completed / taskChecks.length) * 100}%`;
+    }
+    taskChecks.forEach((task) => task.addEventListener("change", updateTaskProgress));
+    document.querySelector("#save-note").addEventListener("click", () => {
+      const noteStatus = document.querySelector("#note-status");
+      const evidence = document.querySelector("#lesson-note").value.trim();
+      noteStatus.textContent = evidence ? "已保存到本次学习记录" : "先写下一条自己的判断";
+      if (evidence) recordPracticeEvent("observation", "我的实践证据", evidence, "学习工作台", "learner-evidence");
+    });
+    document.querySelector("#complete-lesson").addEventListener("click", () => {
+      document.querySelector("#lesson-action-status").textContent = "本单元已记录，可以回到路线继续。";
+    });
+    document.querySelector("#generate-outline").addEventListener("click", () => {
+      document.querySelector("#outline-note").value = outlineDefault;
+      document.querySelector("#outline-status").textContent = "已根据实践记录生成大纲草稿，请人工确认。";
+    });
+    document.querySelector("#save-outline").addEventListener("click", () => {
+      document.querySelector("#outline-status").textContent = "大纲已保存，下一步可以成文。";
+    });
+    document.querySelector("#complete-article").addEventListener("click", () => {
+      document.querySelector("#article-note").value = articleDefault;
+      document.querySelector("#article-preview").textContent = articleDefault;
+      document.querySelector("#article-status").textContent = "已按确认的大纲完成文章草稿，仍可人工修改。";
+    });
+    document.querySelector("#article-note").addEventListener("input", (event) => {
+      document.querySelector("#article-preview").textContent = event.currentTarget.value;
+    });
+    document.querySelector("#save-article").addEventListener("click", () => {
+      document.querySelector("#article-status").textContent = "文章草稿已保存。";
+    });
+    document.querySelector("#publish-zhihu").addEventListener("click", () => {
+      document.querySelector("#article-status").textContent = "已生成待发布状态；真实知乎发布 API 尚未接入。";
+      document.querySelector("#publish-zhihu").textContent = "待接入知乎发布";
+    });
+    updateTaskProgress();
+    refreshNoteCounts();
+  </script>
+</body>
+</html>
