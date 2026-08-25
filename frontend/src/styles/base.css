@@ -1,0 +1,17 @@
+* { box-sizing: border-box; }
+html, body, #app { min-height: 100%; margin: 0; }
+body { background: var(--paper); color: var(--ink); font-family: var(--sans); }
+button, input, textarea { font: inherit; }
+button { cursor: pointer; }
+button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visible { outline: 3px solid #8f9bf0; outline-offset: 2px; }
+a { color: inherit; }
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
+.eyebrow { color: #6c65b7; font-family: var(--mono); font-size: 9px; letter-spacing: .5px; text-transform: uppercase; }
+.primary-button, .secondary-button, .ghost-button { min-height: 32px; padding: 7px 11px; font-size: 10px; }
+.primary-button { border: 1px solid var(--blue); background: var(--blue); color: var(--white); }
+.primary-button:hover { background: var(--blue-deep); }
+.secondary-button { border: 1px solid #b8bec0; background: transparent; color: #5d6863; }
+.secondary-button:hover { border-color: var(--blue); color: var(--blue); }
+.ghost-button { border: 1px solid #b8c1ec; background: transparent; color: #3347af; }
+.ghost-button:hover { background: var(--blue-soft); }
+.status-text { min-height: 16px; color: var(--green); font-size: 10px; line-height: 1.5; }
