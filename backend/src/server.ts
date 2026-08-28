@@ -1,9 +1,13 @@
 import 'dotenv/config'
 import { buildApp } from './app.js'
 import { loadConfig } from './config.js'
+import { ProductRepository } from './product-repository.js'
+import { PracticeService } from './practice-service.js'
+import { TutorEngine } from './tutor.js'
 
 const config = loadConfig()
-const { app, scheduler } = buildApp({ config })
+const productRepository = new ProductRepository(config.productDbPath)
+const { app, scheduler } = buildApp({ config, practiceServiceFactory: (labScheduler) => new PracticeService(productRepository, labScheduler, new TutorEngine(config)) })
 
 try {
   await app.listen({ host: config.apiHost, port: config.apiPort })
@@ -15,6 +19,7 @@ try {
 
 const shutdown = async () => {
   await scheduler.shutdown()
+  productRepository.close()
   await app.close()
   process.exit(0)
 }

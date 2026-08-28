@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "tsx watch src/server.ts",
+    "db:migrate": "tsx src/product-migrate.ts",
     "build": "tsc -p tsconfig.json",
     "start": "node dist/server.js",
     "test": "vitest run",
@@ -12,10 +13,13 @@
   },
   "dependencies": {
     "@fastify/cors": "^11.0.1",
+    "@types/better-sqlite3": "^9.6.0",
+    "better-sqlite3": "^13.0.3",
     "dotenv": "^17.4.2",
     "fastify": "^5.4.0",
     "mysql2": "^3.14.1",
-    "node-sql-parser": "^5.3.8"
+    "node-sql-parser": "^5.3.8",
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "@types/node": "^22.15.30",

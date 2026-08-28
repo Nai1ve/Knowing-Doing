@@ -4,13 +4,20 @@ import { AlertCircle, CheckCircle2, Database, ShieldCheck } from 'lucide-vue-nex
 import PageHeader from '@/components/shared/PageHeader.vue'
 import LabRunPanel from '@/components/lab/LabRunPanel.vue'
 import SqlWorkbench from '@/components/lab/SqlWorkbench.vue'
+import TutorAgent from '@/components/learning/TutorAgent.vue'
 import { useLabStore } from '@/stores/lab'
+import { usePracticeStore } from '@/stores/practice'
 
 const labStore = useLabStore()
+const practiceStore = usePracticeStore()
 const selectedFixture = computed(() => labStore.health?.fixtures[labStore.selectedCaseId])
 
 onMounted(() => { void labStore.load(); labStore.startHeartbeat() })
 onUnmounted(() => { labStore.dispose() })
+
+async function startPractice() { await practiceStore.start(labStore.selectedCaseId) }
+async function executePractice() { await practiceStore.execute() }
+function askTutor(message: string) { void practiceStore.ask(message) }
 </script>
 
 <template>
@@ -42,11 +49,11 @@ onUnmounted(() => { labStore.dispose() })
         :selected-case-id="labStore.selectedCaseId"
         :run="labStore.run"
         :ticket="labStore.ticket"
-        :starting="labStore.starting"
+        :starting="labStore.starting || practiceStore.starting"
         :polling="labStore.polling"
         :resetting="labStore.resetting"
         :ending="labStore.ending"
-        @start="labStore.start"
+        @start="startPractice"
         @reset="labStore.reset"
         @end="labStore.end"
         @cancel="labStore.cancelQueue"
@@ -61,7 +68,7 @@ onUnmounted(() => { labStore.dispose() })
             :can-execute="Boolean(labStore.run && labStore.activeSession?.status === 'open' && labStore.environmentReady)"
             :executing="labStore.executing"
             :session-name="labStore.activeSession?.name"
-            @execute="labStore.execute"
+            @execute="executePractice"
             @load-default="labStore.loadDefaultSql"
             @load-optimized="labStore.loadOptimizedSql"
           />
@@ -82,6 +89,13 @@ onUnmounted(() => { labStore.dispose() })
           <section v-if="labStore.error" class="lab-error" role="alert">
             <AlertCircle :size="14" aria-hidden="true" />
             <div><strong>请求未完成</strong><p>{{ labStore.error }}</p></div>
+          </section>
+
+          <TutorAgent :messages="practiceStore.messages" :loading="practiceStore.tutorLoading" :current-question="practiceStore.lastTutor?.nextQuestion" :current-gap="practiceStore.currentGap" @ask="askTutor" />
+
+          <section v-if="practiceStore.error" class="lab-error" role="alert">
+            <AlertCircle :size="14" aria-hidden="true" />
+            <div><strong>实践记录未完成</strong><p>{{ practiceStore.error }}</p></div>
           </section>
 
           <section class="case-facts" aria-labelledby="case-facts-title">

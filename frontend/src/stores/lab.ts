@@ -343,6 +343,6 @@ export const useLabStore = defineStore('lab', () => {
   return {
     health, cases, selectedCaseId, selectedCase, run, accessToken, sessionId, ticket, sql, latestResult,
     loading, starting, polling, executing, resetting, ending, error, environmentReady, canStart, activeSession,
-    load, start, cancelQueue, execute, reset, end, loadDefaultSql, loadOptimizedSql, startHeartbeat, dispose,
+    load, start, adoptRun, cancelQueue, execute, reset, end, loadDefaultSql, loadOptimizedSql, startHeartbeat, dispose,
   }
 })

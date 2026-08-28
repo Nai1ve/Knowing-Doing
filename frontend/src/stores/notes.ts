@@ -1,6 +1,7 @@
 import { computed, ref } from 'vue'
 import { defineStore } from 'pinia'
 import { generateOutline, saveNoteDraft } from '@/api/notesService'
+import { generateProductArticle, generateProductOutline } from '@/api/productService'
 import type { EventType } from '@/types/domain'
 
 export const useNotesStore = defineStore('notes', () => {
@@ -33,10 +34,28 @@ export const useNotesStore = defineStore('notes', () => {
     generatingArticle.value = false
   }
 
+  async function createProductOutline(runId: string) {
+    generatingOutline.value = true; status.value = ''
+    try {
+      const result = await generateProductOutline(runId)
+      outline.value = result.artifact.content
+      status.value = '已根据真实实践证据生成大纲草稿，请人工确认。'
+    } finally { generatingOutline.value = false }
+  }
+
+  async function completeProductArticle(runId: string) {
+    generatingArticle.value = true; status.value = ''
+    try {
+      const result = await generateProductArticle(runId, outline.value)
+      article.value = result.artifact.content
+      status.value = '已根据实践证据完成文章初稿，仍需人工审核。'
+    } finally { generatingArticle.value = false }
+  }
+
   async function save(planId: string) {
     await saveNoteDraft(planId, { outline: outline.value, article: article.value })
     status.value = '文章与大纲已保存。'
   }
 
-  return { stage, filter, outline, article, articlePreview, generatingOutline, generatingArticle, status, createOutline, completeArticle, save }
+  return { stage, filter, outline, article, articlePreview, generatingOutline, generatingArticle, status, createOutline, completeArticle, createProductOutline, completeProductArticle, save }
 })

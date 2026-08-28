@@ -6,17 +6,23 @@ import PageHeader from '@/components/shared/PageHeader.vue'
 import SectionHeading from '@/components/shared/SectionHeading.vue'
 import ProgressSummary from '@/components/overview/ProgressSummary.vue'
 import RouteSnapshot from '@/components/overview/RouteSnapshot.vue'
+import LearningGoalForm from '@/components/overview/LearningGoalForm.vue'
 import { usePlanStore } from '@/stores/plan'
+import { useIntakeStore } from '@/stores/intake'
 
 const planStore = usePlanStore()
+const intakeStore = useIntakeStore()
 const plan = computed(() => planStore.plan)
 const milestone = computed(() => planStore.currentMilestone)
 const node = computed(() => planStore.currentNode)
+function createRoute(goal: string) { void intakeStore.create(goal) }
 </script>
 
 <template>
   <div v-if="plan" class="page overview-page">
     <PageHeader eyebrow="01 · Orient" title="先知道要去哪里，再开始学习。" description="知行把一项技术拆成可解释的路线、当前节点和可回看的实践证据。今天只需要完成一个清晰的动作。" :meta="[`计划 ${plan.title}`, `开始于 ${plan.startedAt}`, `预计完成 ${plan.dueAt}`]" />
+    <LearningGoalForm :submitting="intakeStore.submitting" :error="intakeStore.error" @submit="createRoute" />
+    <section v-if="intakeStore.plan" class="generated-route" aria-labelledby="generated-route-title"><div><div class="eyebrow">Generated route · local catalog</div><h2 id="generated-route-title">{{ intakeStore.plan.title }}</h2><p>{{ intakeStore.plan.goal }} · 当前首版路线已确认，后续可根据实践证据调整。</p></div><RouterLink :to="{ name: 'lesson' }">进入第一个案例 <ArrowRight :size="14" aria-hidden="true" /></RouterLink></section>
     <section id="goal" class="goal-block" aria-labelledby="goal-title"><div class="section-marker"><Target :size="16" aria-hidden="true" /><span>总目标</span></div><h2 id="goal-title">{{ plan.goal }}</h2><p>不是把知识点全部看完，而是能从一份配置开始，解释它为什么这样运行，并在出错时找到下一条证据。</p></section>
     <ProgressSummary :plan="plan" :milestone="milestone" :node="node" />
     <section id="status" class="status-section" aria-labelledby="status-title"><SectionHeading title="当前状况" detail="What is true now" /><div class="status-grid"><div><small>正在进行</small><strong>{{ milestone?.title }}</strong><p>{{ milestone?.summary }}</p></div><div><small>当前所在节点</small><strong>{{ node?.title }}</strong><p>预计用时 {{ node?.duration }}。完成后进入 Service 与配置。</p></div><div><small>下一次行动</small><strong>打开当前学习</strong><p>先看示例，再把本地 YAML 或终端结果带回工作台。</p></div></div></section>
@@ -28,6 +34,10 @@ const node = computed(() => planStore.currentNode)
 
 <style scoped>
 .overview-page { max-width: 920px; }
+.generated-route { display: flex; align-items: center; justify-content: space-between; gap: 18px; margin-top: 14px; padding: 13px 15px; border-left: 3px solid var(--green); background: var(--green-soft); }
+.generated-route h2 { margin: 6px 0 0; color: var(--ink); font: 400 18px var(--serif); }
+.generated-route p { margin: 5px 0 0; color: var(--muted); font-size: 10px; }
+.generated-route a { display: inline-flex; align-items: center; gap: 5px; padding: 7px 9px; border: 1px solid #8dad99; color: #3e7650; font-size: 10px; text-decoration: none; white-space: nowrap; }
 .goal-block { margin-top: 28px; padding: 0 0 19px; border-bottom: 1px solid var(--line); }
 .section-marker { display: flex; align-items: center; gap: 7px; color: var(--blue); font: 9px var(--mono); letter-spacing: .5px; text-transform: uppercase; }
 .goal-block h2 { max-width: 760px; margin: 12px 0 0; color: #29333a; font: 400 clamp(24px, 3.2vw, 36px)/1.22 var(--serif); }

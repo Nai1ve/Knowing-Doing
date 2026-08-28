@@ -3,11 +3,11 @@ import { computed, nextTick, ref } from 'vue'
 import { Bot, Pin, Send } from 'lucide-vue-next'
 import type { PinnedReference, TutorMessage } from '@/types/domain'
 
-const props = defineProps<{ messages: TutorMessage[]; loading?: boolean }>()
+const props = defineProps<{ messages: TutorMessage[]; loading?: boolean; currentQuestion?: string; currentGap?: string }>()
 const emit = defineEmits<{ ask: [question: string]; pin: [reference: PinnedReference] }>()
 const input = ref('')
 const thread = ref<HTMLElement>()
-const prompts = ['我不懂为什么', '把问题拆开', '用知乎回答对照']
+const prompts = ['我应该先找什么证据？', '给我一个最小尝试', '这个结论有什么边界？']
 const canSend = computed(() => input.value.trim().length > 0 && !props.loading)
 
 function send(question = input.value) {
@@ -21,15 +21,16 @@ function send(question = input.value) {
 <template>
   <section class="tutor-panel" aria-label="Tutor Agent 与知乎知识">
     <div class="rail-heading"><h3><Bot :size="15" aria-hidden="true" />Tutor Agent · 知行</h3><span>对话中 · 知乎知识</span></div>
-    <p class="ai-context">我已读到你的当前节点和 YAML；接下来要确认你是否理解“期望状态”如何变成实际副本。</p>
-    <div class="ai-question">如果 replicas 设置为 3，但只有 2 个 Pod Ready，你先看什么？<button class="inline-pin" type="button" @click="emit('pin', { id: 'current-question', title: '当前讨论问题', body: '如果 replicas 设置为 3，但只有 2 个 Pod Ready，你先看什么？', source: 'Tutor Agent' })"><Pin :size="12" aria-hidden="true" />固定</button></div>
+    <p class="ai-context">Tutor 只使用当前实践的原始输入、Lab 证据和阶段记忆；它不能代替你执行 SQL，也不能凭聊天宣布解决。</p>
+    <div class="ai-question">{{ currentQuestion ?? '启动实验后，我会围绕当前证据缺口提出一个问题。' }}<button class="inline-pin" type="button" @click="emit('pin', { id: 'current-question', title: '当前讨论问题', body: currentQuestion ?? '启动实验后，我会围绕当前证据缺口提出一个问题。', source: 'Tutor Agent' })"><Pin :size="12" aria-hidden="true" />固定</button></div>
+    <p v-if="currentGap" class="ai-gap">当前缺口：{{ currentGap }}</p>
     <div class="ai-prompts"><button v-for="prompt in prompts" :key="prompt" type="button" @click="send(prompt)">{{ prompt }}</button></div>
     <div ref="thread" class="ai-thread" aria-live="polite">
       <article v-for="message in messages" :key="message.id" class="chat-message" :class="message.role">
         <p v-if="message.source" class="source-label">{{ message.source }}</p><p>{{ message.content }}</p>
         <button v-if="message.role !== 'source'" class="message-pin" type="button" @click="emit('pin', { id: message.id, title: message.role === 'user' ? '我的问题' : '知行 AI 的回答', body: message.content, source: 'Tutor Agent 对话' })"><Pin :size="11" aria-hidden="true" />固定</button>
       </article>
-      <p v-if="loading" class="typing-status" role="status">Tutor Agent 正在整理知乎相关知识…</p>
+      <p v-if="loading" class="typing-status" role="status">Tutor Agent 正在整理当前证据…</p>
     </div>
     <form class="ai-composer" @submit.prevent="send()"><label class="sr-only" for="tutor-input">继续追问 Tutor Agent</label><textarea id="tutor-input" v-model="input" rows="2" placeholder="继续追问当前问题…" @keydown.meta.enter.prevent="send()" @keydown.ctrl.enter.prevent="send()" /><button class="send-button" type="submit" :disabled="!canSend" aria-label="发送问题"><Send :size="14" aria-hidden="true" /></button></form>
   </section>
@@ -42,6 +43,7 @@ function send(question = input.value) {
 .rail-heading span { color: #7d8581; font-family: var(--mono); font-size: 8px; }
 .ai-context { margin: 8px 0 0; color: var(--muted); font-size: 10px; line-height: 1.5; }
 .ai-question { margin-top: 10px; padding: 9px; border-left: 2px solid var(--blue); background: #f5f5ee; color: #3f4946; font-size: 11px; line-height: 1.5; }
+.ai-gap { margin: 7px 0 0; color: #7c685f; font-size: 9px; line-height: 1.45; }
 .inline-pin, .message-pin { display: inline-flex; align-items: center; gap: 3px; padding: 0; border: 0; background: transparent; color: #8f6b56; font-size: 8px; }
 .inline-pin { float: right; margin-left: 6px; }
 .inline-pin:hover, .message-pin:hover { color: var(--orange); text-decoration: underline; }

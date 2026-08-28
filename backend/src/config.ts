@@ -26,6 +26,11 @@ export interface LabConfig {
   maxRows: number
   maxOutputBytes: number
   runnerPoolSize: number
+  productDbPath: string
+  modelBaseUrl: string
+  modelApiKey: string
+  modelName: string
+  modelTimeoutMs: number
   caseIds: CaseId[]
 }
 
@@ -53,6 +58,11 @@ export function loadConfig(): LabConfig {
     maxRows: numberEnv('LAB_MAX_ROWS', 200),
     maxOutputBytes: numberEnv('LAB_MAX_OUTPUT_BYTES', 1024 * 1024),
     runnerPoolSize: numberEnv('LAB_RUNNER_POOL_SIZE', 6),
+    productDbPath: process.env.ZHIXING_PRODUCT_DB_PATH ?? './data/zhixing-product.db',
+    modelBaseUrl: process.env.ZHIXING_MODEL_BASE_URL ?? '',
+    modelApiKey: process.env.ZHIXING_MODEL_API_KEY ?? '',
+    modelName: process.env.ZHIXING_MODEL_NAME ?? 'default',
+    modelTimeoutMs: numberEnv('ZHIXING_MODEL_TIMEOUT_MS', 8_000),
     caseIds: [
       'mysql-order-list-index-001',
       'mysql-deadlock-lock-order-001',

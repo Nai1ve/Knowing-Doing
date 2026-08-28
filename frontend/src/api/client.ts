@@ -4,7 +4,7 @@ export interface ApiClientOptions {
 }
 
 export class ApiError extends Error {
-  constructor(public readonly status: number, message: string) {
+  constructor(public readonly status: number, message: string, public readonly payload?: unknown) {
     super(message)
     this.name = 'ApiError'
   }
@@ -18,8 +18,18 @@ export function createApiClient(options: ApiClientOptions) {
     const token = options.getToken?.()
     if (token) headers.set('Authorization', `Bearer ${token}`)
     const response = await fetch(`${options.baseUrl}${path}`, { ...init, headers })
-    if (!response.ok) throw new ApiError(response.status, `请求失败：${response.status}`)
-    return response.json() as Promise<T>
+    const text = await response.text()
+    let payload: unknown
+    if (text) {
+      try { payload = JSON.parse(text) } catch { payload = text }
+    }
+    if (!response.ok) {
+      const message = payload && typeof payload === 'object' && 'error' in payload && typeof (payload as { error?: { message?: unknown } }).error?.message === 'string'
+        ? String((payload as { error: { message: string } }).error.message)
+        : `请求失败：${response.status}`
+      throw new ApiError(response.status, message, payload)
+    }
+    return payload as T
   }
 
   return { request }
