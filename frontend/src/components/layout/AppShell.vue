@@ -11,7 +11,7 @@ const currentPage = computed(() => String(route.name ?? 'overview'))
 const tocItems = computed(() => ({
   overview: [{ label: '总目标', href: '#goal' }, { label: '当前状况', href: '#status' }, { label: '整体路线', href: '#overview-route' }, { label: '当前节点', href: '#current-node' }],
   route: [{ label: '知识树', href: '#route-tree' }, { label: '当前节点', href: '#route-selected' }],
-  lesson: [{ label: '线性步骤', href: '#lesson-steps' }, { label: '工作台', href: '#workbench' }, { label: '检查点', href: '#checkpoint' }],
+  lesson: [{ label: '实验环境', href: '#lab-run-title' }, { label: 'SQL 工作台', href: '#sql-workbench-title' }, { label: '执行结果', href: '#execution-result-title' }],
   notes: [{ label: '实践记录', href: '#note-capture' }, { label: '整理大纲', href: '#note-outline' }, { label: '成文发布', href: '#note-article' }],
   review: [{ label: '学习数据', href: '#review-stats' }, { label: '掌握变化', href: '#review-change' }, { label: '计划调整', href: '#review-adjustment' }],
   profile: [{ label: '画像依据', href: '#profile-evidence' }, { label: '学习偏好', href: '#profile-preferences' }],

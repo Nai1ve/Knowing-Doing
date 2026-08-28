@@ -9,7 +9,7 @@ const planStore = usePlanStore()
 const navItems = [
   { name: 'overview', label: '总览', icon: Gauge },
   { name: 'route', label: '整体路线', icon: GitBranch },
-  { name: 'lesson', label: '当前学习', icon: BookOpen },
+  { name: 'lesson', label: 'MySQL 实验', icon: BookOpen },
   { name: 'notes', label: '学习笔记', icon: FileText },
   { name: 'review', label: '周复盘', icon: Flag },
 ]

@@ -10,7 +10,14 @@ export default defineConfig({
     },
   },
   server: {
+    host: '127.0.0.1',
     port: 4175,
     strictPort: true,
+    proxy: {
+      '/api/lab': {
+        target: 'http://127.0.0.1:3000',
+        changeOrigin: true,
+      },
+    },
   },
 })

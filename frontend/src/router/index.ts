@@ -3,7 +3,7 @@ import { createRouter, createWebHistory } from 'vue-router'
 export const router = createRouter({
   history: createWebHistory(),
   routes: [
-    { path: '/', redirect: '/overview' },
+    { path: '/', redirect: '/lesson' },
     { path: '/overview', name: 'overview', component: () => import('@/views/OverviewView.vue') },
     { path: '/route', name: 'route', component: () => import('@/views/RouteView.vue') },
     { path: '/lesson', name: 'lesson', component: () => import('@/views/LessonView.vue') },

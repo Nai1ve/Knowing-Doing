@@ -1,4 +1,49 @@
-# Information Architecture: 知行桌面端
+# Information Architecture: 知行 Web MVP 与长期产品
+
+## Scope and Priority
+
+本文件同时记录黑客松 MVP 和长期产品的信息架构。两者冲突时，以
+[阶段化交付方案](../../docs/zhixing-delivery-plan.md) 为准：MVP 只实现一个
+MySQL 场景训练闭环；学习计划、画像、任务分支和多案例扩展均为后续能力。
+
+## MVP Information Architecture
+
+### Site Map
+
+- 场景总览 `/overview`
+  - 当前案例：MySQL 慢查询与 EXPLAIN
+  - 当前阶段、已收集证据和“继续训练”入口
+  - 其他案例仅显示“后续支持”，不能进入
+- 场景训练 `/lesson?case=mysql-order-list-index-001`
+  - 症状、假设、EXPLAIN、尝试、验证、复盘
+  - 上下文粘贴、证据卡、Tutor 追问、知乎来源和固定参考
+- 实践笔记 `/notes`
+  - 事件记录、可编辑大纲、文章预览和模拟发布检查
+- 设置 `/settings`
+  - 模型与知乎连接的占位状态、隐私说明和演示重置
+
+### Navigation and Data Boundaries
+
+- **Primary navigation**: 场景总览、当前训练、实践笔记；设置是工具入口。
+- **总览**只读取当前案例摘要和进度，不能预取 Tutor 消息、原始 EXPLAIN、全文来源或文章内容。
+- **训练台**进入时读取当前案例运行快照和当前阶段；打开来源、展开原始证据、发起 Tutor 对话时再按需请求对应资源。
+- **实践笔记**只在用户进入时读取当前运行的事件和文章草稿；生成大纲或模拟发布是明确操作，不能由页面加载触发。
+- **MySQL Lab**在训练台中提供受控 SQL 执行窗口，只连接知行 Docker 环境；任意外部 SQL、EXPLAIN、基准输出和日志仍以手动粘贴进入，并标记为未验证。CLI 自动采集是后续授权能力；Web 不执行本地命令或连接用户数据库。
+- **Web behavior**: 不模拟原生桌面窗口或额外的黑色标题栏。应用使用稳定侧栏和内容区，但首先是浏览器中的 Web 应用。
+- **Failure behavior**: 模型、知乎检索或网络不可用时，训练台仍展示状态机提示和预置/不可用来源状态，不能阻断证据链。
+
+### MVP User Flow
+
+1. 用户从场景总览进入 MySQL 慢查询案例。
+2. 用户阅读症状和问题 SQL，写下可验证假设。
+3. 用户在 Docker 实验环境运行命令并粘贴 EXPLAIN；系统保留原文并生成证据卡。
+4. Tutor 只围绕当前阶段追问或给出分级提示；知乎来源说明当前阅读目的。
+5. 用户记录一次不充分的尝试，再提交语义一致的修复及前后证据。
+6. 系统从事件和来源生成可编辑文章预览，用户完成检查后进入模拟知乎草稿状态。
+
+## Long-term Product Architecture
+
+以下结构在阶段 6 之后再逐步启用，不是黑客松 MVP 的导航或验收范围。
 
 ## Site Map
 
@@ -34,7 +79,7 @@
 - **Page-local navigation**: 右侧使用 “On this page” 目录，只列当前页面的章节，不承担全局导航职责。
 - **Utility navigation**: 新建计划、连接状态、设置和账户在窗口顶部右侧。
 - **Desktop behavior**: 左侧是稳定的章节导航，中间是单页正文，右侧是当前页目录和少量上下文信息。
-- **Web-first behavior**: 桌面优先 Web 保持应用壳体验；本地终端、文件和 Kubernetes 上下文通过“手动粘贴”或用户授权的 CLI 连接器接入。
+- **Web-first behavior**: 桌面优先 Web 保持应用壳体验；本地终端、文件、SQL、日志和命令上下文通过“手动粘贴”或用户授权的 CLI 连接器接入。
 - **Mobile behavior**: 第一版仅支持查看计划、复盘和提醒；材料解析、计划编辑和完整练习保留在桌面端。
 
 ## Content Hierarchy
@@ -172,4 +217,4 @@
 - Pattern: `/plans/:planId/:subview` and `/profile/:subview`
 - Dynamic segments: `planId`、`unitId`、`reviewId`、`branchId`
 - Query parameters: `milestone`、`source`、`status`、`page`
-- Desktop shell supports deep links such as `/plans/k8s-2026/units/k8s-workloads?source=zhihu`.
+- Long-term routes may support deep links such as `/plans/mysql-2026/units/query-optimization?source=zhihu`.

@@ -8,6 +8,10 @@
 
 知行从用户目标、授权材料和动态追问建立可修正的学习画像，生成带里程碑的数周学习计划。用户每天在同一空间中学习一个明确的单元、阅读被编排的知乎内容、完成主动练习、记录掌握状态；系统在每周复盘和真实任务发生时解释性地调整计划。
 
+## MVP Scope
+
+黑客松版本不实现上述长期学习计划。它先证明最小但完整的价值：用户在一个 MySQL 慢查询场景中，沿“症状 -> 假设 -> 证据 -> 修复 -> 对比 -> 文章预览”完成一次工程判断。案例阶段、必需证据和提示阶梯由确定性代码控制；知乎内容是有角色、有来源的参考，模型只在当前阶段提问、解释和整理。
+
 ## Experience Principles
 
 1. **诊断先于推荐** -- 首先让用户看见系统如何理解自己，并可修正所有推断，再展示学习计划。
@@ -23,15 +27,15 @@
 
 ## Visual Direction
 
-- 它首先是一款桌面优先的 Web 学习软件：保留固定窗口标题栏、持久章节侧栏、正文学习区和当前页目录，但 MVP 不要求原生安装包。
+- 它首先是一款桌面优先的 Web 学习软件：不模拟原生窗口标题栏，保留稳定侧栏、正文学习区和当前页上下文，但 MVP 不要求原生安装包。
 - 采用“深色应用 Chrome + 纸张感学习画布”的主题：深石墨表达系统边界，暖灰白承载长时间阅读，钴蓝表达章节、规则线和当前节点，橙色只强调待确认的计划变化。
 - 正文使用高可读性的系统中文无衬线字体，章节标题可使用有编辑感的衬线字体，代码、命令和概念标签使用等宽字体；小标签使用英文/数字和紧凑字距，建立技术教材气质。
-- 页面采用“左侧章节导航 + 中央单页内容 + 右侧上下文辅助”结构。总览、完整路线、当前学习和周复盘分别承担单一任务，不在首页混合完整正文；其中当前学习是受限的任务工作台，承载外部工具入口、AI 追问和知乎知识上下文。
-- 记忆点是“可回溯的学习章节”：用户从总览进入当前节点，沿完整路线阅读，再在复盘页看到计划为何变化。
+- 页面采用“左侧导航 + 中央单页内容 + 右侧上下文辅助”结构。MVP 的总览、场景训练和实践笔记分别承担单一任务，不在首页混合完整正文；场景训练是受限的实践工作台，承载外部工具入口、AI 追问和知乎知识上下文。
+- MVP 的记忆点是“可回溯的工程判断”：用户从症状进入证据链，最后能看到每个结论由什么实验和来源支撑。长期版本再扩展为可回溯的学习章节。
 
 ## Existing Patterns
 
-仓库当前为空，没有现有组件、令牌、路由或字体规范。第一版需要建立设计令牌和桌面端组件基线，但不提前绑定具体前端框架。
+当前已有 Vue 3 + TypeScript + Vite + Pinia + Vue Router 前端骨架。App shell、导航、页面标题、工作台、Tutor Agent、实践记录、笔记编辑器和 OAuth 设置页均已存在，但当前内容仍是 K8s Mock，需要在首个场景纵切中替换为 MySQL 案例数据，而不是重新搭建一套页面。
 
 - Typography: 系统中文无衬线 + 等宽代码字体
 - Colors: 深石墨 Chrome、暖灰白画布、钴蓝规则线、浅紫内容面、学习橙、低饱和绿、错误红
@@ -42,24 +46,24 @@
 
 | Component | Status | Notes |
 | --- | --- | --- |
-| App shell | New | 桌面端全局导航和当前计划上下文 |
-| Learning overview | New | 目标、当前里程碑、今日学习和近期进度 |
-| Profile evidence item | New | 展示材料、系统推断、置信度和确认动作 |
-| Diagnostic prompt | New | 根据前序回答逐步呈现的问题与短题 |
-| Plan route | New | 里程碑、学习单元、状态和调整点的连续路径 |
-| Milestone summary | New | 能力目标、完成定义、预计时间和进度 |
-| Learning unit reader | New | 目标、内容、知乎来源、练习与反馈 |
-| Learning workbench | New | 外部编辑器/终端/运行数据入口、AI 追问、知乎知识汇总和学习记录 |
-| Context ingress | New | 手动粘贴或 CLI 自动抓取实践上下文，统一进入记录流 |
-| AI conversation | New | 围绕当前问题追加讨论，并将有价值的回答固定到本次工作台 |
-| Pinned reference | New | 保存常用判断、AI 回答或知乎摘要，支持取消固定 |
-| Practice journal | New | 自动记录参考、问题、错误、观察和学习证据，保留来源 |
-| Article workflow | New | 将实践素材整理成可编辑大纲，支持 AI/人工成文与知乎发布 |
+| App shell | Reuse as-is | Web 全局导航和当前场景上下文 |
+| Learning overview | Modify | 改为场景摘要、当前阶段和开始实践入口 |
+| Profile evidence item | Deferred: phase 6 | 长期画像推断与确认 |
+| Diagnostic prompt | Deferred: phase 6 | 长期动态诊断 |
+| Plan route | Deferred: phase 6 | 数周路线与局部调整 |
+| Milestone summary | Deferred: phase 6 | 长期能力目标与进度 |
+| Learning unit reader | Modify | 以 MySQL 场景阶段、证据和提示替换通用学习步骤 |
+| Learning workbench | Modify | 外部工具入口、AI 追问、知乎知识汇总和学习记录 |
+| Context ingress | Modify | 先支持手动粘贴 SQL、EXPLAIN 和基准结果；CLI 以后接入 |
+| AI conversation | Modify | 围绕当前场景阶段追问，受状态机限制 |
+| Pinned reference | Reuse as-is | 保存常用判断、AI 回答或知乎摘要，支持取消固定 |
+| Practice journal | Modify | 自动记录参考、问题、错误、观察和学习证据，保留来源 |
+| Article workflow | Modify | 将实践素材整理成可编辑大纲，支持 AI/人工成文与知乎预览 |
 | Source drawer | New | 来源标题、摘要、作用、引用和展开阅读 |
 | Checkpoint | New | 预测、解释、案例判断和实践任务 |
-| Adjustment notice | New | 调整原因、范围、前后对比和确认操作 |
-| Weekly review | New | 计划/实际差异、掌握变化和下周建议 |
-| Task branch | New | P1，临时任务与主计划的关联与回归 |
+| Adjustment notice | Deferred: phase 6 | 长期计划调整说明 |
+| Weekly review | Deferred: phase 6 | 长期复盘 |
+| Task branch | Deferred: phase 6 | 临时任务与主计划的关联与回归 |
 
 ## Key Interactions
 
@@ -77,7 +81,7 @@
 
 ## Responsive Behavior
 
-第一版为桌面端系统，基准窗口为 1440x900，最低支持 1024px 宽度。窗口本身包含标题栏、应用侧栏、主学习区和右侧上下文栏。
+第一版为桌面优先 Web 系统，基准窗口为 1440x900，最低支持 1024px 宽度。页面包含应用侧栏、主学习区和右侧上下文栏，不再套用原生窗口标题栏。
 
 - 左侧主导航在窄窗口收为图标栏；
 - 计划路线在中等宽度下保持纵向可读，来源和学习档案转为右侧抽屉；
@@ -98,5 +102,5 @@
 - 移动端完整学习和计划编辑体验；
 - 全部技术领域的完整内容覆盖；
 - 面向生产集群的通用运维控制台；
-- K8s 以外领域的完整任务分支；
+- 多案例、任务分支和数周计划的完整体验；
 - 社区内容发布、课程交易和社交排行。
