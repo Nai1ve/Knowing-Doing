@@ -34,15 +34,26 @@ export class PracticeService {
   confirmPlan(planId: string) { return this.repository.confirmPlan(planId) }
 
   async startPractice(input: { learnerId: string; planUnitId?: string | null; caseId: PracticeRun['caseId'] }) {
+    this.repository.ensureLearner(input.learnerId)
     const lab = await this.scheduler.createRun(input.caseId)
     if (lab.kind === 'queued') {
-      const practice = this.repository.createPracticeRun({ ...input })
-      this.pendingQueues.set(practice.id, lab.ticket.ticketId)
-      return { practice, queue: lab.ticket }
+      try {
+        const practice = this.repository.createPracticeRun({ ...input })
+        this.pendingQueues.set(practice.id, lab.ticket.ticketId)
+        return { practice, queue: lab.ticket }
+      } catch (error) {
+        this.scheduler.cancelTicket(lab.ticket.ticketId)
+        throw error
+      }
     }
-    const practice = this.repository.createPracticeRun({ ...input, labRunId: lab.run.runId })
-    this.repository.appendEvent({ learnerId: input.learnerId, practiceRunId: practice.id, actor: 'system', type: 'case_presented', stage: 'observe', payload: { caseId: input.caseId, fixtureVersion: lab.run.fixtureVersion, environment: 'mysql_lab' } })
-    return { practice: this.repository.getPracticeRun(practice.id), lab: { run: lab.run, accessToken: lab.accessToken } }
+    try {
+      const practice = this.repository.createPracticeRun({ ...input, labRunId: lab.run.runId })
+      this.repository.appendEvent({ learnerId: input.learnerId, practiceRunId: practice.id, actor: 'system', type: 'case_presented', stage: 'observe', payload: { caseId: input.caseId, fixtureVersion: lab.run.fixtureVersion, environment: 'mysql_lab' } })
+      return { practice: this.repository.getPracticeRun(practice.id), lab: { run: lab.run, accessToken: lab.accessToken } }
+    } catch (error) {
+      await this.scheduler.release(lab.run.runId, lab.accessToken).catch(() => undefined)
+      throw error
+    }
   }
 
   snapshot(runId: string): PracticeSnapshot {

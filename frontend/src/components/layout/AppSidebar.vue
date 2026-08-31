@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import { BookOpen, Brain, CircleUserRound, FileText, Flag, Gauge, GitBranch, Settings2 } from 'lucide-vue-next'
+import { BookOpen, CircleUserRound, FileText, Flag, Gauge, GitBranch, Settings2 } from 'lucide-vue-next'
 import { RouterLink, useRoute } from 'vue-router'
 import { usePlanStore } from '@/stores/plan'
 
@@ -10,7 +10,7 @@ const navItems = [
   { name: 'overview', label: '总览', icon: Gauge },
   { name: 'route', label: '整体路线', icon: GitBranch },
   { name: 'lesson', label: 'MySQL 实验', icon: BookOpen },
-  { name: 'notes', label: '学习笔记', icon: FileText },
+  { name: 'writing-materials', label: '写作沉淀', icon: FileText },
   { name: 'review', label: '周复盘', icon: Flag },
 ]
 const utilityItems = [

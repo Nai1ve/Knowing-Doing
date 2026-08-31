@@ -4,7 +4,7 @@ import { assertProductMigrations, openProductDatabase } from './product-migrate.
 import type {
   Artifact, ArtifactKind, ArtifactSourceKind, CaseStage, EventActor, EventType, Intake, LearningPlan,
   Learner, MemoryItem, PathNode, PlanUnit, PracticeEvent, PracticeRun, PracticeSnapshot, SourceItem,
-  StageMemory, VerificationStatus,
+  StageMemory, VerificationStatus, WritingClaim, WritingDocument, WritingMaterial, WritingProject, WritingReviewItem, WritingSection,
 } from './product-types.js'
 
 type Row = Record<string, unknown>
@@ -111,6 +111,42 @@ function sourceFrom(row: Row): SourceItem {
     id: text(row, 'id'), provider: text(row, 'provider') as SourceItem['provider'], externalId: nullableText(row, 'external_id'),
     title: text(row, 'title'), author: nullableText(row, 'author'), url: text(row, 'url'), excerpt: text(row, 'excerpt'),
     query: nullableText(row, 'query'), retrievedAt: text(row, 'retrieved_at'), metadata: json<Record<string, unknown>>(row.metadata_json, {}),
+  }
+}
+
+function writingMaterialFrom(row: Row): WritingMaterial {
+  return {
+    id: text(row, 'id'), projectId: text(row, 'project_id'), category: text(row, 'category') as WritingMaterial['category'],
+    refType: text(row, 'ref_type') as WritingMaterial['refType'], refId: text(row, 'ref_id'), title: text(row, 'title'),
+    excerpt: text(row, 'excerpt'), selected: Number(row.selected) === 1,
+    verificationStatus: text(row, 'verification_status') as WritingMaterial['verificationStatus'], metadata: json<Record<string, unknown>>(row.metadata_json, {}), createdAt: text(row, 'created_at'),
+  }
+}
+
+function writingSectionFrom(row: Row): WritingSection {
+  return {
+    id: text(row, 'id'), documentId: text(row, 'document_id'), sectionKey: text(row, 'section_key'), position: number(row, 'position'),
+    title: text(row, 'title'), content: text(row, 'content'), required: Number(row.required) === 1,
+    status: text(row, 'status') as WritingSection['status'], evidenceRefs: json<string[]>(row.evidence_refs_json, []), sourceRefs: json<string[]>(row.source_refs_json, []), updatedAt: text(row, 'updated_at'),
+  }
+}
+
+function writingClaimFrom(row: Row): WritingClaim {
+  return {
+    id: text(row, 'id'), documentId: text(row, 'document_id'), sectionId: text(row, 'section_id'), text: text(row, 'text'),
+    kind: text(row, 'kind') as WritingClaim['kind'], status: text(row, 'status') as WritingClaim['status'],
+    evidenceRefs: json<string[]>(row.evidence_refs_json, []), sourceRefs: json<string[]>(row.source_refs_json, []), createdAt: text(row, 'created_at'),
+  }
+}
+
+function writingDocumentFrom(row: Row, sections: WritingSection[], claims: WritingClaim[]): WritingDocument {
+  return { id: text(row, 'id'), projectId: text(row, 'project_id'), kind: text(row, 'kind') as WritingDocument['kind'], revision: number(row, 'revision'), status: text(row, 'status') as WritingDocument['status'], title: text(row, 'title'), summary: text(row, 'summary'), sections, claims, createdAt: text(row, 'created_at'), updatedAt: text(row, 'updated_at') }
+}
+
+function writingReviewItemFrom(row: Row): WritingReviewItem {
+  return {
+    id: text(row, 'id'), projectId: text(row, 'project_id'), code: text(row, 'code'), severity: text(row, 'severity') as WritingReviewItem['severity'],
+    status: text(row, 'status') as WritingReviewItem['status'], message: text(row, 'message'), sectionId: nullableText(row, 'section_id'), createdAt: text(row, 'created_at'),
   }
 }
 
@@ -326,6 +362,149 @@ export class ProductRepository {
 
   listTutorTurns(practiceRunId: string) {
     return (this.db.prepare('SELECT id, user_artifact_id, assistant_artifact_id, mode, provider, source_status, created_at FROM tutor_turns WHERE practice_run_id = ? ORDER BY created_at ASC').all(practiceRunId) as Row[]).map((row) => ({ id: text(row, 'id'), userArtifactId: nullableText(row, 'user_artifact_id'), assistantArtifactId: nullableText(row, 'assistant_artifact_id'), mode: text(row, 'mode'), provider: text(row, 'provider'), sourceStatus: text(row, 'source_status'), createdAt: text(row, 'created_at') }))
+  }
+
+  createWritingProject(input: { learnerId: string; practiceRunId: string }): WritingProject {
+    const id = randomUUID(); const now = new Date().toISOString()
+    this.db.prepare(`INSERT OR IGNORE INTO writing_projects(id, learner_id, practice_run_id, article_type, status, evidence_snapshot_json, created_at, updated_at)
+      VALUES (?, ?, ?, 'engineering_practice_review', 'materials_ready', ?, ?, ?)`).run(id, input.learnerId, input.practiceRunId, JSON.stringify({ capturedAt: null, materialIds: [] }), now, now)
+    const row = this.db.prepare('SELECT id FROM writing_projects WHERE practice_run_id = ?').get(input.practiceRunId) as Row
+    return this.getWritingProject(text(row, 'id'))
+  }
+
+  getWritingProjectByRun(practiceRunId: string): WritingProject | null {
+    const row = this.db.prepare('SELECT id FROM writing_projects WHERE practice_run_id = ?').get(practiceRunId) as Row | undefined
+    return row ? this.getWritingProject(text(row, 'id')) : null
+  }
+
+  getWritingProject(projectId: string): WritingProject {
+    const row = this.db.prepare('SELECT * FROM writing_projects WHERE id = ?').get(projectId) as Row | undefined
+    if (!row) throw new Error(`Writing project not found: ${projectId}`)
+    const materials = (this.db.prepare('SELECT * FROM writing_materials WHERE project_id = ? ORDER BY selected DESC, created_at ASC').all(projectId) as Row[]).map(writingMaterialFrom)
+    const documents = this.listWritingDocuments(projectId)
+    const reviewItems = (this.db.prepare('SELECT * FROM writing_review_items WHERE project_id = ? ORDER BY severity DESC, created_at ASC').all(projectId) as Row[]).map(writingReviewItemFrom)
+    return {
+      id: text(row, 'id'), learnerId: text(row, 'learner_id'), practiceRunId: text(row, 'practice_run_id'), articleType: 'engineering_practice_review',
+      status: text(row, 'status') as WritingProject['status'], evidenceSnapshot: json<WritingProject['evidenceSnapshot']>(row.evidence_snapshot_json, { capturedAt: null, materialIds: [] }),
+      materials, documents, reviewItems, createdAt: text(row, 'created_at'), updatedAt: text(row, 'updated_at'),
+    }
+  }
+
+  upsertWritingMaterial(input: Omit<WritingMaterial, 'id' | 'createdAt' | 'projectId'> & { projectId: string }): WritingMaterial {
+    const id = randomUUID(); const now = new Date().toISOString()
+    this.db.prepare(`INSERT INTO writing_materials(id, project_id, category, ref_type, ref_id, title, excerpt, selected, verification_status, metadata_json, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(project_id, ref_type, ref_id) DO UPDATE SET category = excluded.category, title = excluded.title, excerpt = excluded.excerpt, verification_status = excluded.verification_status, metadata_json = excluded.metadata_json`).run(
+      id, input.projectId, input.category, input.refType, input.refId, input.title, input.excerpt, input.selected ? 1 : 0, input.verificationStatus, JSON.stringify(input.metadata), now,
+    )
+    return writingMaterialFrom(this.db.prepare('SELECT * FROM writing_materials WHERE project_id = ? AND ref_type = ? AND ref_id = ?').get(input.projectId, input.refType, input.refId) as Row)
+  }
+
+  updateWritingMaterial(projectId: string, materialId: string, update: { selected?: boolean; editorialNote?: string | null }): WritingMaterial {
+    const fields: string[] = []; const values: unknown[] = []
+    if (update.selected !== undefined) { fields.push('selected = ?'); values.push(update.selected ? 1 : 0) }
+    if (update.editorialNote !== undefined) {
+      const row = this.db.prepare('SELECT metadata_json FROM writing_materials WHERE id = ? AND project_id = ?').get(materialId, projectId) as Row | undefined
+      if (!row) throw new Error(`Writing material not found: ${materialId}`)
+      const metadata = json<Record<string, unknown>>(row.metadata_json, {}); metadata.editorialNote = update.editorialNote
+      fields.push('metadata_json = ?'); values.push(JSON.stringify(metadata))
+    }
+    if (fields.length > 0) this.db.prepare(`UPDATE writing_materials SET ${fields.join(', ')} WHERE id = ? AND project_id = ?`).run(...values, materialId, projectId)
+    const row = this.db.prepare('SELECT * FROM writing_materials WHERE id = ? AND project_id = ?').get(materialId, projectId) as Row | undefined
+    if (!row) throw new Error(`Writing material not found: ${materialId}`)
+    return writingMaterialFrom(row)
+  }
+
+  updateWritingSnapshot(projectId: string, materialIds: string[], status: WritingProject['status']): void {
+    this.db.prepare('UPDATE writing_projects SET evidence_snapshot_json = ?, status = ?, updated_at = ? WHERE id = ?').run(JSON.stringify({ capturedAt: new Date().toISOString(), materialIds }), status, new Date().toISOString(), projectId)
+  }
+
+  createWritingDocument(input: {
+    projectId: string
+    kind: WritingDocument['kind']
+    status: WritingDocument['status']
+    title: string
+    summary: string
+    sections: Array<Pick<WritingSection, 'sectionKey' | 'position' | 'title' | 'content' | 'required' | 'status' | 'evidenceRefs' | 'sourceRefs'>>
+    claims: Array<{ sectionKey: string; text: string; kind: WritingClaim['kind']; status: WritingClaim['status']; evidenceRefs: string[]; sourceRefs: string[] }>
+  }): WritingDocument {
+    const documentId = randomUUID(); const now = new Date().toISOString()
+    const sectionIds = new Map<string, string>()
+    const create = this.db.transaction(() => {
+      const current = this.db.prepare('SELECT COALESCE(MAX(revision), 0) AS revision FROM writing_documents WHERE project_id = ? AND kind = ?').get(input.projectId, input.kind) as Row
+      const revision = number(current, 'revision') + 1
+      this.db.prepare(`INSERT INTO writing_documents(id, project_id, kind, revision, status, title, summary, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(documentId, input.projectId, input.kind, revision, input.status, input.title, input.summary, now, now)
+      const insertSection = this.db.prepare(`INSERT INTO writing_sections(id, document_id, section_key, position, title, content, required, status, evidence_refs_json, source_refs_json, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      for (const section of input.sections) {
+        const sectionId = randomUUID(); sectionIds.set(section.sectionKey, sectionId)
+        insertSection.run(sectionId, documentId, section.sectionKey, section.position, section.title, section.content, section.required ? 1 : 0, section.status, JSON.stringify(section.evidenceRefs), JSON.stringify(section.sourceRefs), now)
+      }
+      const insertClaim = this.db.prepare(`INSERT INTO writing_claims(id, document_id, section_id, text, kind, status, evidence_refs_json, source_refs_json, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      for (const claim of input.claims) {
+        const sectionId = sectionIds.get(claim.sectionKey)
+        if (!sectionId) continue
+        insertClaim.run(randomUUID(), documentId, sectionId, claim.text, claim.kind, claim.status, JSON.stringify(claim.evidenceRefs), JSON.stringify(claim.sourceRefs), now)
+      }
+    })
+    create.immediate()
+    return this.getWritingDocument(documentId)
+  }
+
+  getWritingDocument(documentId: string): WritingDocument {
+    const row = this.db.prepare('SELECT * FROM writing_documents WHERE id = ?').get(documentId) as Row | undefined
+    if (!row) throw new Error(`Writing document not found: ${documentId}`)
+    const sections = (this.db.prepare('SELECT * FROM writing_sections WHERE document_id = ? ORDER BY position ASC').all(documentId) as Row[]).map(writingSectionFrom)
+    const claims = (this.db.prepare('SELECT * FROM writing_claims WHERE document_id = ? ORDER BY created_at ASC').all(documentId) as Row[]).map(writingClaimFrom)
+    return writingDocumentFrom(row, sections, claims)
+  }
+
+  listWritingDocuments(projectId: string): WritingDocument[] {
+    const rows = this.db.prepare(`SELECT document.* FROM writing_documents document
+      INNER JOIN (SELECT kind, MAX(revision) AS revision FROM writing_documents WHERE project_id = ? GROUP BY kind) latest
+      ON latest.kind = document.kind AND latest.revision = document.revision
+      WHERE document.project_id = ? ORDER BY document.kind ASC`).all(projectId, projectId) as Row[]
+    if (rows.length === 0) return []
+    const ids = rows.map((row) => text(row, 'id')); const placeholders = ids.map(() => '?').join(', ')
+    const sectionRows = this.db.prepare(`SELECT * FROM writing_sections WHERE document_id IN (${placeholders}) ORDER BY position ASC`).all(...ids) as Row[]
+    const claimRows = this.db.prepare(`SELECT * FROM writing_claims WHERE document_id IN (${placeholders}) ORDER BY created_at ASC`).all(...ids) as Row[]
+    return rows.map((row) => {
+      const documentId = text(row, 'id')
+      const sections = sectionRows.filter((section) => text(section, 'document_id') === documentId).map(writingSectionFrom)
+      const claims = claimRows.filter((claim) => text(claim, 'document_id') === documentId).map(writingClaimFrom)
+      return writingDocumentFrom(row, sections, claims)
+    })
+  }
+
+  updateWritingSection(projectId: string, documentId: string, sectionId: string, expectedRevision: number, content: string): WritingDocument {
+    const result = this.db.transaction(() => {
+      const document = this.db.prepare('SELECT id FROM writing_documents WHERE id = ? AND project_id = ?').get(documentId, projectId) as Row | undefined
+      if (!document) throw new Error('WRITING_DOCUMENT_NOT_FOUND')
+      const updated = this.db.prepare('UPDATE writing_documents SET revision = revision + 1, status = CASE WHEN kind = \'article\' THEN \'needs_review\' ELSE status END, updated_at = ? WHERE id = ? AND project_id = ? AND revision = ?').run(new Date().toISOString(), documentId, projectId, expectedRevision)
+      if (updated.changes === 0) throw new Error('WRITING_REVISION_CONFLICT')
+      const section = this.db.prepare('UPDATE writing_sections SET content = ?, status = \'confirmed\', updated_at = ? WHERE id = ? AND document_id = ?').run(content, new Date().toISOString(), sectionId, documentId)
+      if (section.changes === 0) throw new Error('WRITING_SECTION_NOT_FOUND')
+      this.db.prepare("UPDATE writing_claims SET status = 'needs_review' WHERE document_id = ? AND section_id = ?").run(documentId, sectionId)
+    })
+    result()
+    return this.getWritingDocument(documentId)
+  }
+
+  replaceWritingReviewItems(projectId: string, items: Array<Omit<WritingReviewItem, 'id' | 'projectId' | 'createdAt'>>): WritingReviewItem[] {
+    const now = new Date().toISOString()
+    this.db.transaction(() => {
+      this.db.prepare('DELETE FROM writing_review_items WHERE project_id = ?').run(projectId)
+      const insert = this.db.prepare(`INSERT INTO writing_review_items(id, project_id, code, severity, status, message, section_id, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
+      for (const item of items) insert.run(randomUUID(), projectId, item.code, item.severity, item.status, item.message, item.sectionId, now)
+    })()
+    return (this.db.prepare('SELECT * FROM writing_review_items WHERE project_id = ? ORDER BY severity DESC, created_at ASC').all(projectId) as Row[]).map(writingReviewItemFrom)
+  }
+
+  updateWritingStatus(projectId: string, status: WritingProject['status']): void {
+    this.db.prepare('UPDATE writing_projects SET status = ?, updated_at = ? WHERE id = ?').run(status, new Date().toISOString(), projectId)
   }
 
   snapshot(practiceRunId: string): PracticeSnapshot {

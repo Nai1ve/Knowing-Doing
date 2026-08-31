@@ -35,6 +35,7 @@ export const usePracticeStore = defineStore('practice', () => {
     try {
       const result: ProductPracticeStart = await startProductPractice(caseId, planUnitId)
       run.value = result.practice
+      window.localStorage.setItem('zhixing.active.practice.id', result.practice.id)
       if (result.lab) {
         const labStore = useLabStore()
         await labStore.adoptRun(result.lab.run, result.lab.accessToken)

@@ -1,6 +1,6 @@
 import { ApiError, apiClient } from './client'
 import type { LabCaseId, LabExecutionResult } from '@/types/lab'
-import type { ProductArtifact, ProductIntake, ProductLabAccess, ProductLabExecution, ProductMemory, ProductPlan, ProductPracticeRun, ProductPracticeStart, ProductSnapshot, ProductTutorResponse } from '@/types/product'
+import type { ProductArtifact, ProductIntake, ProductLabAccess, ProductLabExecution, ProductMemory, ProductPlan, ProductPracticeRun, ProductPracticeStart, ProductSnapshot, ProductTutorResponse, ProductWritingProject } from '@/types/product'
 
 const learnerStorageKey = 'zhixing.learner.id'
 function learnerId(): string {
@@ -35,3 +35,14 @@ export function generateProductOutline(runId: string): Promise<{ artifact: Produ
 export function generateProductArticle(runId: string, outline?: string): Promise<{ artifact: ProductArtifact; snapshot: ProductSnapshot }> { return product(`/practice-runs/${runId}/article-draft`, { method: 'POST', body: JSON.stringify({ outline }) }) }
 export function getProductMemories(): Promise<ProductMemory[]> { return product('/memories') }
 export function updateProductMemory(memoryId: string, input: { statement?: string; userNote?: string | null; status?: string }): Promise<ProductMemory> { return product(`/memories/${memoryId}`, { method: 'PATCH', body: JSON.stringify(input) }) }
+export function initializeWriting(runId: string): Promise<ProductWritingProject> { return product(`/practice-runs/${runId}/writing`, { method: 'POST' }) }
+export function getWriting(runId: string): Promise<ProductWritingProject> { return product(`/practice-runs/${runId}/writing`) }
+export function selectWritingMaterial(runId: string, materialId: string, selected: boolean, editorialNote?: string | null): Promise<ProductWritingProject> {
+  return product(`/practice-runs/${runId}/writing/materials/${materialId}`, { method: 'PATCH', body: JSON.stringify({ selected, editorialNote }) })
+}
+export function generateWritingOutline(runId: string): Promise<ProductWritingProject> { return product(`/practice-runs/${runId}/writing/outline`, { method: 'POST' }) }
+export function generateWritingArticle(runId: string): Promise<ProductWritingProject> { return product(`/practice-runs/${runId}/writing/article`, { method: 'POST' }) }
+export function reviewWriting(runId: string): Promise<ProductWritingProject> { return product(`/practice-runs/${runId}/writing/review`, { method: 'POST' }) }
+export function editWritingSection(runId: string, documentId: string, sectionId: string, revision: number, content: string): Promise<ProductWritingProject> {
+  return product(`/practice-runs/${runId}/writing/documents/${documentId}/sections/${sectionId}`, { method: 'PATCH', body: JSON.stringify({ revision, content }) })
+}

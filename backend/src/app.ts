@@ -9,6 +9,7 @@ import { LabScheduler } from './scheduler.js'
 import { validateStatement } from './sql-policy.js'
 import { verifyLabToken } from './token.js'
 import { PracticeService, ProductNotFoundError } from './practice-service.js'
+import { WritingConflictError, WritingNotFoundError, WritingService } from './writing-service.js'
 
 type Body = Record<string, unknown>
 
@@ -39,6 +40,7 @@ export interface AppDependencies {
   config: LabConfig
   store?: LabStore
   practiceServiceFactory?: (scheduler: LabScheduler) => PracticeService
+  writingServiceFactory?: () => WritingService
 }
 
 export function buildApp(dependencies: AppDependencies): { app: FastifyInstance; scheduler: LabScheduler } {
@@ -46,9 +48,11 @@ export function buildApp(dependencies: AppDependencies): { app: FastifyInstance;
   const scheduler = new LabScheduler(store, dependencies.config)
   const app = Fastify({ logger: false })
 
-  void app.register(cors, { origin: dependencies.config.corsOrigin })
+  void app.register(cors, { origin: dependencies.config.corsOrigin, methods: ['GET', 'HEAD', 'POST', 'PATCH', 'DELETE', 'OPTIONS'] })
   app.setErrorHandler((error, _request, reply) => {
-    if (error instanceof ProductNotFoundError) return reply.code(404).send({ error: { code: 'not_found', message: error.message, retryable: false } })
+    if (process.env.NODE_ENV !== 'production') console.error('[zhixing-api]', error instanceof Error ? `${error.name}: ${error.message}` : error)
+    if (error instanceof ProductNotFoundError || error instanceof WritingNotFoundError) return reply.code(404).send({ error: { code: 'not_found', message: error.message, retryable: false } })
+    if (error instanceof WritingConflictError) return reply.code(409).send({ error: { code: 'writing_conflict', message: error.message, retryable: false } })
     const response = errorResponse(error)
     reply.code(response.statusCode).send(response.body)
   })
@@ -132,7 +136,7 @@ export function buildApp(dependencies: AppDependencies): { app: FastifyInstance;
     throw new LabError('replay_not_ready', '当前案例尚未准备可用的回放快照', 503, true, { caseId, snapshotId: String((request.params as { snapshotId: string }).snapshotId) })
   })
 
-  if (dependencies.practiceServiceFactory) registerProductRoutes(app, dependencies.practiceServiceFactory(scheduler))
+  if (dependencies.practiceServiceFactory) registerProductRoutes(app, dependencies.practiceServiceFactory(scheduler), dependencies.writingServiceFactory?.())
 
   return { app, scheduler }
 }
@@ -155,7 +159,7 @@ function optionalString(body: Body, key: string): string | null | undefined {
 
 function productRunId(request: FastifyRequest): string { return String((request.params as { runId: string }).runId) }
 
-function registerProductRoutes(app: FastifyInstance, service: PracticeService): void {
+function registerProductRoutes(app: FastifyInstance, service: PracticeService, writingService?: WritingService): void {
   app.post('/api/product/intakes', async (request, reply) => {
     const body = productBody(request); const goal = stringField(body, 'goal')
     const weeklyMinutes = body.weeklyMinutes == null ? null : numberField(body, 'weeklyMinutes')
@@ -201,6 +205,7 @@ function registerProductRoutes(app: FastifyInstance, service: PracticeService): 
     const outline = optionalString(productBody(request), 'outline')
     reply.code(201).send(service.generateArticleDraft(productRunId(request), outline ?? undefined))
   })
+  if (writingService) registerWritingRoutes(app, writingService)
   app.get('/api/product/memories', async (request, reply) => reply.send(service.memories(learnerId(request))))
   app.patch('/api/product/memories/:memoryId', async (request, reply) => {
     const body = productBody(request); const update: { statement?: string; userNote?: string | null; status?: 'active' | 'corrected' | 'deleted' } = {}
@@ -212,5 +217,25 @@ function registerProductRoutes(app: FastifyInstance, service: PracticeService): 
       update.status = status as 'active' | 'corrected' | 'deleted'
     }
     reply.send(service.updateMemory(learnerId(request), String((request.params as { memoryId: string }).memoryId), update))
+  })
+}
+
+function registerWritingRoutes(app: FastifyInstance, service: WritingService): void {
+  app.post('/api/product/practice-runs/:runId/writing', async (request, reply) => reply.code(201).send(service.initialize(productRunId(request))))
+  app.get('/api/product/practice-runs/:runId/writing', async (request, reply) => reply.send(service.getExisting(productRunId(request))))
+  app.patch('/api/product/practice-runs/:runId/writing/materials/:materialId', async (request, reply) => {
+    const body = productBody(request); const selected = body.selected
+    if (typeof selected !== 'boolean') throw new LabError('invalid_request', 'selected 必须是布尔值', 400)
+    const note = body.editorialNote == null ? undefined : optionalString(body, 'editorialNote')
+    reply.send(service.selectMaterial(productRunId(request), String((request.params as { materialId: string }).materialId), selected, note))
+  })
+  app.post('/api/product/practice-runs/:runId/writing/outline', async (request, reply) => reply.code(201).send(service.generateOutline(productRunId(request))))
+  app.post('/api/product/practice-runs/:runId/writing/article', async (request, reply) => reply.code(201).send(service.generateArticle(productRunId(request))))
+  app.post('/api/product/practice-runs/:runId/writing/review', async (request, reply) => reply.send(service.review(productRunId(request))))
+  app.patch('/api/product/practice-runs/:runId/writing/documents/:documentId/sections/:sectionId', async (request, reply) => {
+    const body = productBody(request)
+    if (typeof body.content !== 'string') throw new LabError('invalid_request', 'content 必须是字符串', 400)
+    const revision = numberField(body, 'revision')
+    reply.send(service.editSection(productRunId(request), String((request.params as { documentId: string }).documentId), String((request.params as { sectionId: string }).sectionId), revision, body.content))
   })
 }

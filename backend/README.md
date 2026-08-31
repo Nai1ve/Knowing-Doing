@@ -66,7 +66,10 @@ npm run build
 npm start
 ```
 
-开发模式使用 `npm run dev`。构建会把 TypeScript 输出到 `dist`；reset 脚本
+开发模式使用 `npm run dev`。如果默认的 `LAB_API_PORT=3000` 已被其他服务占用，
+可以临时使用 `LAB_API_PORT=3001 npm run dev`；同时启动前端时设置
+`VITE_API_PROXY_TARGET=http://127.0.0.1:3001 npm run dev`，让 Vite 代理到同一个 API。
+构建会把 TypeScript 输出到 `dist`；reset 脚本
 运行时优先读取构建目录外的 `fixtures`，因此不会依赖应用启动时生成文件。
 
 ## HTTP 调用示例

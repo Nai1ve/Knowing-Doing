@@ -15,6 +15,15 @@ export type EventType =
   | 'memory_promoted'
   | 'note_outline_generated'
   | 'article_draft_generated'
+  | 'writing_material_selected'
+  | 'writing_section_edited'
+
+export type WritingStatus = 'materials_ready' | 'outline_review' | 'article_review' | 'ready_for_preview'
+export type WritingDocumentKind = 'outline' | 'article'
+export type WritingDocumentStatus = 'draft' | 'generated' | 'needs_review' | 'confirmed'
+export type WritingMaterialCategory = 'context' | 'symptom' | 'hypothesis' | 'evidence' | 'attempt' | 'solution' | 'source' | 'reflection'
+export type WritingClaimKind = 'observed' | 'inferred' | 'source_based' | 'reflection' | 'recommendation'
+export type WritingClaimStatus = 'supported' | 'needs_review' | 'unsupported'
 
 export type ArtifactKind = 'user_message' | 'sql' | 'explain' | 'benchmark' | 'result_set' | 'error' | 'external_text' | 'tutor_reply' | 'source_excerpt' | 'note_outline' | 'article_draft'
 export type ArtifactSourceKind = 'user' | 'lab' | 'tutor' | 'zhihu' | 'global_search' | 'system'
@@ -180,4 +189,83 @@ export interface PracticeSnapshot {
   stageMemories: StageMemory[]
   memories: MemoryItem[]
   tutorTurns: Array<{ id: string; userArtifactId: string | null; assistantArtifactId: string | null; mode: string; provider: string; sourceStatus: string; createdAt: string }>
+}
+
+export interface WritingMaterial {
+  id: string
+  projectId: string
+  category: WritingMaterialCategory
+  refType: 'artifact' | 'source' | 'event'
+  refId: string
+  title: string
+  excerpt: string
+  selected: boolean
+  verificationStatus: VerificationStatus | 'source_verified'
+  metadata: Record<string, unknown>
+  createdAt: string
+}
+
+export interface WritingSection {
+  id: string
+  documentId: string
+  sectionKey: string
+  position: number
+  title: string
+  content: string
+  required: boolean
+  status: 'empty' | 'generated' | 'confirmed'
+  evidenceRefs: string[]
+  sourceRefs: string[]
+  updatedAt: string
+}
+
+export interface WritingClaim {
+  id: string
+  documentId: string
+  sectionId: string
+  text: string
+  kind: WritingClaimKind
+  status: WritingClaimStatus
+  evidenceRefs: string[]
+  sourceRefs: string[]
+  createdAt: string
+}
+
+export interface WritingReviewItem {
+  id: string
+  projectId: string
+  code: string
+  severity: 'info' | 'warning' | 'blocking'
+  status: 'open' | 'resolved' | 'dismissed'
+  message: string
+  sectionId: string | null
+  createdAt: string
+}
+
+export interface WritingDocument {
+  id: string
+  projectId: string
+  kind: WritingDocumentKind
+  revision: number
+  status: WritingDocumentStatus
+  title: string
+  summary: string
+  sections: WritingSection[]
+  claims: WritingClaim[]
+  createdAt: string
+  updatedAt: string
+}
+
+export interface WritingProject {
+  id: string
+  learnerId: string
+  practiceRunId: string
+  articleType: 'engineering_practice_review'
+  status: WritingStatus
+  evidenceSnapshot: { capturedAt: string | null; materialIds: string[] }
+  materials: WritingMaterial[]
+  documents: WritingDocument[]
+  reviewItems: WritingReviewItem[]
+  createdAt: string
+  updatedAt: string
 }

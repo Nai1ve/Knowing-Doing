@@ -4,10 +4,11 @@ import { loadConfig } from './config.js'
 import { ProductRepository } from './product-repository.js'
 import { PracticeService } from './practice-service.js'
 import { TutorEngine } from './tutor.js'
+import { WritingService } from './writing-service.js'
 
 const config = loadConfig()
 const productRepository = new ProductRepository(config.productDbPath)
-const { app, scheduler } = buildApp({ config, practiceServiceFactory: (labScheduler) => new PracticeService(productRepository, labScheduler, new TutorEngine(config)) })
+const { app, scheduler } = buildApp({ config, practiceServiceFactory: (labScheduler) => new PracticeService(productRepository, labScheduler, new TutorEngine(config)), writingServiceFactory: () => new WritingService(productRepository) })
 
 try {
   await app.listen({ host: config.apiHost, port: config.apiPort })

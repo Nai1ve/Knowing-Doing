@@ -62,7 +62,7 @@ export function loadConfig(): LabConfig {
     modelBaseUrl: process.env.ZHIXING_MODEL_BASE_URL ?? '',
     modelApiKey: process.env.ZHIXING_MODEL_API_KEY ?? '',
     modelName: process.env.ZHIXING_MODEL_NAME ?? 'default',
-    modelTimeoutMs: numberEnv('ZHIXING_MODEL_TIMEOUT_MS', 8_000),
+    modelTimeoutMs: numberEnv('ZHIXING_MODEL_TIMEOUT_MS', 5 * 60 * 1000),
     caseIds: [
       'mysql-order-list-index-001',
       'mysql-deadlock-lock-order-001',

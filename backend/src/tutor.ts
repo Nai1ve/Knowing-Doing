@@ -35,11 +35,12 @@ export class TutorEngine {
   async respond(run: PracticeRun, context: TutorContext, message: string): Promise<TutorResponse> {
     if (!this.config.modelBaseUrl || !this.config.modelApiKey) return fallback(run, context, message)
     const controller = new AbortController(); const timeout = setTimeout(() => controller.abort(), this.config.modelTimeoutMs)
+    const startedAt = Date.now()
     try {
       const response = await fetch(modelUrl(this.config.modelBaseUrl), {
         method: 'POST', signal: controller.signal, headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${this.config.modelApiKey}` },
         body: JSON.stringify({ model: this.config.modelName, temperature: 0.2, response_format: { type: 'json_object' }, messages: [
-          { role: 'system', content: '你是知行 Tutor。只基于给定上下文回答。不得伪造知乎来源、实验结果或推进状态。输出严格 JSON，字段为 response,intent,currentGap,nextQuestion,suggestedActions,evidenceRefs,sourceRefs。' },
+          { role: 'system', content: '你是知行 Tutor。只基于给定上下文回答。不得伪造知乎来源、实验结果或推进状态。输出严格 JSON，且只能包含字段 response,intent,currentGap,nextQuestion,suggestedActions,evidenceRefs,sourceRefs。intent 只能使用以下值之一：clarify（澄清现象或观察）、triage（初步分流）、evidence_request（要求补充证据）、attempt_review（复盘一次尝试）、tradeoff（比较方案代价）、reflect（总结反思）。不要使用其他 intent 名称，例如 observe_slow_log、guide 或 diagnose；如果无法确定，使用 clarify。sourceRefs 必须是给定 availableSourceIds 中的 sourceId，不能编造来源。' },
           { role: 'user', content: JSON.stringify({ message, context }) },
         ] }),
       })
@@ -51,7 +52,19 @@ export class TutorEngine {
       const validated = tutorResponseSchema.parse(parsed)
       const sourceRefs = validated.sourceRefs.filter((source) => context.availableSourceIds.includes(source.sourceId))
       return { ...validated, sourceRefs, provider: 'model', sourceStatus: sourceRefs.length > 0 ? 'retrieved' : 'general_model_knowledge' }
-    } catch {
+    } catch (error) {
+      const failure = error instanceof Error
+        ? { type: error.name === 'AbortError' ? 'timeout' : error.name, message: error.message }
+        : { type: 'unknown', message: String(error) }
+      console.warn('[zhixing-tutor] model fallback', {
+        runId: run.id,
+        caseId: run.caseId,
+        stage: run.stage,
+        model: this.config.modelName,
+        elapsedMs: Date.now() - startedAt,
+        failureType: failure.type,
+        failureMessage: failure.message,
+      })
       return fallback(run, context, message)
     } finally {
       clearTimeout(timeout)
