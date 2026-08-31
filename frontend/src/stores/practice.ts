@@ -41,26 +41,20 @@ export const usePracticeStore = defineStore('practice', () => {
     error.value = null
     try {
       const data = await getProductSnapshot(practiceId)
+      hydrate(data)
       const labStore = useLabStore()
       const access = await getProductLabAccess(practiceId)
       if (access.status === 'ready' && access.run && access.accessToken) {
-        hydrate(data)
         await labStore.adoptRun(access.run, access.accessToken)
         return
       }
       if (access.status === 'waiting') {
-        hydrate(data)
         void pollLabAccess(practiceId)
         return
       }
-      window.localStorage.removeItem(activePracticeKey)
       window.localStorage.setItem(lastPracticeKey, practiceId)
-      run.value = null
-      snapshot.value = null
-      messages.value = []
-      lastTutor.value = null
       labStore.clear()
-      error.value = '上次实践的 Lab 运行已结束。历史记录仍保留在笔记中，请重新启动实验继续练习。'
+      error.value = '上次实践的 Lab 运行已结束。历史记录已恢复为只读状态，可重新启动实验继续练习。'
     } catch (cause) {
       if (cause instanceof ApiError && [401, 403, 404, 410].includes(cause.status)) {
         window.localStorage.removeItem(activePracticeKey)

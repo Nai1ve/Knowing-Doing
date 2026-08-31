@@ -101,7 +101,7 @@ function askTutor(message: string) { void practiceStore.ask(message) }
 
           <section v-if="practiceStore.error" class="lab-error" role="alert">
             <AlertCircle :size="14" aria-hidden="true" />
-            <div><strong>实践记录未完成</strong><p>{{ practiceStore.error }}</p></div>
+            <div><strong>当前实践状态</strong><p>{{ practiceStore.error }}</p></div>
           </section>
 
           <section class="case-facts" aria-labelledby="case-facts-title">
