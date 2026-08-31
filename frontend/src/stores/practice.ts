@@ -1,17 +1,21 @@
 import { computed, ref } from 'vue'
 import { defineStore } from 'pinia'
+import { ApiError } from '@/api/client'
 import { executeProductLab, getProductLabAccess, getProductSnapshot, sendProductTutor, startProductPractice, submitProductArtifact } from '@/api/productService'
 import type { LabCaseId, LabExecutionResult } from '@/types/lab'
 import type { ProductPracticeRun, ProductPracticeStart, ProductSnapshot, ProductTutorMessage, ProductTutorResponse } from '@/types/product'
 import { useLabStore } from './lab'
 
 export const usePracticeStore = defineStore('practice', () => {
+  const activePracticeKey = 'zhixing.active.practice.id'
+  const lastPracticeKey = 'zhixing.last.practice.id'
   const run = ref<ProductPracticeRun | null>(null)
   const snapshot = ref<ProductSnapshot | null>(null)
   const messages = ref<ProductTutorMessage[]>([])
   const lastTutor = ref<ProductTutorResponse | null>(null)
   const starting = ref(false)
   const tutorLoading = ref(false)
+  const restoring = ref(false)
   const error = ref<string | null>(null)
   let queueTimer: number | null = null
   const currentGap = computed(() => snapshot.value?.stageMemories.find((memory) => memory.stage === run.value?.stage)?.memory.currentGap as string | undefined)
@@ -29,6 +33,58 @@ export const usePracticeStore = defineStore('practice', () => {
     messages.value = nextMessages
   }
 
+  async function restoreActive() {
+    if (restoring.value || typeof window === 'undefined') return
+    const practiceId = window.localStorage.getItem(activePracticeKey)
+    if (!practiceId) return
+    restoring.value = true
+    error.value = null
+    try {
+      const data = await getProductSnapshot(practiceId)
+      const labStore = useLabStore()
+      const access = await getProductLabAccess(practiceId)
+      if (access.status === 'ready' && access.run && access.accessToken) {
+        hydrate(data)
+        await labStore.adoptRun(access.run, access.accessToken)
+        return
+      }
+      if (access.status === 'waiting') {
+        hydrate(data)
+        void pollLabAccess(practiceId)
+        return
+      }
+      window.localStorage.removeItem(activePracticeKey)
+      window.localStorage.setItem(lastPracticeKey, practiceId)
+      run.value = null
+      snapshot.value = null
+      messages.value = []
+      lastTutor.value = null
+      labStore.clear()
+      error.value = '上次实践的 Lab 运行已结束。历史记录仍保留在笔记中，请重新启动实验继续练习。'
+    } catch (cause) {
+      if (cause instanceof ApiError && [401, 403, 404, 410].includes(cause.status)) {
+        window.localStorage.removeItem(activePracticeKey)
+        run.value = null
+        snapshot.value = null
+        messages.value = []
+      }
+      error.value = cause instanceof Error ? cause.message : '无法恢复当前实践'
+    } finally {
+      restoring.value = false
+    }
+  }
+
+  async function restoreRecord() {
+    if (run.value || typeof window === 'undefined') return
+    const practiceId = window.localStorage.getItem(lastPracticeKey)
+    if (!practiceId) return
+    try {
+      hydrate(await getProductSnapshot(practiceId))
+    } catch {
+      window.localStorage.removeItem(lastPracticeKey)
+    }
+  }
+
   async function start(caseId: LabCaseId, planUnitId?: string) {
     if (starting.value) return
     starting.value = true; error.value = null
@@ -36,6 +92,7 @@ export const usePracticeStore = defineStore('practice', () => {
       const result: ProductPracticeStart = await startProductPractice(caseId, planUnitId)
       run.value = result.practice
       window.localStorage.setItem('zhixing.active.practice.id', result.practice.id)
+      window.localStorage.setItem(lastPracticeKey, result.practice.id)
       if (result.lab) {
         const labStore = useLabStore()
         await labStore.adoptRun(result.lab.run, result.lab.accessToken)
@@ -79,16 +136,38 @@ export const usePracticeStore = defineStore('practice', () => {
 
   async function execute() {
     const labStore = useLabStore()
-    if (!run.value || !labStore.run || !labStore.accessToken || !labStore.sessionId) return
+    if (!run.value) {
+      error.value = '请先启动一个实践案例，再执行 SQL。'
+      return
+    }
+    if (!labStore.run || !labStore.accessToken) {
+      error.value = '当前实践没有可执行的 Lab 运行，请重新启动实验。'
+      return
+    }
+    if (!labStore.sessionId || labStore.activeSession?.status !== 'open') {
+      error.value = 'SQL 会话尚未就绪，请稍后重试或重新启动实验。'
+      return
+    }
     labStore.executing = true; error.value = null
     try {
       const result = await executeProductLab(run.value.id, labStore.accessToken, { revision: labStore.run.revision, sessionId: labStore.sessionId, statement: labStore.sql, clientRequestId: crypto.randomUUID() })
       labStore.latestResult = result.execution as LabExecutionResult
       run.value = result.run; hydrate(result.snapshot)
-    } catch (cause) { error.value = cause instanceof Error ? cause.message : 'Lab 执行失败' } finally { labStore.executing = false }
+    } catch (cause) {
+      if (cause instanceof ApiError && [422, 504].includes(cause.status)) {
+        const envelope = cause.payload && typeof cause.payload === 'object' && 'error' in cause.payload
+          ? (cause.payload as { error?: { code?: unknown; message?: unknown; retryable?: unknown } }).error
+          : undefined
+        if (typeof envelope?.code === 'string' && typeof envelope.message === 'string') {
+          labStore.latestResult = { kind: 'request_error', status: cause.status === 504 ? 'timed_out' : 'rejected', statusCode: cause.status, error: { code: envelope.code, message: envelope.message, retryable: envelope.retryable === true } }
+        }
+      }
+      if (cause instanceof ApiError && [401, 403, 404, 409, 410].includes(cause.status)) labStore.clear()
+      error.value = cause instanceof Error ? cause.message : 'Lab 执行失败'
+    } finally { labStore.executing = false }
   }
 
   async function addExternal(content: string) { if (run.value && content.trim()) { await submitProductArtifact(run.value.id, content); snapshot.value = await getProductSnapshot(run.value.id); hydrate(snapshot.value) } }
-  function clear() { if (queueTimer !== null) window.clearTimeout(queueTimer); queueTimer = null; run.value = null; snapshot.value = null; messages.value = []; error.value = null }
-  return { run, snapshot, messages, lastTutor, starting, tutorLoading, error, currentGap, nextQuestion, start, ask, execute, addExternal, clear }
+  function clear() { if (queueTimer !== null) window.clearTimeout(queueTimer); queueTimer = null; run.value = null; snapshot.value = null; messages.value = []; lastTutor.value = null; error.value = null; if (typeof window !== 'undefined') window.localStorage.removeItem(activePracticeKey) }
+  return { run, snapshot, messages, lastTutor, starting, restoring, tutorLoading, error, currentGap, nextQuestion, start, restoreActive, restoreRecord, ask, execute, addExternal, clear }
 })

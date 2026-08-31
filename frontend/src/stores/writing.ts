@@ -4,6 +4,7 @@ import { editWritingSection, generateWritingArticle, generateWritingOutline, get
 import type { ProductWritingDocument, ProductWritingProject } from '@/types/product'
 
 const activePracticeKey = 'zhixing.active.practice.id'
+const lastPracticeKey = 'zhixing.last.practice.id'
 
 export const useWritingStore = defineStore('writing', () => {
   const project = ref<ProductWritingProject | null>(null)
@@ -22,7 +23,7 @@ export const useWritingStore = defineStore('writing', () => {
   function activeRunId(): string | null {
     if (runId.value) return runId.value
     if (typeof window === 'undefined') return null
-    return window.localStorage.getItem(activePracticeKey)
+    return window.localStorage.getItem(activePracticeKey) ?? window.localStorage.getItem(lastPracticeKey)
   }
 
   async function initialize(preferredRunId?: string | null) {

@@ -12,8 +12,13 @@ const labStore = useLabStore()
 const practiceStore = usePracticeStore()
 const selectedFixture = computed(() => labStore.health?.fixtures[labStore.selectedCaseId])
 
-onMounted(() => { void labStore.load(); labStore.startHeartbeat() })
+onMounted(() => { void initialize(); labStore.startHeartbeat() })
 onUnmounted(() => { labStore.dispose() })
+
+async function initialize() {
+  await labStore.load()
+  await practiceStore.restoreActive()
+}
 
 async function startPractice() { await practiceStore.start(labStore.selectedCaseId) }
 async function executePractice() { await practiceStore.execute() }
@@ -65,11 +70,12 @@ function askTutor(message: string) { void practiceStore.ask(message) }
           <SqlWorkbench
             v-model:sql="labStore.sql"
             :result="labStore.latestResult"
-            :can-execute="Boolean(labStore.run && labStore.activeSession?.status === 'open' && labStore.environmentReady)"
+            :can-execute="Boolean(practiceStore.run && labStore.run && labStore.activeSession?.status === 'open' && labStore.environmentReady)"
             :executing="labStore.executing"
             :session-name="labStore.activeSession?.name"
             @execute="executePractice"
             @load-default="labStore.loadDefaultSql"
+            @load-create-index="labStore.loadCreateIndexSql"
             @load-optimized="labStore.loadOptimizedSql"
           />
         </main>

@@ -15,6 +15,7 @@ const emit = defineEmits<{
   'update:sql': [value: string]
   execute: []
   'load-default': []
+  'load-create-index': []
   'load-optimized': []
 }>()
 
@@ -38,6 +39,7 @@ const executionResult = computed<LabExecutionResult | null>(() => {
       <span class="terminal-context">mysql://lab/orders</span>
       <div class="reference-actions">
         <button type="button" class="reference-button" @click="emit('load-default')"><FileCode2 :size="12" aria-hidden="true" />加载 EXPLAIN 示例</button>
+        <button type="button" class="reference-button" @click="emit('load-create-index')"><FileCode2 :size="12" aria-hidden="true" />加载建索引 SQL</button>
         <button type="button" class="reference-button" @click="emit('load-optimized')"><RotateCcw :size="12" aria-hidden="true" />加载优化 SQL</button>
       </div>
     </div>

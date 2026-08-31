@@ -32,6 +32,8 @@ WHERE user_id = 4242
 ORDER BY created_at DESC
 LIMIT 20`
 
+export const CREATE_INDEX_SQL = 'CREATE INDEX idx_orders_user_status_created ON orders (user_id, status, created_at)'
+
 export const OPTIMIZED_SLOW_SQL = `EXPLAIN SELECT id, user_id, status, total_amount, created_at
 FROM orders
 WHERE user_id = 4242
@@ -240,7 +242,14 @@ export const useLabStore = defineStore('lab', () => {
   }
 
   async function execute() {
-    if (!run.value || !accessToken.value || !sessionId.value) return
+    if (!run.value || !accessToken.value) {
+      error.value = '请先启动实验环境。'
+      return
+    }
+    if (!sessionId.value || activeSession.value?.status !== 'open') {
+      error.value = 'SQL 会话尚未就绪，请稍后重试。'
+      return
+    }
     if (!sql.value.trim()) {
       error.value = 'SQL 不能为空'
       return
@@ -297,6 +306,7 @@ export const useLabStore = defineStore('lab', () => {
   }
 
   function loadDefaultSql() { sql.value = DEFAULT_SLOW_SQL }
+  function loadCreateIndexSql() { sql.value = CREATE_INDEX_SQL }
   function loadOptimizedSql() { sql.value = OPTIMIZED_SLOW_SQL }
 
   async function refreshRun() {
@@ -340,9 +350,11 @@ export const useLabStore = defineStore('lab', () => {
     stopHeartbeat()
   }
 
+  function clear() { clearActiveState(); error.value = null }
+
   return {
     health, cases, selectedCaseId, selectedCase, run, accessToken, sessionId, ticket, sql, latestResult,
     loading, starting, polling, executing, resetting, ending, error, environmentReady, canStart, activeSession,
-    load, start, adoptRun, cancelQueue, execute, reset, end, loadDefaultSql, loadOptimizedSql, startHeartbeat, dispose,
+    load, start, adoptRun, cancelQueue, execute, reset, end, loadDefaultSql, loadCreateIndexSql, loadOptimizedSql, startHeartbeat, dispose, clear,
   }
 })

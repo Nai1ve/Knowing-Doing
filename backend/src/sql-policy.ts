@@ -23,7 +23,7 @@ function statementType(ast: unknown): string {
 
 interface SqlAst {
   type?: string
-  table?: { db?: string | null; table?: string | null }
+  table?: { db?: string | null; table?: string | null } | Array<{ db?: string | null; table?: string | null }>
   from?: Array<{ db?: string | null; table?: string | null }>
   name?: { column?: string }
   keyword?: string
@@ -61,7 +61,11 @@ function tableNames(sql: string, ast: SqlAst, schema: string): string[] {
     const name = normalizeTableName(table)
     if (name) names.add(name)
   }
-  add(ast.table)
+  if (Array.isArray(ast.table)) {
+    for (const table of ast.table) add(table)
+  } else {
+    add(ast.table)
+  }
   for (const table of ast.from ?? []) add(table)
   if (Array.isArray(ast.expr)) {
     for (const expression of ast.expr) {
@@ -128,9 +132,9 @@ export function validateStatement(rawStatement: string, manifest: CaseManifest):
     const alterOnlyIndexes = alterExpressions.length > 0 && alterExpressions.every((expression) => (
       expression && typeof expression === 'object' && (expression as { resource?: unknown }).resource === 'index'
     ))
+    const altersTableDefinition = /\b(CREATE|DROP)\s+TABLE\b|\b(CREATE|DROP|ALTER)\s+(DATABASE|SCHEMA|VIEW|TRIGGER|PROCEDURE|FUNCTION|EVENT)\b/i.test(statement)
     if ((type === 'create' && keyword !== 'index') || (type === 'drop' && keyword !== 'index') ||
-      (type === 'alter' && !alterOnlyIndexes) ||
-      /\b(TABLE|DATABASE|SCHEMA|VIEW|TRIGGER|PROCEDURE|FUNCTION|EVENT)\b/i.test(statement)) {
+      (type === 'alter' && !alterOnlyIndexes) || altersTableDefinition) {
       reject('只允许创建或调整当前案例的索引')
     }
   }

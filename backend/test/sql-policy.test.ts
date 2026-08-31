@@ -11,6 +11,7 @@ describe('SQL policy', () => {
 
   it('allows index changes but rejects table changes', () => {
     expect(validateStatement('CREATE INDEX idx_demo ON orders (user_id)', slow).kind).toBe('ddl')
+    expect(validateStatement('ALTER TABLE orders ADD INDEX idx_demo_status (status)', slow).kind).toBe('ddl')
     expect(() => validateStatement('DROP TABLE orders', slow)).toThrowError('不允许执行 drop SQL')
   })
 

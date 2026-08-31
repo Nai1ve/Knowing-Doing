@@ -1,0 +1,17 @@
+{
+  "name": "knowing-doing-tools",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Repository tooling for the Knowing-Doing project",
+  "scripts": {
+    "codegraph:build": "codegraph build .",
+    "codegraph:stats": "codegraph stats",
+    "codegraph:where": "codegraph where",
+    "codegraph:context": "codegraph context",
+    "codegraph:impact": "codegraph fn-impact",
+    "codegraph:mcp": "codegraph mcp"
+  },
+  "devDependencies": {
+    "@optave/codegraph": "^3.17.0"
+  }
+}

@@ -73,7 +73,11 @@ export class PracticeService {
   labAccess(runId: string): { status: 'waiting' | 'ready' | 'expired' | 'cancelled'; ticketId?: string; run?: unknown; accessToken?: string } {
     const practice = this.run(runId)
     const ticketId = this.pendingQueues.get(runId)
-    if (!ticketId) return practice.labRunId ? { status: 'ready' } : { status: 'waiting' }
+    if (!ticketId) {
+      if (!practice.labRunId) return { status: 'expired' }
+      const access = this.scheduler.getAccess(practice.labRunId)
+      return access ? { status: 'ready', run: access.run, accessToken: access.accessToken } : { status: 'expired' }
+    }
     const ticket = this.scheduler.getTicket(ticketId)
     if (ticket.status === 'ready' && ticket.run) {
       this.snapshot(runId)

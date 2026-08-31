@@ -20,6 +20,7 @@ const filteredEvents = computed(() => {
 })
 
 onMounted(() => {
+  if (!practiceStore.run) void practiceStore.restoreRecord()
   if (planStore.plan) void lessonStore.load('lesson-02-03', planStore.plan.id)
 })
 

@@ -1,0 +1,33 @@
+{
+  "include": [
+    "backend/**/*.ts",
+    "frontend/src/**/*.ts",
+    "frontend/src/**/*.vue",
+    "frontend/*.ts",
+    "frontend/*.js"
+  ],
+  "ignoreDirs": [
+    ".git",
+    ".codegraph",
+    "node_modules",
+    "dist",
+    "data"
+  ],
+  "exclude": [
+    "**/node_modules/**",
+    "**/dist/**",
+    "**/data/**"
+  ],
+  "extensions": [
+    ".ts",
+    ".tsx",
+    ".vue",
+    ".js"
+  ],
+  "build": {
+    "incremental": true
+  },
+  "query": {
+    "excludeTests": true
+  }
+}

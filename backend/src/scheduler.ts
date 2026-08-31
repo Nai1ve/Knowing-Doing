@@ -88,6 +88,16 @@ export class LabScheduler {
     return this.toRunView(run)
   }
 
+  getAccess(runId: string): { run: RunView; accessToken: string } | null {
+    for (const slot of this.slots.values()) {
+      const run = slot.active
+      if (!run || run.runId !== runId || this.isExpired(run)) continue
+      this.recordActivity(run)
+      return { run: this.toRunView(run), accessToken: this.tokenFor(run) }
+    }
+    return null
+  }
+
   getTicket(ticketId: string): QueueTicketView {
     const ticket = this.findTicket(ticketId)
     if (ticket.status === 'waiting' && ticket.expiresAt <= Date.now()) ticket.status = 'expired'
