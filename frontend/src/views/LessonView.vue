@@ -16,13 +16,16 @@ onMounted(() => { void initialize(); labStore.startHeartbeat() })
 onUnmounted(() => { labStore.dispose() })
 
 async function initialize() {
-  await labStore.load()
+  await Promise.all([labStore.load(), practiceStore.loadHistory()])
   await practiceStore.restoreActive()
 }
 
 async function startPractice() { await practiceStore.start(labStore.selectedCaseId) }
 async function executePractice() { await practiceStore.execute() }
 function askTutor(message: string) { void practiceStore.ask(message) }
+function openHistory(id: string) { void practiceStore.selectHistory(id) }
+function reopenHistory(id: string) { void practiceStore.reopen(id) }
+function stageLabel(stage: string) { return ({ observe: '观察', hypothesize: '假设', inspect: '检查', attempt: '尝试', verify: '验证', resolved: '已解决' } as Record<string, string>)[stage] ?? stage }
 </script>
 
 <template>
@@ -36,6 +39,18 @@ function askTutor(message: string) { void practiceStore.ask(message) }
 
     <div v-if="labStore.loading" class="lab-loading" role="status">正在检查 MySQL Lab…</div>
     <div v-else class="lab-content">
+      <section class="history-panel" aria-labelledby="history-title">
+        <div class="history-heading"><div><div class="eyebrow">Practice history</div><h2 id="history-title">继续你的实践</h2></div><span class="history-count">{{ practiceStore.history.length }} 条记录</span></div>
+        <div v-if="practiceStore.history.length" class="history-list">
+          <button v-for="item in practiceStore.history" :key="item.id" type="button" class="history-item" :class="{ active: practiceStore.run?.id === item.id }" @click="openHistory(item.id)">
+            <span class="history-case"><strong>{{ item.caseId === 'mysql-order-list-index-001' ? 'MySQL 慢查询' : item.caseId }}</strong><small>{{ stageLabel(item.stage) }} · {{ new Date(item.lastActivityAt).toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' }) }}</small></span>
+            <span class="history-state" :class="item.labState">{{ item.labState === 'active' ? 'Lab 可用' : item.labState === 'reopen_required' ? 'Lab 已结束' : '无 Lab' }}</span>
+            <span v-if="item.labState === 'reopen_required'" class="history-reopen" @click.stop="reopenHistory(item.id)">继续此实践</span>
+          </button>
+        </div>
+        <p v-else class="history-empty">完成一次实践后，这里会保留你的问题、证据、路径和 Tutor 记录。</p>
+      </section>
+
       <section class="lab-intro" aria-labelledby="lab-intro-title">
         <div>
           <div class="eyebrow">Current case · mysql-order-list-index-001</div>
@@ -97,7 +112,7 @@ function askTutor(message: string) { void practiceStore.ask(message) }
             <div><strong>请求未完成</strong><p>{{ labStore.error }}</p></div>
           </section>
 
-          <TutorAgent :messages="practiceStore.messages" :loading="practiceStore.tutorLoading" :current-question="practiceStore.lastTutor?.nextQuestion" :current-gap="practiceStore.currentGap" @ask="askTutor" />
+          <TutorAgent :messages="practiceStore.messages" :sources="practiceStore.sources" :source-status="practiceStore.lastTutor?.sourceStatus" :loading="practiceStore.tutorLoading" :current-question="practiceStore.lastTutor?.nextQuestion" :current-gap="practiceStore.currentGap" :failure="practiceStore.tutorFailure" @ask="askTutor" @retry="practiceStore.retryTutor" />
 
           <section v-if="practiceStore.error" class="lab-error" role="alert">
             <AlertCircle :size="14" aria-hidden="true" />
@@ -123,6 +138,19 @@ function askTutor(message: string) { void practiceStore.ask(message) }
 .lab-page { max-width: 1120px; }
 .lab-loading { margin-top: 24px; padding: 18px; border-top: 2px solid var(--blue); background: var(--paper-deep); color: var(--muted); font-size: 12px; }
 .lab-content { display: grid; gap: 14px; margin-top: 24px; }
+.history-panel { padding: 14px; border: 1px solid var(--line); background: var(--paper-deep); }
+.history-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; }
+.history-heading h2 { margin: 5px 0 0; color: var(--ink); font: 400 18px var(--serif); }
+.history-count { color: var(--muted); font: 9px var(--mono); }
+.history-list { display: grid; gap: 5px; margin-top: 12px; }
+.history-item { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; gap: 12px; width: 100%; padding: 9px 10px; border: 1px solid var(--line-soft); background: #fff; color: var(--ink); text-align: left; }
+.history-item:hover, .history-item.active { border-color: var(--blue); background: var(--blue-soft); }
+.history-case { display: grid; gap: 3px; min-width: 0; }
+.history-case strong { overflow: hidden; font-size: 11px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.history-case small { color: var(--muted); font: 9px var(--mono); }
+.history-state, .history-reopen { color: var(--muted); font: 9px var(--mono); white-space: nowrap; }
+.history-state.active { color: var(--green); }.history-state.reopen_required { color: var(--orange); }.history-reopen { color: var(--blue-deep); }
+.history-empty { margin: 12px 0 0; color: var(--muted); font-size: 10px; }
 .lab-intro { display: flex; align-items: flex-end; justify-content: space-between; gap: 24px; padding: 17px; border: 1px solid var(--line); background: var(--orange-soft); }
 .lab-intro h2 { margin: 6px 0 0; color: var(--ink); font: 400 23px/1.25 var(--serif); }
 .lab-intro p { max-width: 690px; margin: 8px 0 0; color: #665a53; font-size: 11px; line-height: 1.6; }
@@ -145,5 +173,5 @@ function askTutor(message: string) { void practiceStore.ask(message) }
 .case-facts dd { margin: 0; color: var(--ink); font-size: 10px; text-align: right; }
 code { font-family: var(--mono); font-size: 9px; }
 @media (max-width: 900px) { .lab-grid { grid-template-columns: 1fr; } .lab-aside { position: static; grid-template-columns: repeat(2, minmax(0, 1fr)); } .lab-error { align-self: start; } }
-@media (max-width: 600px) { .lab-intro { display: block; } .intro-facts { margin-top: 14px; } .lab-aside { grid-template-columns: 1fr; } }
+@media (max-width: 600px) { .lab-intro { display: block; } .intro-facts { margin-top: 14px; } .lab-aside { grid-template-columns: 1fr; } .history-item { grid-template-columns: minmax(0, 1fr) auto; }.history-reopen { grid-column: 1 / -1; } }
 </style>

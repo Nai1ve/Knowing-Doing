@@ -1,4 +1,5 @@
-import Fastify, { type FastifyInstance, type FastifyRequest } from 'fastify'
+import { randomUUID } from 'node:crypto'
+import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from 'fastify'
 import cors from '@fastify/cors'
 import type { LabConfig } from './config.js'
 import type { CaseId } from './domain.js'
@@ -8,7 +9,8 @@ import { MySqlLabStore, type LabStore } from './mysql-store.js'
 import { LabScheduler } from './scheduler.js'
 import { validateStatement } from './sql-policy.js'
 import { verifyLabToken } from './token.js'
-import { PracticeService, ProductNotFoundError } from './practice-service.js'
+import { PracticeService, ProductNotFoundError, type TutorStreamEvent } from './practice-service.js'
+import { TutorProviderError } from './tutor.js'
 import { WritingConflictError, WritingNotFoundError, WritingService } from './writing-service.js'
 
 type Body = Record<string, unknown>
@@ -41,6 +43,7 @@ export interface AppDependencies {
   store?: LabStore
   practiceServiceFactory?: (scheduler: LabScheduler) => PracticeService
   writingServiceFactory?: () => WritingService
+  runtimeStatus?: () => Promise<Record<string, unknown>>
 }
 
 export function buildApp(dependencies: AppDependencies): { app: FastifyInstance; scheduler: LabScheduler } {
@@ -53,6 +56,7 @@ export function buildApp(dependencies: AppDependencies): { app: FastifyInstance;
     if (process.env.NODE_ENV !== 'production') console.error('[zhixing-api]', error instanceof Error ? `${error.name}: ${error.message}` : error)
     if (error instanceof ProductNotFoundError || error instanceof WritingNotFoundError) return reply.code(404).send({ error: { code: 'not_found', message: error.message, retryable: false } })
     if (error instanceof WritingConflictError) return reply.code(409).send({ error: { code: 'writing_conflict', message: error.message, retryable: false } })
+    if (error instanceof TutorProviderError) return reply.code(error.statusCode ?? 503).send({ error: { code: error.code, message: error.message, retryable: error.retryable } })
     const response = errorResponse(error)
     reply.code(response.statusCode).send(response.body)
   })
@@ -69,6 +73,10 @@ export function buildApp(dependencies: AppDependencies): { app: FastifyInstance;
       fixtureVersion: manifest.fixtureVersion,
       allowedSessions: manifest.allowedSessions,
     })))
+  })
+
+  app.get('/api/product/runtime-status', async (_request, reply) => {
+    reply.send(await dependencies.runtimeStatus?.() ?? { model: { configured: Boolean(dependencies.config.modelBaseUrl && dependencies.config.modelApiKey), name: dependencies.config.modelName }, zhihu: { configured: false, executable: false, lastRetrieval: null } })
   })
 
   app.post('/api/lab/runs', async (request, reply) => {
@@ -178,14 +186,67 @@ function registerProductRoutes(app: FastifyInstance, service: PracticeService, w
     return reply.code(201).send(result)
   })
 
-  app.get('/api/product/practice-runs/:runId', async (request, reply) => reply.send(service.snapshot(productRunId(request))))
-  app.get('/api/product/practice-runs/:runId/lab', async (request, reply) => reply.send(service.labAccess(productRunId(request))))
+  app.get('/api/product/practice-runs', async (request, reply) => {
+    const query = request.query as { cursor?: string; limit?: string }
+    const limit = query.limit == null ? 20 : Number(query.limit)
+    if (!Number.isInteger(limit) || limit <= 0) throw new LabError('invalid_request', 'limit 必须是正整数', 400)
+    reply.send(service.history(learnerId(request), query.cursor, limit))
+  })
+  app.get('/api/product/practice-runs/:runId', async (request, reply) => {
+    service.assertOwnership(productRunId(request), learnerId(request))
+    reply.send(service.snapshot(productRunId(request)))
+  })
+  app.get('/api/product/practice-runs/:runId/lab', async (request, reply) => {
+    service.assertOwnership(productRunId(request), learnerId(request))
+    reply.send(service.labAccess(productRunId(request)))
+  })
+  app.post('/api/product/practice-runs/:runId/reopen-lab', async (request, reply) => {
+    service.assertOwnership(productRunId(request), learnerId(request))
+    const result = await service.reopenLab(productRunId(request))
+    reply.code(result.queue ? 202 : 201).send(result)
+  })
   app.post('/api/product/practice-runs/:runId/messages', async (request, reply) => {
     const body = productBody(request); const message = stringField(body, 'message')
+    service.assertOwnership(productRunId(request), learnerId(request))
     reply.send(await service.ask(productRunId(request), message, optionalString(body, 'clientRequestId') ?? undefined))
+  })
+  const streamTutor = async (request: FastifyRequest, reply: FastifyReply, runId: string, message: string, clientRequestId: string, retryInvocationId?: string) => {
+    reply.hijack()
+    reply.raw.writeHead(200, { 'Content-Type': 'text/event-stream; charset=utf-8', 'Cache-Control': 'no-cache, no-transform', Connection: 'keep-alive', 'X-Accel-Buffering': 'no' })
+    const send = async (event: TutorStreamEvent) => {
+      if (reply.raw.destroyed || reply.raw.writableEnded) return
+      reply.raw.write(`event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`)
+    }
+    try {
+      if (retryInvocationId) await service.retryTutor(runId, retryInvocationId, send)
+      else await service.streamTutor({ runId, message, clientRequestId }, send)
+    } catch (error) {
+      if (!(error instanceof TutorProviderError) && !reply.raw.destroyed && !reply.raw.writableEnded) {
+        const message = error instanceof Error ? error.message : 'Tutor 调用失败'
+        await send({ type: 'failed', invocationId: retryInvocationId ?? clientRequestId, code: 'tutor_failed', message, retryable: true })
+      }
+    } finally {
+      if (!reply.raw.writableEnded) reply.raw.end()
+    }
+  }
+  app.post('/api/product/practice-runs/:runId/messages/stream', async (request, reply) => {
+    const body = productBody(request); const runId = productRunId(request); const message = stringField(body, 'message'); const requestId = optionalString(body, 'clientRequestId') ?? randomUUID()
+    service.assertOwnership(runId, learnerId(request))
+    await streamTutor(request, reply, runId, message, requestId)
+  })
+  app.post('/api/product/practice-runs/:runId/tutor-invocations/:invocationId/retry', async (request, reply) => {
+    const runId = productRunId(request); const invocationId = String((request.params as { invocationId: string }).invocationId)
+    service.assertOwnership(runId, learnerId(request))
+    await streamTutor(request, reply, runId, '', randomUUID(), invocationId)
+  })
+  app.get('/api/product/practice-runs/:runId/tutor-invocations/:invocationId', async (request, reply) => {
+    const runId = productRunId(request); const invocationId = String((request.params as { invocationId: string }).invocationId)
+    service.assertOwnership(runId, learnerId(request))
+    reply.send(service.getTutorInvocation(runId, invocationId))
   })
   app.post('/api/product/practice-runs/:runId/artifacts', async (request, reply) => {
     const body = productBody(request); const content = stringField(body, 'content')
+    service.assertOwnership(productRunId(request), learnerId(request))
     const kind = optionalString(body, 'kind'); const sourceKind = optionalString(body, 'sourceKind')
     if (kind && !['external_text', 'source_excerpt'].includes(kind)) throw new LabError('invalid_request', '不支持的外部素材类型', 400)
     if (sourceKind && !['user', 'zhihu', 'global_search'].includes(sourceKind)) throw new LabError('invalid_request', '不支持的来源类型', 400)
@@ -194,18 +255,20 @@ function registerProductRoutes(app: FastifyInstance, service: PracticeService, w
   app.post('/api/product/practice-runs/:runId/lab-executions', async (request, reply) => {
     const body = productBody(request); const token = bearer(request)
     if (!token) throw new LabError('unauthorized', '缺少 Lab 访问令牌', 401)
+    service.assertOwnership(productRunId(request), learnerId(request))
     const result = await service.executeLab({ runId: productRunId(request), token, revision: numberField(body, 'revision'), sessionId: stringField(body, 'sessionId'), statement: stringField(body, 'statement'), clientRequestId: stringField(body, 'clientRequestId') })
     if (result.execution.status === 'timed_out') return reply.code(504).send(result)
     if (result.execution.status === 'failed') return reply.code(422).send(result)
     return reply.send(result)
   })
-  app.post('/api/product/practice-runs/:runId/verify', async (request, reply) => reply.send(service.verify(productRunId(request))))
-  app.post('/api/product/practice-runs/:runId/note-outline', async (request, reply) => reply.code(201).send(service.generateNoteOutline(productRunId(request))))
+  app.post('/api/product/practice-runs/:runId/verify', async (request, reply) => { service.assertOwnership(productRunId(request), learnerId(request)); reply.send(service.verify(productRunId(request))) })
+  app.post('/api/product/practice-runs/:runId/note-outline', async (request, reply) => { service.assertOwnership(productRunId(request), learnerId(request)); reply.code(201).send(service.generateNoteOutline(productRunId(request))) })
   app.post('/api/product/practice-runs/:runId/article-draft', async (request, reply) => {
+    service.assertOwnership(productRunId(request), learnerId(request))
     const outline = optionalString(productBody(request), 'outline')
     reply.code(201).send(service.generateArticleDraft(productRunId(request), outline ?? undefined))
   })
-  if (writingService) registerWritingRoutes(app, writingService)
+  if (writingService) registerWritingRoutes(app, writingService, service)
   app.get('/api/product/memories', async (request, reply) => reply.send(service.memories(learnerId(request))))
   app.patch('/api/product/memories/:memoryId', async (request, reply) => {
     const body = productBody(request); const update: { statement?: string; userNote?: string | null; status?: 'active' | 'corrected' | 'deleted' } = {}
@@ -220,19 +283,21 @@ function registerProductRoutes(app: FastifyInstance, service: PracticeService, w
   })
 }
 
-function registerWritingRoutes(app: FastifyInstance, service: WritingService): void {
-  app.post('/api/product/practice-runs/:runId/writing', async (request, reply) => reply.code(201).send(service.initialize(productRunId(request))))
-  app.get('/api/product/practice-runs/:runId/writing', async (request, reply) => reply.send(service.getExisting(productRunId(request))))
+function registerWritingRoutes(app: FastifyInstance, service: WritingService, practiceService: PracticeService): void {
+  app.post('/api/product/practice-runs/:runId/writing', async (request, reply) => { practiceService.assertOwnership(productRunId(request), learnerId(request)); reply.code(201).send(service.initialize(productRunId(request))) })
+  app.get('/api/product/practice-runs/:runId/writing', async (request, reply) => { practiceService.assertOwnership(productRunId(request), learnerId(request)); reply.send(service.getExisting(productRunId(request))) })
   app.patch('/api/product/practice-runs/:runId/writing/materials/:materialId', async (request, reply) => {
+    practiceService.assertOwnership(productRunId(request), learnerId(request))
     const body = productBody(request); const selected = body.selected
     if (typeof selected !== 'boolean') throw new LabError('invalid_request', 'selected 必须是布尔值', 400)
     const note = body.editorialNote == null ? undefined : optionalString(body, 'editorialNote')
     reply.send(service.selectMaterial(productRunId(request), String((request.params as { materialId: string }).materialId), selected, note))
   })
-  app.post('/api/product/practice-runs/:runId/writing/outline', async (request, reply) => reply.code(201).send(service.generateOutline(productRunId(request))))
-  app.post('/api/product/practice-runs/:runId/writing/article', async (request, reply) => reply.code(201).send(service.generateArticle(productRunId(request))))
-  app.post('/api/product/practice-runs/:runId/writing/review', async (request, reply) => reply.send(service.review(productRunId(request))))
+  app.post('/api/product/practice-runs/:runId/writing/outline', async (request, reply) => { practiceService.assertOwnership(productRunId(request), learnerId(request)); reply.code(201).send(service.generateOutline(productRunId(request))) })
+  app.post('/api/product/practice-runs/:runId/writing/article', async (request, reply) => { practiceService.assertOwnership(productRunId(request), learnerId(request)); reply.code(201).send(service.generateArticle(productRunId(request))) })
+  app.post('/api/product/practice-runs/:runId/writing/review', async (request, reply) => { practiceService.assertOwnership(productRunId(request), learnerId(request)); reply.send(service.review(productRunId(request))) })
   app.patch('/api/product/practice-runs/:runId/writing/documents/:documentId/sections/:sectionId', async (request, reply) => {
+    practiceService.assertOwnership(productRunId(request), learnerId(request))
     const body = productBody(request)
     if (typeof body.content !== 'string') throw new LabError('invalid_request', 'content 必须是字符串', 400)
     const revision = numberField(body, 'revision')

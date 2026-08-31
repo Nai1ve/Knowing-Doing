@@ -5,21 +5,81 @@ import { decideAfterLab, decideAfterMessage, decideAfterVerification } from './c
 import { buildTutorContext } from './context.js'
 import { createPlan } from './planner.js'
 import type { ProductRepository } from './product-repository.js'
-import type { CaseStage, Intake, PracticeRun, PracticeSnapshot, TutorResponse } from './product-types.js'
-import { TutorEngine } from './tutor.js'
+import type { CaseStage, Intake, LabSegment, MemoryItem, PracticeEvent, PracticeHistoryPage, PracticeRun, PracticeSnapshot, SourceItem, TutorInvocation, TutorResponse, TutorSource } from './product-types.js'
+import { RetrievalService } from './retrieval.js'
+import { TutorEngine, TutorProviderError, tutorResponseFromGenerated } from './tutor.js'
 import { getManifest } from './fixtures.js'
 import { validateStatement } from './sql-policy.js'
 import { LabError } from './errors.js'
 
 export class ProductNotFoundError extends Error {}
 
+export type TutorStreamEvent =
+  | { type: 'accepted'; invocationId: string }
+  | { type: 'retrieval_started'; invocationId: string }
+  | { type: 'sources'; invocationId: string; status: string; items: TutorSource[]; errorCode?: string }
+  | { type: 'answer_delta'; invocationId: string; delta: string }
+  | { type: 'completed'; invocationId: string; run: PracticeRun; tutor: TutorResponse; snapshot: PracticeSnapshot; sources: TutorSource[] }
+  | { type: 'failed'; invocationId: string; code: string; message: string; retryable: boolean }
+
+export interface TutorStreamResult {
+  invocation: TutorInvocation
+  run: PracticeRun
+  tutor?: TutorResponse
+  snapshot: PracticeSnapshot
+  sources: TutorSource[]
+}
+
+function encodeCursor(updatedAt: string, id: string): string {
+  return Buffer.from(JSON.stringify({ updatedAt, id }), 'utf8').toString('base64url')
+}
+
+function decodeCursor(cursor: string | undefined): { updatedAt: string; id: string } | undefined {
+  if (!cursor) return undefined
+  try {
+    const value = JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8')) as { updatedAt?: unknown; id?: unknown }
+    if (typeof value.updatedAt !== 'string' || typeof value.id !== 'string') throw new Error('invalid cursor')
+    return { updatedAt: value.updatedAt, id: value.id }
+  } catch { throw new LabError('invalid_request', '历史记录游标无效', 400) }
+}
+
 export class PracticeService {
   private readonly pendingQueues = new Map<string, string>()
+  private readonly runLocks = new Map<string, Promise<void>>()
 
-  constructor(private readonly repository: ProductRepository, private readonly scheduler: LabScheduler, private readonly tutor: TutorEngine) {}
+  constructor(private readonly repository: ProductRepository, private readonly scheduler: LabScheduler, private readonly tutor: TutorEngine, private readonly retrieval?: RetrievalService) {}
+
+  private async withRunLock<T>(runId: string, action: () => Promise<T>): Promise<T> {
+    const previous = this.runLocks.get(runId) ?? Promise.resolve()
+    let release!: () => void
+    const current = new Promise<void>((resolve) => { release = resolve })
+    const queued = previous.then(() => current)
+    this.runLocks.set(runId, queued)
+    await previous
+    try { return await action() } finally { release(); if (this.runLocks.get(runId) === queued) this.runLocks.delete(runId) }
+  }
 
   private run(runId: string): PracticeRun {
     try { return this.repository.getPracticeRun(runId) } catch { throw new ProductNotFoundError(`Practice run not found: ${runId}`) }
+  }
+
+  assertOwnership(runId: string, learnerId: string): PracticeRun {
+    const run = this.run(runId)
+    if (run.learnerId !== learnerId) throw new LabError('forbidden', '无权访问该实践记录', 403)
+    return run
+  }
+
+  history(learnerId: string, cursor?: string, limit = 20): PracticeHistoryPage {
+    this.repository.ensureLearner(learnerId)
+    const safeLimit = Math.min(Math.max(Math.trunc(limit), 1), 50)
+    const records = this.repository.listPracticeHistory(learnerId, { cursor: decodeCursor(cursor), limit: safeLimit })
+    const items = records.map(({ run, lastActivityAt, lastTutorProvider, lastTutorSourceStatus }) => ({
+      id: run.id, caseId: run.caseId, stage: run.stage, status: run.status, createdAt: run.createdAt, updatedAt: run.updatedAt,
+      lastActivityAt, lastTutorProvider, lastTutorSourceStatus,
+      labState: run.labRunId ? (this.scheduler.isRunActive(run.labRunId) ? 'active' as const : 'reopen_required' as const) : 'none' as const,
+    }))
+    const last = records.at(-1)
+    return { items, nextCursor: records.length === safeLimit && last ? encodeCursor(last.run.updatedAt, last.run.id) : null }
   }
 
   createIntake(input: { learnerId: string; goal: string; technology?: string; outcome?: string | null; weeklyMinutes?: number | null }): Intake {
@@ -48,6 +108,7 @@ export class PracticeService {
     }
     try {
       const practice = this.repository.createPracticeRun({ ...input, labRunId: lab.run.runId })
+      this.repository.createLabSegment({ practiceRunId: practice.id, labRunId: lab.run.runId, fixtureVersion: lab.run.fixtureVersion })
       this.repository.appendEvent({ learnerId: input.learnerId, practiceRunId: practice.id, actor: 'system', type: 'case_presented', stage: 'observe', payload: { caseId: input.caseId, fixtureVersion: lab.run.fixtureVersion, environment: 'mysql_lab' } })
       return { practice: this.repository.getPracticeRun(practice.id), lab: { run: lab.run, accessToken: lab.accessToken } }
     } catch (error) {
@@ -63,6 +124,7 @@ export class PracticeService {
       const ticket = this.scheduler.getTicket(ticketId)
       if (ticket.status === 'ready' && ticket.run) {
         const updated = this.repository.updatePracticeRun(runId, { labRunId: ticket.run.runId })
+        this.repository.createLabSegment({ practiceRunId: runId, labRunId: ticket.run.runId, fixtureVersion: ticket.run.fixtureVersion })
         this.repository.appendEvent({ learnerId: updated.learnerId, practiceRunId: runId, actor: 'system', type: 'case_presented', stage: updated.stage, payload: { caseId: updated.caseId, fixtureVersion: ticket.run.fixtureVersion, environment: 'mysql_lab', queued: true } })
         this.pendingQueues.delete(runId)
       }
@@ -76,7 +138,10 @@ export class PracticeService {
     if (!ticketId) {
       if (!practice.labRunId) return { status: 'expired' }
       const access = this.scheduler.getAccess(practice.labRunId)
-      return access ? { status: 'ready', run: access.run, accessToken: access.accessToken } : { status: 'expired' }
+      if (access) return { status: 'ready', run: access.run, accessToken: access.accessToken }
+      this.repository.finishLabSegment(practice.labRunId, 'scheduler_unavailable_or_expired')
+      this.repository.updatePracticeRun(runId, { labRunId: null })
+      return { status: 'expired' }
     }
     const ticket = this.scheduler.getTicket(ticketId)
     if (ticket.status === 'ready' && ticket.run) {
@@ -86,6 +151,25 @@ export class PracticeService {
     return { status: ticket.status === 'expired' || ticket.status === 'cancelled' ? ticket.status : 'waiting', ticketId }
   }
 
+  private async reopenLabUnsafe(runId: string): Promise<{ practice: PracticeRun; lab?: { run: unknown; accessToken: string }; queue?: unknown }> {
+    const practice = this.run(runId)
+    if (practice.status === 'resolved') throw new LabError('practice_resolved', '该实践已经完成，请从历史中回看', 409)
+    if (practice.labRunId && this.scheduler.isRunActive(practice.labRunId)) throw new LabError('lab_already_active', '当前实践已有可用 Lab', 409, true)
+    const result = await this.scheduler.createRun(practice.caseId)
+    if (result.kind === 'queued') {
+      this.pendingQueues.set(runId, result.ticket.ticketId)
+      return { practice: this.repository.updatePracticeRun(runId, { labRunId: null }), queue: result.ticket }
+    }
+    const updated = this.repository.updatePracticeRun(runId, { labRunId: result.run.runId })
+    this.repository.createLabSegment({ practiceRunId: runId, labRunId: result.run.runId, fixtureVersion: result.run.fixtureVersion })
+    this.repository.appendEvent({ learnerId: updated.learnerId, practiceRunId: runId, actor: 'system', type: 'lab_reopened', stage: updated.stage, payload: { labRunId: result.run.runId, fixtureVersion: result.run.fixtureVersion } })
+    return { practice: updated, lab: { run: result.run, accessToken: result.accessToken } }
+  }
+
+  async reopenLab(runId: string): Promise<{ practice: PracticeRun; lab?: { run: unknown; accessToken: string }; queue?: unknown }> {
+    return this.withRunLock(runId, () => this.reopenLabUnsafe(runId))
+  }
+
   memories(learnerId: string) { this.repository.ensureLearner(learnerId); return this.repository.listMemories(learnerId) }
 
   updateMemory(learnerId: string, memoryId: string, update: { statement?: string; userNote?: string | null; status?: 'active' | 'corrected' | 'deleted' }) {
@@ -93,20 +177,111 @@ export class PracticeService {
     return this.repository.updateMemory(memoryId, update)
   }
 
+  private queryForTutor(run: PracticeRun, message: string, snapshot: PracticeSnapshot): string {
+    const evidenceTerms = snapshot.artifacts.slice(-3).map((artifact) => artifact.content.slice(0, 120)).join(' ')
+    return `MySQL ${run.caseId} ${run.stage} ${message.slice(0, 260)} ${evidenceTerms}`.trim().replace(/\s+/g, ' ')
+  }
+
+  private shouldRetrieve(message: string, snapshot: PracticeSnapshot): boolean {
+    const hasStageSources = snapshot.artifacts.some((artifact) => artifact.kind === 'tutor_reply' && Array.isArray(artifact.metadata.sourceRefs) && artifact.metadata.sourceRefs.length > 0)
+    return !hasStageSources || /知乎|来源|依据|文章|经验|原理|官方|参考/.test(message)
+  }
+
+  private tutorSources(items: SourceItem[]): TutorSource[] {
+    return items.slice(0, 3).map((source) => ({ id: source.id, title: source.title, author: source.author, url: source.url, excerpt: source.excerpt, retrievedAt: source.retrievedAt, provider: source.provider, role: typeof source.metadata.role === 'string' ? source.metadata.role : '相关经验', reason: `用于补充当前阶段的 ${source.title}，不能替代 Lab 实验结论。` }))
+  }
+
+  private replayTutor(invocation: TutorInvocation): { tutor: TutorResponse; sources: TutorSource[] } | null {
+    const turn = this.repository.findTutorTurnByUserArtifact(invocation.userArtifactId)
+    if (!turn?.assistantArtifactId) return null
+    const assistant = this.repository.getArtifact(turn.assistantArtifactId)
+    const event = this.repository.snapshot(invocation.practiceRunId).events.find((item) => item.type === 'tutor_reply' && item.artifactRefs.includes(assistant.id))
+    if (!event) return null
+    const payload = event.payload as unknown as TutorResponse
+    return { tutor: { ...payload, response: assistant.content, provider: 'model' }, sources: this.tutorSources(this.repository.listSources(invocation.sourceIds)) }
+  }
+
+  private async runTutor(input: { runId: string; message: string; clientRequestId: string }, emit?: (event: TutorStreamEvent) => Promise<void> | void): Promise<TutorStreamResult> {
+    const run = this.run(input.runId)
+    const existing = this.repository.getTutorInvocationByRequest(input.runId, input.clientRequestId)
+    if (existing) {
+      const replay = existing.status === 'succeeded' ? this.replayTutor(existing) : null
+      if (replay) {
+        const currentRun = this.repository.getPracticeRun(input.runId)
+        const currentSnapshot = this.repository.snapshot(input.runId)
+        await emit?.({ type: 'accepted', invocationId: existing.id })
+        await emit?.({ type: 'completed', invocationId: existing.id, run: currentRun, tutor: replay.tutor, snapshot: currentSnapshot, sources: replay.sources })
+        return { invocation: existing, run: currentRun, tutor: replay.tutor, snapshot: currentSnapshot, sources: replay.sources }
+      }
+      if (existing.status === 'running') {
+        await emit?.({ type: 'accepted', invocationId: existing.id })
+        await emit?.({ type: 'failed', invocationId: existing.id, code: 'invocation_in_progress', message: '相同请求正在处理中，请稍后查看结果', retryable: true })
+        return { invocation: existing, run, snapshot: this.repository.snapshot(input.runId), sources: [] }
+      }
+      await emit?.({ type: 'accepted', invocationId: existing.id })
+      await emit?.({ type: 'failed', invocationId: existing.id, code: existing.failureCode ?? 'invocation_failed', message: existing.failureMessage ?? '该请求未完成，请使用重试', retryable: true })
+      return { invocation: existing, run, snapshot: this.repository.snapshot(input.runId), sources: [] }
+    }
+
+    const userArtifact = this.repository.createArtifact({ learnerId: run.learnerId, practiceRunId: input.runId, kind: 'user_message', sourceKind: 'user', verificationStatus: 'not_applicable', content: input.message, metadata: { clientRequestId: input.clientRequestId } })
+    this.repository.appendEvent({ learnerId: run.learnerId, practiceRunId: input.runId, actor: 'user', type: 'user_message', stage: run.stage, payload: { message: input.message }, artifactRefs: [userArtifact.id], clientRequestId: input.clientRequestId })
+    const invocation = this.repository.createTutorInvocation({ practiceRunId: input.runId, userArtifactId: userArtifact.id, clientRequestId: input.clientRequestId, provider: this.tutor.providerName, model: this.tutor.configuredModelName })
+    await emit?.({ type: 'accepted', invocationId: invocation.id })
+    const startedAt = Date.now()
+    let sources: SourceItem[] = []
+    try {
+      const initialSnapshot = this.repository.snapshot(input.runId)
+      await emit?.({ type: 'retrieval_started', invocationId: invocation.id })
+      const retrieval = this.shouldRetrieve(input.message, initialSnapshot) ? await this.retrieval?.search(this.queryForTutor(run, input.message, initialSnapshot), 5) : { status: 'empty' as const, items: [], fromCache: false }
+      const retrievalResult = retrieval ?? { status: 'unavailable' as const, items: [], fromCache: false, errorCode: 'zhihu_retrieval_not_configured' }
+      sources = retrievalResult.items
+      this.repository.updateTutorInvocation(invocation.id, { status: 'running', retrievalStatus: retrievalResult.status, sourceIds: sources.map((source) => source.id), failureCode: null, failureMessage: null, latencyMs: null })
+      await emit?.({ type: 'sources', invocationId: invocation.id, status: retrievalResult.status, items: this.tutorSources(sources), errorCode: retrievalResult.errorCode })
+      const contextSnapshot = this.repository.snapshot(input.runId)
+      const context = buildTutorContext({ goal: this.goalForRun(run), run, events: contextSnapshot.events, artifacts: contextSnapshot.artifacts, pathNodes: contextSnapshot.pathNodes, stageMemories: contextSnapshot.stageMemories, sourceIds: sources.map((source) => source.id) })
+      const generatedResponse = await this.tutor.generate(run, context, input.message, sources, async (delta) => { await emit?.({ type: 'answer_delta', invocationId: invocation.id, delta }) })
+      const tutor = tutorResponseFromGenerated(run, context, generatedResponse, sources, retrievalResult.status)
+      const assistantArtifact = this.repository.createArtifact({ learnerId: run.learnerId, practiceRunId: input.runId, kind: 'tutor_reply', sourceKind: 'tutor', verificationStatus: 'model_generated', content: tutor.response, metadata: { intent: tutor.intent, sourceRefs: tutor.sourceRefs, invocationId: invocation.id } })
+      this.repository.appendEvent({ learnerId: run.learnerId, practiceRunId: input.runId, actor: 'tutor', type: 'tutor_reply', stage: run.stage, payload: { ...tutor, provider: 'model' }, artifactRefs: [assistantArtifact.id] })
+      this.repository.saveTutorTurn({ practiceRunId: input.runId, userArtifactId: userArtifact.id, assistantArtifactId: assistantArtifact.id, mode: tutor.intent, provider: 'model', sourceStatus: tutor.sourceStatus })
+      const decision = decideAfterMessage(run, contextSnapshot.events)
+      const nextCount = input.message.trim().length < 12 ? run.noProgressCount + 1 : 0
+      const updated = this.repository.updatePracticeRun(input.runId, { stage: decision.nextStage, noProgressCount: nextCount, hintLevel: nextCount >= 3 ? Math.min(3, run.hintLevel + 1) : run.hintLevel })
+      this.repository.upsertStageMemory({ practiceRunId: input.runId, stage: updated.stage, memory: { currentGap: tutor.currentGap, latestQuestion: tutor.nextQuestion, hintLevel: updated.hintLevel }, sourceEventRefs: this.repository.listEvents(input.runId).slice(-2).map((event) => event.id) })
+      const completedInvocation = this.repository.updateTutorInvocation(invocation.id, { status: 'succeeded', retrievalStatus: retrievalResult.status, sourceIds: sources.map((source) => source.id), latencyMs: Date.now() - startedAt })
+      const result = { invocation: completedInvocation, run: updated, tutor, snapshot: this.repository.snapshot(input.runId), sources: this.tutorSources(sources) }
+      await emit?.({ type: 'completed', invocationId: completedInvocation.id, run: result.run, tutor, snapshot: result.snapshot, sources: result.sources })
+      return result
+    } catch (error) {
+      const failure = error instanceof TutorProviderError ? error : new TutorProviderError('tutor_failed', error instanceof Error ? error.message : 'Tutor 调用失败')
+      const failed = this.repository.updateTutorInvocation(invocation.id, { status: 'failed', retrievalStatus: sources.length > 0 ? 'retrieved' : 'unavailable', sourceIds: sources.map((source) => source.id), failureCode: failure.code, failureMessage: failure.message, latencyMs: Date.now() - startedAt })
+      this.repository.appendEvent({ learnerId: run.learnerId, practiceRunId: input.runId, actor: 'tutor', type: 'tutor_failed', stage: run.stage, payload: { invocationId: invocation.id, code: failure.code, retryable: failure.retryable } })
+      await emit?.({ type: 'failed', invocationId: failed.id, code: failure.code, message: failure.message, retryable: failure.retryable })
+      throw failure
+    }
+  }
+
+  async streamTutor(input: { runId: string; message: string; clientRequestId: string }, emit: (event: TutorStreamEvent) => Promise<void> | void): Promise<TutorStreamResult> {
+    return this.withRunLock(input.runId, () => this.runTutor(input, emit))
+  }
+
+  async retryTutor(runId: string, invocationId: string, emit: (event: TutorStreamEvent) => Promise<void> | void): Promise<TutorStreamResult> {
+    const invocation = this.repository.getTutorInvocation(invocationId)
+    if (invocation.practiceRunId !== runId) throw new LabError('not_found', 'Tutor 调用不存在', 404)
+    const message = this.repository.getArtifact(invocation.userArtifactId).content
+    return this.streamTutor({ runId, message, clientRequestId: randomUUID() }, emit)
+  }
+
+  getTutorInvocation(runId: string, invocationId: string): TutorInvocation {
+    const invocation = this.repository.getTutorInvocation(invocationId)
+    if (invocation.practiceRunId !== runId) throw new LabError('not_found', 'Tutor 调用不存在', 404)
+    return invocation
+  }
+
   async ask(runId: string, message: string, clientRequestId?: string): Promise<{ run: PracticeRun; tutor: TutorResponse; snapshot: PracticeSnapshot }> {
-    const run = this.run(runId); const snapshot = this.repository.snapshot(runId); const requestId = clientRequestId ?? randomUUID()
-    const userArtifact = this.repository.createArtifact({ learnerId: run.learnerId, practiceRunId: runId, kind: 'user_message', sourceKind: 'user', verificationStatus: 'not_applicable', content: message, metadata: { clientRequestId: requestId } })
-    this.repository.appendEvent({ learnerId: run.learnerId, practiceRunId: runId, actor: 'user', type: 'user_message', stage: run.stage, payload: { message }, artifactRefs: [userArtifact.id], clientRequestId: requestId })
-    const nextSnapshot = this.repository.snapshot(runId)
-    const tutor = await this.tutor.respond(run, buildTutorContext({ goal: this.goalForRun(run), run, events: nextSnapshot.events, artifacts: nextSnapshot.artifacts, pathNodes: nextSnapshot.pathNodes, stageMemories: nextSnapshot.stageMemories, sourceIds: this.repository.listSources().map((source) => source.id) }), message)
-    const assistantArtifact = this.repository.createArtifact({ learnerId: run.learnerId, practiceRunId: runId, kind: 'tutor_reply', sourceKind: 'tutor', verificationStatus: 'model_generated', content: tutor.response, metadata: { intent: tutor.intent, sourceRefs: tutor.sourceRefs } })
-    this.repository.appendEvent({ learnerId: run.learnerId, practiceRunId: runId, actor: 'tutor', type: 'tutor_reply', stage: run.stage, payload: { ...tutor, provider: tutor.provider }, artifactRefs: [assistantArtifact.id] })
-    this.repository.saveTutorTurn({ practiceRunId: runId, userArtifactId: userArtifact.id, assistantArtifactId: assistantArtifact.id, mode: tutor.intent, provider: tutor.provider, sourceStatus: tutor.sourceStatus })
-    const decision = decideAfterMessage(run, nextSnapshot.events)
-    const nextCount = message.trim().length < 12 ? run.noProgressCount + 1 : 0
-    const updated = this.repository.updatePracticeRun(runId, { stage: decision.nextStage, noProgressCount: nextCount, hintLevel: nextCount >= 3 ? Math.min(3, run.hintLevel + 1) : run.hintLevel })
-    this.repository.upsertStageMemory({ practiceRunId: runId, stage: updated.stage, memory: { currentGap: tutor.currentGap, latestQuestion: tutor.nextQuestion, hintLevel: updated.hintLevel }, sourceEventRefs: this.repository.listEvents(runId).slice(-2).map((event) => event.id) })
-    return { run: updated, tutor, snapshot: this.repository.snapshot(runId) }
+    const result = await this.withRunLock(runId, () => this.runTutor({ runId, message, clientRequestId: clientRequestId ?? randomUUID() }))
+    if (!result.tutor) throw new LabError('tutor_unavailable', 'Tutor 暂时不可用，请稍后重试', 503, true)
+    return { run: result.run, tutor: result.tutor, snapshot: result.snapshot }
   }
 
   async executeLab(input: { runId: string; token: string; revision: number; sessionId: string; statement: string; clientRequestId: string }): Promise<{ execution: LabExecutionResult; run: PracticeRun; snapshot: PracticeSnapshot }> {

@@ -1,9 +1,9 @@
 import { computed, ref } from 'vue'
 import { defineStore } from 'pinia'
 import { ApiError } from '@/api/client'
-import { executeProductLab, getProductLabAccess, getProductSnapshot, sendProductTutor, startProductPractice, submitProductArtifact } from '@/api/productService'
+import { executeProductLab, getProductLabAccess, getProductPracticeHistory, getProductSnapshot, reopenProductLab, retryProductTutor, startProductPractice, streamProductTutor, submitProductArtifact } from '@/api/productService'
 import type { LabCaseId, LabExecutionResult } from '@/types/lab'
-import type { ProductPracticeRun, ProductPracticeStart, ProductSnapshot, ProductTutorMessage, ProductTutorResponse } from '@/types/product'
+import type { ProductPracticeHistoryItem, ProductPracticeRun, ProductPracticeStart, ProductSnapshot, ProductTutorMessage, ProductTutorResponse, ProductTutorSource, ProductTutorStreamEvent } from '@/types/product'
 import { useLabStore } from './lab'
 
 export const usePracticeStore = defineStore('practice', () => {
@@ -12,6 +12,10 @@ export const usePracticeStore = defineStore('practice', () => {
   const run = ref<ProductPracticeRun | null>(null)
   const snapshot = ref<ProductSnapshot | null>(null)
   const messages = ref<ProductTutorMessage[]>([])
+  const history = ref<ProductPracticeHistoryItem[]>([])
+  const sources = ref<ProductTutorSource[]>([])
+  const tutorFailure = ref<{ invocationId: string; code: string; message: string; retryable: boolean } | null>(null)
+  const invocationId = ref<string | null>(null)
   const lastTutor = ref<ProductTutorResponse | null>(null)
   const starting = ref(false)
   const tutorLoading = ref(false)
@@ -24,13 +28,29 @@ export const usePracticeStore = defineStore('practice', () => {
   function hydrate(data: ProductSnapshot) {
     run.value = data.run; snapshot.value = data
     const nextMessages: ProductTutorMessage[] = []
-    for (const turn of data.tutorTurns) {
-      const user = data.artifacts.find((artifact) => artifact.id === turn.userArtifactId)
-      const assistant = data.artifacts.find((artifact) => artifact.id === turn.assistantArtifactId)
-      if (user) nextMessages.push({ id: user.id, role: 'user', content: user.content })
-      if (assistant) nextMessages.push({ id: assistant.id, role: 'assistant', content: assistant.content, source: `${turn.provider === 'scripted' ? '知行预置 Tutor' : '知行 AI'} · ${turn.sourceStatus}` })
+    const turnByUser = new Map(data.tutorTurns.map((turn) => [turn.userArtifactId, turn]))
+    for (const artifact of data.artifacts.filter((item) => item.kind === 'user_message').sort((a, b) => a.createdAt.localeCompare(b.createdAt))) {
+      nextMessages.push({ id: artifact.id, role: 'user', content: artifact.content })
+      const turn = turnByUser.get(artifact.id); const assistant = turn?.assistantArtifactId ? data.artifacts.find((item) => item.id === turn.assistantArtifactId) : undefined
+      if (assistant) nextMessages.push({ id: assistant.id, role: 'assistant', content: assistant.content, source: `${turn?.provider === 'scripted' ? '知行预置 Tutor' : '知行 AI'} · ${turn?.sourceStatus ?? 'unknown'}` })
     }
     messages.value = nextMessages
+    const replyEvent = [...data.events].reverse().find((event) => event.type === 'tutor_reply' && typeof event.payload.response === 'string')
+    lastTutor.value = replyEvent ? replyEvent.payload as unknown as ProductTutorResponse : null
+  }
+
+  async function loadHistory() {
+    try { history.value = (await getProductPracticeHistory()).items } catch (cause) { error.value = cause instanceof Error ? cause.message : '实践历史加载失败' }
+  }
+
+  async function selectHistory(practiceId: string) {
+    if (restoring.value || run.value?.id === practiceId) return
+    restoring.value = true; error.value = null
+    try {
+      const data = await getProductSnapshot(practiceId)
+      useLabStore().clear(); hydrate(data)
+      if (typeof window !== 'undefined') window.localStorage.setItem(lastPracticeKey, practiceId)
+    } catch (cause) { error.value = cause instanceof Error ? cause.message : '实践历史加载失败' } finally { restoring.value = false }
   }
 
   async function restoreActive() {
@@ -93,6 +113,7 @@ export const usePracticeStore = defineStore('practice', () => {
       }
       snapshot.value = await getProductSnapshot(result.practice.id)
       hydrate(snapshot.value)
+      await loadHistory()
       if (result.queue) {
         error.value = `当前案例正在排队，第 ${result.queue.position ?? '—'} 位`
         pollLabAccess(result.practice.id)
@@ -121,11 +142,45 @@ export const usePracticeStore = defineStore('practice', () => {
 
   async function ask(message: string) {
     if (!run.value || tutorLoading.value) return
-    tutorLoading.value = true; error.value = null; messages.value.push({ id: `local-${crypto.randomUUID()}`, role: 'user', content: message })
+    await streamTutor(run.value.id, message, crypto.randomUUID())
+  }
+
+  function applyTutorEvent(event: ProductTutorStreamEvent) {
+    if (event.type === 'accepted') { invocationId.value = event.invocationId; return }
+    if (event.type === 'sources') { sources.value = event.items; return }
+    if (event.type === 'answer_delta') {
+      const current = messages.value.find((message) => message.id === `stream-${event.invocationId}`)
+      if (current) current.content += event.delta
+      else messages.value.push({ id: `stream-${event.invocationId}`, role: 'assistant', content: event.delta, source: '知行 AI · 流式回答' })
+      return
+    }
+    if (event.type === 'completed') { run.value = event.run; lastTutor.value = event.tutor; sources.value = event.sources; hydrate(event.snapshot); tutorFailure.value = null; return }
+    if (event.type === 'failed') { tutorFailure.value = { invocationId: event.invocationId, code: event.code, message: event.message, retryable: event.retryable }; error.value = `模型暂不可用：${event.message}` }
+  }
+
+  async function streamTutor(runId: string, message: string, requestId: string) {
+    tutorLoading.value = true; error.value = null; tutorFailure.value = null; sources.value = []
+    messages.value.push({ id: `local-${crypto.randomUUID()}`, role: 'user', content: message })
+    try { await streamProductTutor(runId, message, requestId, applyTutorEvent); await loadHistory() } catch (cause) { if (!tutorFailure.value) error.value = cause instanceof Error ? cause.message : 'Tutor 暂时不可用' } finally { tutorLoading.value = false }
+  }
+
+  async function retryTutor() {
+    if (!run.value || !tutorFailure.value || tutorLoading.value) return
+    tutorLoading.value = true; error.value = null; const failure = tutorFailure.value; sources.value = []
+    try { await retryProductTutor(run.value.id, failure.invocationId, applyTutorEvent); await loadHistory() } catch (cause) { if (!tutorFailure.value) error.value = cause instanceof Error ? cause.message : 'Tutor 暂时不可用' } finally { tutorLoading.value = false }
+  }
+
+  async function reopen(practiceId = run.value?.id) {
+    if (!practiceId || starting.value) return
+    starting.value = true; error.value = null
     try {
-      const result = await sendProductTutor(run.value.id, message)
-      run.value = result.run; lastTutor.value = result.tutor; hydrate(result.snapshot)
-    } catch (cause) { error.value = cause instanceof Error ? cause.message : 'Tutor 暂时不可用' } finally { tutorLoading.value = false }
+      const result = await reopenProductLab(practiceId)
+      run.value = result.practice
+      if (typeof window !== 'undefined') { window.localStorage.setItem(activePracticeKey, practiceId); window.localStorage.setItem(lastPracticeKey, practiceId) }
+      if (result.lab) await useLabStore().adoptRun(result.lab.run, result.lab.accessToken)
+      if (result.queue) { error.value = `当前案例正在排队，第 ${result.queue.position ?? '—'} 位`; void pollLabAccess(practiceId) }
+      hydrate(await getProductSnapshot(practiceId)); await loadHistory()
+    } catch (cause) { error.value = cause instanceof Error ? cause.message : 'Lab 续开失败' } finally { starting.value = false }
   }
 
   async function execute() {
@@ -162,6 +217,6 @@ export const usePracticeStore = defineStore('practice', () => {
   }
 
   async function addExternal(content: string) { if (run.value && content.trim()) { await submitProductArtifact(run.value.id, content); snapshot.value = await getProductSnapshot(run.value.id); hydrate(snapshot.value) } }
-  function clear() { if (queueTimer !== null) window.clearTimeout(queueTimer); queueTimer = null; run.value = null; snapshot.value = null; messages.value = []; lastTutor.value = null; error.value = null; if (typeof window !== 'undefined') window.localStorage.removeItem(activePracticeKey) }
-  return { run, snapshot, messages, lastTutor, starting, restoring, tutorLoading, error, currentGap, nextQuestion, start, restoreActive, restoreRecord, ask, execute, addExternal, clear }
+  function clear() { if (queueTimer !== null) window.clearTimeout(queueTimer); queueTimer = null; run.value = null; snapshot.value = null; messages.value = []; lastTutor.value = null; sources.value = []; tutorFailure.value = null; invocationId.value = null; error.value = null; if (typeof window !== 'undefined') window.localStorage.removeItem(activePracticeKey) }
+  return { run, snapshot, messages, history, sources, tutorFailure, invocationId, lastTutor, starting, restoring, tutorLoading, error, currentGap, nextQuestion, start, loadHistory, selectHistory, restoreActive, restoreRecord, ask, retryTutor, reopen, execute, addExternal, clear }
 })

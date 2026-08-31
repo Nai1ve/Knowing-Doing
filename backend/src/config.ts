@@ -31,6 +31,9 @@ export interface LabConfig {
   modelApiKey: string
   modelName: string
   modelTimeoutMs: number
+  zhihuCliPath: string
+  retrievalTimeoutMs: number
+  retrievalCacheTtlMs: number
   caseIds: CaseId[]
 }
 
@@ -63,6 +66,9 @@ export function loadConfig(): LabConfig {
     modelApiKey: process.env.ZHIXING_MODEL_API_KEY ?? '',
     modelName: process.env.ZHIXING_MODEL_NAME ?? 'default',
     modelTimeoutMs: numberEnv('ZHIXING_MODEL_TIMEOUT_MS', 5 * 60 * 1000),
+    zhihuCliPath: process.env.ZHIXING_ZHIHU_CLI_PATH ?? '',
+    retrievalTimeoutMs: numberEnv('ZHIXING_RETRIEVAL_TIMEOUT_MS', 15_000),
+    retrievalCacheTtlMs: numberEnv('ZHIXING_RETRIEVAL_CACHE_TTL_MS', 24 * 60 * 60 * 1000),
     caseIds: [
       'mysql-order-list-index-001',
       'mysql-deadlock-lock-order-001',

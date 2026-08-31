@@ -1,73 +1,130 @@
-import { z } from 'zod'
 import type { LabConfig } from './config.js'
-import type { PracticeRun, TutorResponse } from './product-types.js'
+import type { PracticeRun, SourceItem, TutorResponse, TutorSource } from './product-types.js'
 import type { TutorContext } from './context.js'
 
-const tutorResponseSchema = z.object({
-  response: z.string().min(1),
-  intent: z.enum(['clarify', 'triage', 'evidence_request', 'attempt_review', 'tradeoff', 'reflect']),
-  currentGap: z.string(),
-  nextQuestion: z.string(),
-  suggestedActions: z.array(z.string()).min(1).max(3),
-  evidenceRefs: z.array(z.string()),
-  sourceRefs: z.array(z.object({ sourceId: z.string(), reason: z.string() })),
-  provider: z.enum(['model', 'scripted']).optional(),
-  sourceStatus: z.enum(['retrieved', 'general_model_knowledge', 'not_needed']).optional(),
-})
-
-function fallback(run: PracticeRun, context: TutorContext, message: string): TutorResponse {
-  const common = { evidenceRefs: context.rawEvidence.map((item) => item.id), sourceRefs: [], provider: 'scripted' as const, sourceStatus: 'general_model_knowledge' as const }
-  if (run.stage === 'observe') return { ...common, response: `先把你的判断记录下来：${message}\n\n当前只知道症状，还没有把症状和一份原始证据对应起来。`, intent: 'clarify', currentGap: '缺少与症状对应的原始慢日志或执行计划。', nextQuestion: '你现在认为哪一条证据最能缩小问题范围？', suggestedActions: ['说明你看到的现象和约束', '提交或请求一段脱敏慢日志'] }
-  if (run.stage === 'hypothesize') return { ...common, response: `这个方向可以尝试，但先不要把它当成结论。请说明你准备如何验证它。`, intent: 'evidence_request', currentGap: '缺少能支持或推翻当前假设的最小实验。', nextQuestion: '你准备执行什么动作，成功或失败分别会改变什么判断？', suggestedActions: ['写下假设和预期结果', '执行一条最小 EXPLAIN'] }
-  if (run.stage === 'inspect') return { ...common, response: '先由你观察执行计划，不急着背字段定义。把最异常的一项和你的理由说出来。', intent: 'clarify', currentGap: '还没有记录用户对执行计划的观察。', nextQuestion: 'type、key、rows、Extra 中，哪一项最能解释当前现象？为什么？', suggestedActions: ['指出一个异常字段', '说明它与 p99 症状的关联'] }
-  if (run.stage === 'attempt') return { ...common, response: '这次尝试已经被记录。结果不等于结论，先比较它和原始基线到底改变了什么。', intent: 'attempt_review', currentGap: '缺少对尝试结果的解释和下一步调整。', nextQuestion: '这次结果支持还是削弱了你的假设？证据在哪里？', suggestedActions: ['对比 EXPLAIN 的 rows/key/Extra', '说明是否改变了结果语义'] }
-  if (run.stage === 'verify') return { ...common, response: '现在进入验证，不只看“更快”。需要同时确认结果集语义、成本变化和方案代价。', intent: 'tradeoff', currentGap: '尚未完成结果集、成本和残余风险的联合验证。', nextQuestion: '你用什么证据证明优化后仍然返回同一批业务结果？', suggestedActions: ['运行前后对比查询', '记录基准耗时和扫描成本'] }
-  return { ...common, response: '实践已经达到解决态。接下来把根因、证据、失败尝试和残余风险整理成可编辑复盘。', intent: 'reflect', currentGap: '需要整理可公开的工程复盘。', nextQuestion: '如果把这次问题写成知乎文章，最值得保留的判断转折是什么？', suggestedActions: ['查看实践路径', '生成笔记大纲'] }
+export interface TutorGenerated {
+  response: string
+  sourceRefs: Array<{ sourceId: string; reason: string }>
 }
 
-function modelUrl(baseUrl: string): string {
-  return `${baseUrl.replace(/\/$/, '')}/chat/completions`
+export class TutorProviderError extends Error {
+  constructor(public readonly code: string, message: string, public readonly retryable = true, public readonly statusCode?: number) {
+    super(message)
+    this.name = 'TutorProviderError'
+  }
+}
+
+function modelUrl(baseUrl: string): string { return `${baseUrl.replace(/\/$/, '')}/chat/completions` }
+
+function stageGuidance(stage: PracticeRun['stage']): Pick<TutorResponse, 'intent' | 'nextQuestion' | 'suggestedActions'> {
+  if (stage === 'observe') return { intent: 'clarify', nextQuestion: '你观察到的现象，能由哪一条原始证据直接支持？', suggestedActions: ['描述现象与约束', '指出最值得先验证的证据'] }
+  if (stage === 'hypothesize') return { intent: 'evidence_request', nextQuestion: '你的假设是什么，哪一个最小实验可以支持或推翻它？', suggestedActions: ['写下假设与预期', '执行一条最小 EXPLAIN'] }
+  if (stage === 'inspect') return { intent: 'clarify', nextQuestion: '执行计划中哪一项最能解释当前现象？为什么？', suggestedActions: ['指出 type、key、rows 或 Extra 的异常', '把字段和 p99 联系起来'] }
+  if (stage === 'attempt') return { intent: 'attempt_review', nextQuestion: '这次结果支持还是削弱了你的假设？和原始基线相比改变了什么？', suggestedActions: ['对比基线与当前 EXPLAIN', '说明结果语义是否改变'] }
+  if (stage === 'verify') return { intent: 'tradeoff', nextQuestion: '你用什么证据证明优化后结果一致、成本下降且代价可接受？', suggestedActions: ['对比结果集与成本', '记录索引代价和残余风险'] }
+  return { intent: 'reflect', nextQuestion: '这次实践中最值得写进工程复盘的判断转折是什么？', suggestedActions: ['整理根因与证据', '生成可编辑复盘大纲'] }
+}
+
+function stripThinking(value: string): string {
+  const endTokens = ['<｜end▁of▁thinking｜>', '</think>', '</thinking>']
+  let result = value
+  const end = endTokens.map((token) => result.lastIndexOf(token)).sort((a, b) => b - a)[0] ?? -1
+  if (end >= 0) result = result.slice(end + endTokens.find((token) => result.lastIndexOf(token) === end)!.length)
+  const starts = ['<think>', '<thinking>']
+  const start = starts.map((token) => result.indexOf(token)).filter((index) => index >= 0).sort((a, b) => a - b)[0]
+  if (start !== undefined) result = result.slice(0, start)
+  return result.replace(/<\/?think(?:ing)?>/gi, '').trim()
+}
+
+function extractSourceRefs(value: string, sources: SourceItem[]): TutorGenerated {
+  const sourceMap = new Map(sources.map((source) => [source.id, source]))
+  const refs: Array<{ sourceId: string; reason: string }> = []
+  const response = value.replace(/\[\[source:([^\]]+)\]\]/g, (_match, sourceId: string) => {
+    const source = sourceMap.get(sourceId)
+    if (source) refs.push({ sourceId, reason: `用于补充“${source.title}”中的相关经验，仍需以 Lab 证据为准。` })
+    return ''
+  }).replace(/\s{2,}/g, ' ').trim()
+  return { response, sourceRefs: refs.filter((ref, index) => refs.findIndex((item) => item.sourceId === ref.sourceId) === index) }
+}
+
+function streamVisible(value: string): string {
+  return value.replace(/\[\[source:[^\]]+\]\]/g, '').replace(/\[\[source:[^\]]*$/, '').replace(/\s{2,}/g, ' ')
+}
+
+function sourcesForPrompt(sources: SourceItem[]): Array<Pick<SourceItem, 'id' | 'title' | 'author' | 'url' | 'excerpt' | 'retrievedAt'>> {
+  return sources.slice(0, 3).map(({ id, title, author, url, excerpt, retrievedAt }) => ({ id, title, author, url, excerpt: excerpt.slice(0, 1800), retrievedAt }))
+}
+
+export function tutorResponseFromGenerated(run: PracticeRun, context: TutorContext, generated: TutorGenerated, sources: SourceItem[], retrievalStatus: 'retrieved' | 'empty' | 'unavailable' = sources.length > 0 ? 'retrieved' : 'empty'): TutorResponse {
+  const guidance = stageGuidance(run.stage)
+  return { response: generated.response, ...guidance, currentGap: context.hot.currentGap ?? '还需要一份可验证的实验或解释证据。', evidenceRefs: context.rawEvidence.map((item) => item.id), sourceRefs: generated.sourceRefs, provider: 'model', sourceStatus: generated.sourceRefs.length > 0 || sources.length > 0 ? 'retrieved' : retrievalStatus === 'unavailable' ? 'unavailable' : 'not_needed' }
 }
 
 export class TutorEngine {
   constructor(private readonly config: Pick<LabConfig, 'modelBaseUrl' | 'modelApiKey' | 'modelName' | 'modelTimeoutMs'>) {}
 
-  async respond(run: PracticeRun, context: TutorContext, message: string): Promise<TutorResponse> {
-    if (!this.config.modelBaseUrl || !this.config.modelApiKey) return fallback(run, context, message)
-    const controller = new AbortController(); const timeout = setTimeout(() => controller.abort(), this.config.modelTimeoutMs)
+  get providerName(): string { return 'deepseek' }
+  get configuredModelName(): string { return this.config.modelName }
+
+  async generate(run: PracticeRun, context: TutorContext, message: string, sources: SourceItem[], onDelta?: (delta: string) => void): Promise<TutorGenerated> {
+    if (!this.config.modelBaseUrl || !this.config.modelApiKey) throw new TutorProviderError('model_not_configured', '模型服务尚未配置', false)
+    const controller = new AbortController()
+    const timeout = setTimeout(() => controller.abort(), this.config.modelTimeoutMs)
     const startedAt = Date.now()
     try {
       const response = await fetch(modelUrl(this.config.modelBaseUrl), {
         method: 'POST', signal: controller.signal, headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${this.config.modelApiKey}` },
-        body: JSON.stringify({ model: this.config.modelName, temperature: 0.2, response_format: { type: 'json_object' }, messages: [
-          { role: 'system', content: '你是知行 Tutor。只基于给定上下文回答。不得伪造知乎来源、实验结果或推进状态。输出严格 JSON，且只能包含字段 response,intent,currentGap,nextQuestion,suggestedActions,evidenceRefs,sourceRefs。intent 只能使用以下值之一：clarify（澄清现象或观察）、triage（初步分流）、evidence_request（要求补充证据）、attempt_review（复盘一次尝试）、tradeoff（比较方案代价）、reflect（总结反思）。不要使用其他 intent 名称，例如 observe_slow_log、guide 或 diagnose；如果无法确定，使用 clarify。sourceRefs 必须是给定 availableSourceIds 中的 sourceId，不能编造来源。' },
-          { role: 'user', content: JSON.stringify({ message, context }) },
+        body: JSON.stringify({ model: this.config.modelName, temperature: 0.2, stream: true, thinking: { type: 'disabled' }, messages: [
+          { role: 'system', content: '你是知行 Tutor。请用中文自然语言回答，不要输出 JSON、思维过程或固定模板。只根据实践上下文和给定来源回答：帮助用户观察、提出可验证假设、设计最小实验并解释证据。不要替用户宣布实验成功，不得伪造知乎来源。需要引用来源时，在对应句末使用 [[source:来源id]]；不需要引用时不要添加标记。' },
+          { role: 'user', content: JSON.stringify({ message, context: { ...context, availableSourceIds: sources.map((source) => source.id), sources: sourcesForPrompt(sources) } }) },
         ] }),
       })
-      if (!response.ok) throw new Error(`model status ${response.status}`)
-      const payload = await response.json() as { choices?: Array<{ message?: { content?: string } }> }
-      const content = payload.choices?.[0]?.message?.content
-      if (!content) throw new Error('model returned empty content')
-      const parsed = JSON.parse(content) as unknown
-      const validated = tutorResponseSchema.parse(parsed)
-      const sourceRefs = validated.sourceRefs.filter((source) => context.availableSourceIds.includes(source.sourceId))
-      return { ...validated, sourceRefs, provider: 'model', sourceStatus: sourceRefs.length > 0 ? 'retrieved' : 'general_model_knowledge' }
+      if (!response.ok) throw new TutorProviderError(`model_http_${response.status}`, `模型服务返回 HTTP ${response.status}`, response.status >= 500 || response.status === 429, response.status)
+      if (!response.body) throw new TutorProviderError('model_empty_stream', '模型没有返回可读取的流', true)
+      const reader = response.body.getReader(); const decoder = new TextDecoder(); let buffer = ''; let raw = ''; let emitted = ''
+      const consume = (line: string) => {
+        if (!line.startsWith('data:')) return
+        const data = line.slice(5).trim()
+        if (!data || data === '[DONE]') return
+        let payload: unknown
+        try { payload = JSON.parse(data) } catch { throw new TutorProviderError('model_invalid_stream', '模型流返回了无法解析的数据', true) }
+        const choice = (payload as { choices?: Array<{ delta?: { content?: unknown; reasoning_content?: unknown } }> }).choices?.[0]
+        const content = choice?.delta?.content
+        if (typeof content !== 'string') return
+        raw += content
+        const visible = streamVisible(stripThinking(raw))
+        if (visible.length > emitted.length && visible.startsWith(emitted)) { const delta = visible.slice(emitted.length); emitted = visible; onDelta?.(delta) }
+      }
+      while (true) {
+        const chunk = await reader.read()
+        if (chunk.done) break
+        buffer += decoder.decode(chunk.value, { stream: true })
+        let lineEnd = buffer.indexOf('\n')
+        while (lineEnd >= 0) { consume(buffer.slice(0, lineEnd).replace(/\r$/, '')); buffer = buffer.slice(lineEnd + 1); lineEnd = buffer.indexOf('\n') }
+      }
+      if (buffer.trim()) consume(buffer.trim())
+      const visible = stripThinking(raw)
+      if (!visible) throw new TutorProviderError('model_empty_answer', '模型返回了空回答', true)
+      let answer = visible
+      if (visible.trimStart().startsWith('{')) {
+        try {
+          const legacy = JSON.parse(visible) as { response?: unknown }
+          if (typeof legacy.response !== 'string' || !legacy.response.trim()) throw new Error('missing response')
+          answer = legacy.response
+        } catch { throw new TutorProviderError('model_non_natural_output', '模型返回格式无法规范化为自然语言回答', true) }
+      }
+      return extractSourceRefs(answer, sources)
     } catch (error) {
-      const failure = error instanceof Error
-        ? { type: error.name === 'AbortError' ? 'timeout' : error.name, message: error.message }
-        : { type: 'unknown', message: String(error) }
-      console.warn('[zhixing-tutor] model fallback', {
-        runId: run.id,
-        caseId: run.caseId,
-        stage: run.stage,
-        model: this.config.modelName,
-        elapsedMs: Date.now() - startedAt,
-        failureType: failure.type,
-        failureMessage: failure.message,
-      })
-      return fallback(run, context, message)
+      if (error instanceof TutorProviderError) throw error
+      if (error instanceof Error && error.name === 'AbortError') throw new TutorProviderError('model_timeout', '模型请求超时', true)
+      throw new TutorProviderError('model_request_failed', error instanceof Error ? error.message : '模型请求失败', true)
     } finally {
       clearTimeout(timeout)
+      console.info('[zhixing-tutor]', { runId: run.id, caseId: run.caseId, stage: run.stage, model: this.config.modelName, elapsedMs: Date.now() - startedAt })
     }
+  }
+
+  async respond(run: PracticeRun, context: TutorContext, message: string, sources: SourceItem[] = []): Promise<TutorResponse> {
+    return tutorResponseFromGenerated(run, context, await this.generate(run, context, message, sources), sources)
   }
 }

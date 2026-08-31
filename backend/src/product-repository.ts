@@ -3,8 +3,8 @@ import Database from 'better-sqlite3'
 import { assertProductMigrations, openProductDatabase } from './product-migrate.js'
 import type {
   Artifact, ArtifactKind, ArtifactSourceKind, CaseStage, EventActor, EventType, Intake, LearningPlan,
-  Learner, MemoryItem, PathNode, PlanUnit, PracticeEvent, PracticeRun, PracticeSnapshot, SourceItem,
-  StageMemory, VerificationStatus, WritingClaim, WritingDocument, WritingMaterial, WritingProject, WritingReviewItem, WritingSection,
+  LabSegment, Learner, MemoryItem, PathNode, PlanUnit, PracticeEvent, PracticeRun, PracticeSnapshot, SourceItem,
+  StageMemory, TutorInvocation, TutorInvocationStatus, VerificationStatus, WritingClaim, WritingDocument, WritingMaterial, WritingProject, WritingReviewItem, WritingSection,
 } from './product-types.js'
 
 type Row = Record<string, unknown>
@@ -114,6 +114,25 @@ function sourceFrom(row: Row): SourceItem {
   }
 }
 
+function labSegmentFrom(row: Row): LabSegment {
+  return {
+    id: text(row, 'id'), practiceRunId: text(row, 'practice_run_id'), labRunId: text(row, 'lab_run_id'),
+    fixtureVersion: text(row, 'fixture_version'), status: text(row, 'status') as LabSegment['status'],
+    startedAt: text(row, 'started_at'), endedAt: nullableText(row, 'ended_at'), endedReason: nullableText(row, 'ended_reason'),
+  }
+}
+
+function tutorInvocationFrom(row: Row): TutorInvocation {
+  return {
+    id: text(row, 'id'), practiceRunId: text(row, 'practice_run_id'), userArtifactId: text(row, 'user_artifact_id'),
+    clientRequestId: text(row, 'client_request_id'), provider: text(row, 'provider'), model: text(row, 'model'),
+    status: text(row, 'status') as TutorInvocationStatus, retrievalStatus: text(row, 'retrieval_status'),
+    sourceIds: json<string[]>(row.source_ids_json, []), failureCode: nullableText(row, 'failure_code'),
+    failureMessage: nullableText(row, 'failure_message'), latencyMs: row.latency_ms == null ? null : number(row, 'latency_ms'),
+    createdAt: text(row, 'created_at'), completedAt: nullableText(row, 'completed_at'),
+  }
+}
+
 function writingMaterialFrom(row: Row): WritingMaterial {
   return {
     id: text(row, 'id'), projectId: text(row, 'project_id'), category: text(row, 'category') as WritingMaterial['category'],
@@ -169,6 +188,13 @@ export interface AppendEventInput {
   payload: Record<string, unknown>
   artifactRefs?: string[]
   clientRequestId?: string | null
+}
+
+export interface PracticeHistoryRecord {
+  run: PracticeRun
+  lastActivityAt: string
+  lastTutorProvider: string | null
+  lastTutorSourceStatus: string | null
 }
 
 export class ProductRepository {
@@ -241,6 +267,20 @@ export class ProductRepository {
     return runFrom(row)
   }
 
+  listPracticeHistory(learnerId: string, options: { cursor?: { updatedAt: string; id: string }; limit: number }): PracticeHistoryRecord[] {
+    const cursorClause = options.cursor ? 'AND (r.updated_at < ? OR (r.updated_at = ? AND r.id < ?))' : ''
+    const values = options.cursor ? [learnerId, options.cursor.updatedAt, options.cursor.updatedAt, options.cursor.id, options.limit] : [learnerId, options.limit]
+    const rows = this.db.prepare(`SELECT r.*,
+        COALESCE((SELECT MAX(e.created_at) FROM practice_events e WHERE e.practice_run_id = r.id), r.updated_at) AS last_activity_at,
+        (SELECT t.provider FROM tutor_turns t WHERE t.practice_run_id = r.id ORDER BY t.created_at DESC, t.id DESC LIMIT 1) AS last_tutor_provider,
+        (SELECT t.source_status FROM tutor_turns t WHERE t.practice_run_id = r.id ORDER BY t.created_at DESC, t.id DESC LIMIT 1) AS last_tutor_source_status
+      FROM practice_runs r
+      WHERE r.learner_id = ? ${cursorClause}
+      ORDER BY r.updated_at DESC, r.id DESC
+      LIMIT ?`).all(...values) as Row[]
+    return rows.map((row) => ({ run: runFrom(row), lastActivityAt: text(row, 'last_activity_at'), lastTutorProvider: nullableText(row, 'last_tutor_provider'), lastTutorSourceStatus: nullableText(row, 'last_tutor_source_status') }))
+  }
+
   updatePracticeRun(id: string, update: Partial<Pick<PracticeRun, 'stage' | 'hintLevel' | 'noProgressCount' | 'status' | 'labRunId'>>): PracticeRun {
     const fields: string[] = []; const values: unknown[] = []
     for (const [key, value] of Object.entries(update)) {
@@ -251,6 +291,21 @@ export class ProductRepository {
     fields.push('updated_at = ?'); values.push(new Date().toISOString(), id)
     this.db.prepare(`UPDATE practice_runs SET ${fields.join(', ')} WHERE id = ?`).run(...values)
     return this.getPracticeRun(id)
+  }
+
+  createLabSegment(input: { practiceRunId: string; labRunId: string; fixtureVersion: string }): LabSegment {
+    const id = randomUUID(); const now = new Date().toISOString()
+    this.db.prepare(`INSERT INTO practice_lab_segments(id, practice_run_id, lab_run_id, fixture_version, status, started_at)
+      VALUES (?, ?, ?, ?, 'active', ?)`).run(id, input.practiceRunId, input.labRunId, input.fixtureVersion, now)
+    return labSegmentFrom(this.db.prepare('SELECT * FROM practice_lab_segments WHERE id = ?').get(id) as Row)
+  }
+
+  finishLabSegment(labRunId: string, reason: string): void {
+    this.db.prepare("UPDATE practice_lab_segments SET status = 'ended', ended_at = ?, ended_reason = ? WHERE lab_run_id = ? AND status = 'active'").run(new Date().toISOString(), reason, labRunId)
+  }
+
+  listLabSegments(practiceRunId: string): LabSegment[] {
+    return (this.db.prepare('SELECT * FROM practice_lab_segments WHERE practice_run_id = ? ORDER BY started_at ASC').all(practiceRunId) as Row[]).map(labSegmentFrom)
   }
 
   appendEvent(input: AppendEventInput): PracticeEvent {
@@ -355,6 +410,10 @@ export class ProductRepository {
     return (this.db.prepare(`SELECT * FROM source_items WHERE id IN (${placeholders}) ORDER BY retrieved_at DESC`).all(...ids) as Row[]).map(sourceFrom)
   }
 
+  listSourcesForQuery(provider: SourceItem['provider'], query: string, since: string, limit: number): SourceItem[] {
+    return (this.db.prepare('SELECT * FROM source_items WHERE provider = ? AND query = ? AND retrieved_at >= ? ORDER BY retrieved_at DESC LIMIT ?').all(provider, query, since, limit) as Row[]).map(sourceFrom)
+  }
+
   saveTutorTurn(input: { practiceRunId: string; userArtifactId: string | null; assistantArtifactId: string | null; mode: string; provider: string; sourceStatus: string }): void {
     this.db.prepare(`INSERT INTO tutor_turns(id, practice_run_id, user_artifact_id, assistant_artifact_id, mode, provider, source_status, created_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`).run(randomUUID(), input.practiceRunId, input.userArtifactId, input.assistantArtifactId, input.mode, input.provider, input.sourceStatus, new Date().toISOString())
@@ -362,6 +421,42 @@ export class ProductRepository {
 
   listTutorTurns(practiceRunId: string) {
     return (this.db.prepare('SELECT id, user_artifact_id, assistant_artifact_id, mode, provider, source_status, created_at FROM tutor_turns WHERE practice_run_id = ? ORDER BY created_at ASC').all(practiceRunId) as Row[]).map((row) => ({ id: text(row, 'id'), userArtifactId: nullableText(row, 'user_artifact_id'), assistantArtifactId: nullableText(row, 'assistant_artifact_id'), mode: text(row, 'mode'), provider: text(row, 'provider'), sourceStatus: text(row, 'source_status'), createdAt: text(row, 'created_at') }))
+  }
+
+  createTutorInvocation(input: { practiceRunId: string; userArtifactId: string; clientRequestId: string; provider: string; model: string }): TutorInvocation {
+    const id = randomUUID(); const now = new Date().toISOString()
+    this.db.prepare(`INSERT INTO tutor_invocations(id, practice_run_id, user_artifact_id, client_request_id, provider, model, status, retrieval_status, source_ids_json, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, 'running', 'not_requested', '[]', ?)`).run(id, input.practiceRunId, input.userArtifactId, input.clientRequestId, input.provider, input.model, now)
+    return tutorInvocationFrom(this.db.prepare('SELECT * FROM tutor_invocations WHERE id = ?').get(id) as Row)
+  }
+
+  getTutorInvocationByRequest(practiceRunId: string, clientRequestId: string): TutorInvocation | null {
+    const row = this.db.prepare('SELECT * FROM tutor_invocations WHERE practice_run_id = ? AND client_request_id = ?').get(practiceRunId, clientRequestId) as Row | undefined
+    return row ? tutorInvocationFrom(row) : null
+  }
+
+  getTutorInvocation(id: string): TutorInvocation {
+    const row = this.db.prepare('SELECT * FROM tutor_invocations WHERE id = ?').get(id) as Row | undefined
+    if (!row) throw new Error(`Tutor invocation not found: ${id}`)
+    return tutorInvocationFrom(row)
+  }
+
+  markRunningTutorInvocationsInterrupted(): number {
+    const result = this.db.prepare("UPDATE tutor_invocations SET status = 'interrupted', failure_code = 'service_restarted', failure_message = '服务在本次调用完成前重启', completed_at = ? WHERE status = 'running'").run(new Date().toISOString())
+    return result.changes
+  }
+
+  updateTutorInvocation(id: string, update: { status: TutorInvocationStatus; retrievalStatus?: string; sourceIds?: string[]; failureCode?: string | null; failureMessage?: string | null; latencyMs?: number | null }): TutorInvocation {
+    const now = new Date().toISOString()
+    const terminal = update.status === 'succeeded' || update.status === 'failed' || update.status === 'interrupted'
+    this.db.prepare(`UPDATE tutor_invocations SET status = ?, retrieval_status = COALESCE(?, retrieval_status), source_ids_json = COALESCE(?, source_ids_json), failure_code = ?, failure_message = ?, latency_ms = ?, completed_at = CASE WHEN ? = 1 THEN ? ELSE completed_at END WHERE id = ?`)
+      .run(update.status, update.retrievalStatus ?? null, update.sourceIds ? JSON.stringify(update.sourceIds) : null, update.failureCode ?? null, update.failureMessage ?? null, update.latencyMs ?? null, terminal ? 1 : 0, now, id)
+    return tutorInvocationFrom(this.db.prepare('SELECT * FROM tutor_invocations WHERE id = ?').get(id) as Row)
+  }
+
+  findTutorTurnByUserArtifact(userArtifactId: string): { id: string; userArtifactId: string | null; assistantArtifactId: string | null; mode: string; provider: string; sourceStatus: string; createdAt: string } | null {
+    const row = this.db.prepare('SELECT id, user_artifact_id, assistant_artifact_id, mode, provider, source_status, created_at FROM tutor_turns WHERE user_artifact_id = ? ORDER BY created_at DESC LIMIT 1').get(userArtifactId) as Row | undefined
+    return row ? { id: text(row, 'id'), userArtifactId: nullableText(row, 'user_artifact_id'), assistantArtifactId: nullableText(row, 'assistant_artifact_id'), mode: text(row, 'mode'), provider: text(row, 'provider'), sourceStatus: text(row, 'source_status'), createdAt: text(row, 'created_at') } : null
   }
 
   createWritingProject(input: { learnerId: string; practiceRunId: string }): WritingProject {

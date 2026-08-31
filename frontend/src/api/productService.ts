@@ -1,6 +1,6 @@
 import { ApiError, apiClient } from './client'
 import type { LabCaseId, LabExecutionResult } from '@/types/lab'
-import type { ProductArtifact, ProductIntake, ProductLabAccess, ProductLabExecution, ProductMemory, ProductPlan, ProductPracticeRun, ProductPracticeStart, ProductSnapshot, ProductTutorResponse, ProductWritingProject } from '@/types/product'
+import type { ProductArtifact, ProductIntake, ProductLabAccess, ProductLabExecution, ProductMemory, ProductPlan, ProductPracticeHistoryPage, ProductPracticeRun, ProductPracticeStart, ProductSnapshot, ProductTutorResponse, ProductTutorStreamEvent, ProductWritingProject } from '@/types/product'
 
 const learnerStorageKey = 'zhixing.learner.id'
 function learnerId(): string {
@@ -22,7 +22,46 @@ export function confirmProductPlan(planId: string): Promise<ProductPlan> { retur
 export function startProductPractice(caseId: LabCaseId, planUnitId?: string): Promise<ProductPracticeStart> { return product('/practice-runs', { method: 'POST', body: JSON.stringify({ caseId, planUnitId }) }) }
 export function getProductSnapshot(runId: string): Promise<ProductSnapshot> { return product(`/practice-runs/${runId}`) }
 export function getProductLabAccess(runId: string): Promise<ProductLabAccess> { return product(`/practice-runs/${runId}/lab`) }
+export function getProductPracticeHistory(cursor?: string, limit = 20): Promise<ProductPracticeHistoryPage> { return product(`/practice-runs?limit=${limit}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`) }
+export function reopenProductLab(runId: string): Promise<ProductPracticeStart> { return product(`/practice-runs/${runId}/reopen-lab`, { method: 'POST' }) }
 export function sendProductTutor(runId: string, message: string): Promise<{ run: ProductPracticeRun; tutor: ProductTutorResponse; snapshot: ProductSnapshot }> { return product(`/practice-runs/${runId}/messages`, { method: 'POST', body: JSON.stringify({ message, clientRequestId: crypto.randomUUID() }) }) }
+
+async function streamTutorRequest(path: string, body: Record<string, unknown>, onEvent: (event: ProductTutorStreamEvent) => void): Promise<void> {
+  const headers = new Headers({ Accept: 'text/event-stream' }); headers.set('Content-Type', 'application/json'); headers.set('X-Learner-Id', learnerId())
+  const response = await fetch(`${import.meta.env.VITE_API_BASE_URL ?? '/api'}${path}`, { method: 'POST', headers, body: JSON.stringify(body) })
+  if (!response.ok) {
+    const text = await response.text(); let payload: unknown
+    try { payload = JSON.parse(text) } catch { payload = text }
+    throw new ApiError(response.status, `Tutor 请求失败（${response.status}）`, payload)
+  }
+  if (!response.body) throw new ApiError(503, 'Tutor 没有返回流', undefined)
+  const reader = response.body.getReader(); const decoder = new TextDecoder(); let buffer = ''; let eventName = ''; let data = ''
+  const dispatch = () => {
+    if (!data) return
+    try { onEvent(JSON.parse(data) as ProductTutorStreamEvent) } catch { throw new ApiError(502, 'Tutor 事件无法解析') }
+    eventName = ''; data = ''
+  }
+  while (true) {
+    const chunk = await reader.read(); if (chunk.done) break
+    buffer += decoder.decode(chunk.value, { stream: true })
+    let lineEnd = buffer.indexOf('\n')
+    while (lineEnd >= 0) {
+      const line = buffer.slice(0, lineEnd).replace(/\r$/, ''); buffer = buffer.slice(lineEnd + 1)
+      if (!line) dispatch()
+      else if (line.startsWith('event:')) eventName = line.slice(6).trim()
+      else if (line.startsWith('data:')) data += line.slice(5).trim()
+      lineEnd = buffer.indexOf('\n')
+    }
+  }
+  if (buffer.trim()) { if (buffer.startsWith('data:')) data += buffer.slice(5).trim(); dispatch() }
+}
+
+export function streamProductTutor(runId: string, message: string, clientRequestId: string, onEvent: (event: ProductTutorStreamEvent) => void): Promise<void> {
+  return streamTutorRequest(`/product/practice-runs/${runId}/messages/stream`, { message, clientRequestId }, onEvent)
+}
+export function retryProductTutor(runId: string, invocationId: string, onEvent: (event: ProductTutorStreamEvent) => void): Promise<void> {
+  return streamTutorRequest(`/product/practice-runs/${runId}/tutor-invocations/${invocationId}/retry`, {}, onEvent)
+}
 export function submitProductArtifact(runId: string, content: string): Promise<ProductArtifact> { return product(`/practice-runs/${runId}/artifacts`, { method: 'POST', body: JSON.stringify({ content, kind: 'external_text', sourceKind: 'user' }) }) }
 export function executeProductLab(runId: string, labToken: string, input: { revision: number; sessionId: string; statement: string; clientRequestId: string }): Promise<ProductLabExecution> {
   return product<ProductLabExecution>(`/practice-runs/${runId}/lab-executions`, { method: 'POST', body: JSON.stringify(input) }, labToken).catch((error: unknown) => {

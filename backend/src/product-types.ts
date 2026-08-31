@@ -17,6 +17,8 @@ export type EventType =
   | 'article_draft_generated'
   | 'writing_material_selected'
   | 'writing_section_edited'
+  | 'tutor_failed'
+  | 'lab_reopened'
 
 export type WritingStatus = 'materials_ready' | 'outline_review' | 'article_review' | 'ready_for_preview'
 export type WritingDocumentKind = 'outline' | 'article'
@@ -178,7 +180,19 @@ export interface TutorResponse {
   evidenceRefs: string[]
   sourceRefs: TutorSourceRef[]
   provider: 'model' | 'scripted'
-  sourceStatus: 'retrieved' | 'general_model_knowledge' | 'not_needed'
+  sourceStatus: 'retrieved' | 'general_model_knowledge' | 'not_needed' | 'unavailable'
+}
+
+export interface TutorSource {
+  id: string
+  title: string
+  author: string | null
+  url: string
+  excerpt: string
+  retrievedAt: string
+  provider: SourceItem['provider']
+  role: string
+  reason: string
 }
 
 export interface PracticeSnapshot {
@@ -189,6 +203,54 @@ export interface PracticeSnapshot {
   stageMemories: StageMemory[]
   memories: MemoryItem[]
   tutorTurns: Array<{ id: string; userArtifactId: string | null; assistantArtifactId: string | null; mode: string; provider: string; sourceStatus: string; createdAt: string }>
+}
+
+export interface PracticeHistoryItem {
+  id: string
+  caseId: CaseId
+  stage: CaseStage
+  status: PracticeStatus
+  createdAt: string
+  updatedAt: string
+  lastActivityAt: string
+  lastTutorProvider: string | null
+  lastTutorSourceStatus: string | null
+  labState: 'active' | 'reopen_required' | 'none'
+}
+
+export interface PracticeHistoryPage {
+  items: PracticeHistoryItem[]
+  nextCursor: string | null
+}
+
+export interface LabSegment {
+  id: string
+  practiceRunId: string
+  labRunId: string
+  fixtureVersion: string
+  status: 'active' | 'ended'
+  startedAt: string
+  endedAt: string | null
+  endedReason: string | null
+}
+
+export type TutorInvocationStatus = 'running' | 'succeeded' | 'failed' | 'interrupted'
+
+export interface TutorInvocation {
+  id: string
+  practiceRunId: string
+  userArtifactId: string
+  clientRequestId: string
+  provider: string
+  model: string
+  status: TutorInvocationStatus
+  retrievalStatus: string
+  sourceIds: string[]
+  failureCode: string | null
+  failureMessage: string | null
+  latencyMs: number | null
+  createdAt: string
+  completedAt: string | null
 }
 
 export interface WritingMaterial {

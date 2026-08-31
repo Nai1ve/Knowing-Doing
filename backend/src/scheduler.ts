@@ -98,6 +98,11 @@ export class LabScheduler {
     return null
   }
 
+  isRunActive(runId: string): boolean {
+    for (const slot of this.slots.values()) if (slot.active?.runId === runId && !this.isExpired(slot.active)) return true
+    return false
+  }
+
   getTicket(ticketId: string): QueueTicketView {
     const ticket = this.findTicket(ticketId)
     if (ticket.status === 'waiting' && ticket.expiresAt <= Date.now()) ticket.status = 'expired'
