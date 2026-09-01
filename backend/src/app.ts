@@ -320,6 +320,9 @@ function registerWritingRoutes(app: FastifyInstance, service: WritingService, pr
   app.post('/api/product/practice-runs/:runId/writing/curation/refresh', async (request, reply) => {
     const runId = productRunId(request); practiceService.assertOwnership(runId, learnerId(request)); reply.send(service.refreshCuration(runId))
   })
+  app.post('/api/product/practice-runs/:runId/writing/curation/replay', async (request, reply) => {
+    const runId = productRunId(request); practiceService.assertOwnership(runId, learnerId(request)); reply.send(service.replayCuration(runId))
+  })
   app.patch('/api/product/practice-runs/:runId/writing/materials/:materialId', async (request, reply) => {
     practiceService.assertOwnership(productRunId(request), learnerId(request))
     const body = productBody(request); const selected = body.selected

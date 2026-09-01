@@ -87,6 +87,7 @@ export function updateWritingCuration(runId: string, clusterId: string, revision
   return product(`/practice-runs/${runId}/writing/clusters/${clusterId}`, { method: 'PATCH', body: JSON.stringify({ revision, status, userNote }) })
 }
 export function refreshWritingCuration(runId: string): Promise<ProductWritingClusterOverview> { return product(`/practice-runs/${runId}/writing/curation/refresh`, { method: 'POST' }) }
+export function replayWritingCuration(runId: string): Promise<ProductWritingClusterOverview> { return product(`/practice-runs/${runId}/writing/curation/replay`, { method: 'POST' }) }
 export function selectWritingMaterial(runId: string, materialId: string, selected: boolean, editorialNote?: string | null): Promise<ProductWritingProject> {
   return product(`/practice-runs/${runId}/writing/materials/${materialId}`, { method: 'PATCH', body: JSON.stringify({ selected, editorialNote }) })
 }

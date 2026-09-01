@@ -157,6 +157,45 @@ describe('product repository', () => {
     expect(detail.members.every((member) => member.role !== 'duplicate')).toBe(true)
   }))
 
+  it('refreshes stale curation when a practice gains new artifacts', () => withRepository((repository) => {
+    repository.ensureLearner('learner-1')
+    const run = repository.createPracticeRun({ learnerId: 'learner-1', caseId: 'mysql-order-list-index-001' })
+    const service = new WritingService(repository)
+    expect(service.curationOverview(run.id).clusters.find((cluster) => cluster.clusterKey === 'problem')?.memberCount).toBe(0)
+    repository.createArtifact({ learnerId: run.learnerId, practiceRunId: run.id, kind: 'user_message', sourceKind: 'user', verificationStatus: 'not_applicable', content: '我想定位这条慢查询为什么走全表扫描。' })
+    expect(service.curationOverview(run.id).clusters.find((cluster) => cluster.clusterKey === 'problem')?.memberCount).toBe(1)
+  }))
+
+  it('replays missing chat and SQL artifacts idempotently from practice events', () => withRepository((repository) => {
+    repository.ensureLearner('learner-1')
+    const run = repository.createPracticeRun({ learnerId: 'learner-1', caseId: 'mysql-order-list-index-001' })
+    repository.appendEvent({ learnerId: run.learnerId, practiceRunId: run.id, actor: 'system', type: 'case_presented', stage: 'observe', payload: { caseId: run.caseId, fixtureVersion: '2026-08-28.1' }, artifactRefs: [] })
+    repository.appendEvent({ learnerId: run.learnerId, practiceRunId: run.id, actor: 'user', type: 'user_message', stage: 'observe', payload: { message: '我先看执行计划。' }, artifactRefs: [] })
+    repository.appendEvent({ learnerId: run.learnerId, practiceRunId: run.id, actor: 'user', type: 'attempt_submitted', stage: 'attempt', payload: { statement: 'EXPLAIN SELECT * FROM orders WHERE user_id = 4242' }, artifactRefs: [] })
+    repository.appendEvent({ learnerId: run.learnerId, practiceRunId: run.id, actor: 'tutor', type: 'tutor_reply', stage: 'observe', payload: { response: '先观察 type、key 和 rows。', sourceRefs: [] }, artifactRefs: [] })
+
+    const service = new WritingService(repository)
+    service.replayCuration(run.id)
+    const first = repository.snapshot(run.id)
+    expect(first.artifacts.map((artifact) => artifact.kind).sort()).toEqual(['external_text', 'sql', 'tutor_reply', 'user_message'])
+    service.replayCuration(run.id)
+    expect(repository.snapshot(run.id).artifacts).toHaveLength(4)
+    expect(service.curationOverview(run.id).clusters.find((cluster) => cluster.clusterKey === 'attempts')?.memberCount).toBe(1)
+  }))
+
+  it('keeps the representative SQL beside its matching EXPLAIN evidence', () => withRepository((repository) => {
+    repository.ensureLearner('learner-1')
+    const run = repository.createPracticeRun({ learnerId: 'learner-1', caseId: 'mysql-order-list-index-001' })
+    const executionId = 'execution-1'
+    const sql = repository.createArtifact({ learnerId: run.learnerId, practiceRunId: run.id, kind: 'sql', sourceKind: 'lab', verificationStatus: 'not_applicable', content: 'EXPLAIN SELECT * FROM orders WHERE user_id = 4242', metadata: { executionId } })
+    repository.createArtifact({ learnerId: run.learnerId, practiceRunId: run.id, kind: 'explain', sourceKind: 'lab', verificationStatus: 'verified_lab', content: 'type=ALL key=NULL rows=100000', metadata: { executionId } })
+    const service = new WritingService(repository)
+    const overview = service.curationOverview(run.id)
+    const evidence = overview.clusters.find((cluster) => cluster.clusterKey === 'evidence')!
+    const detail = service.curationDetail(run.id, evidence.id, 'evidence')
+    expect(detail.members.some((member) => member.refId === sql.id && member.kind === 'sql')).toBe(true)
+  }))
+
   it('summarizes all six clusters and falls back when the model fails', async () => withRepositoryAsync(async (repository) => {
     repository.ensureLearner('learner-1')
     const run = repository.createPracticeRun({ learnerId: 'learner-1', caseId: 'mysql-order-list-index-001' })

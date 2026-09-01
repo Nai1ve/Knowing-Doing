@@ -1,6 +1,6 @@
 import { computed, ref } from 'vue'
 import { defineStore } from 'pinia'
-import { getWritingCurationCluster, getWritingCurationOverview, refreshWritingCuration, updateWritingCuration } from '@/api/productService'
+import { getWritingCurationCluster, getWritingCurationOverview, replayWritingCuration, updateWritingCuration } from '@/api/productService'
 import type { ProductWritingCluster, ProductWritingClusterDetail, ProductWritingClusterOverview } from '@/types/product'
 
 export const useCurationStore = defineStore('writingCuration', () => {
@@ -56,11 +56,13 @@ export const useCurationStore = defineStore('writingCuration', () => {
     } catch (cause) { error.value = cause instanceof Error ? cause.message : '聚类状态保存失败' } finally { saving.value = false }
   }
 
-  async function refresh() {
+  async function replay() {
     if (!runId.value || loading.value) return
     loading.value = true; error.value = null
-    try { overview.value = await refreshWritingCuration(runId.value); detail.value = null; activeClusterId.value = null; filter.value = 'key' } catch (cause) { error.value = cause instanceof Error ? cause.message : '证据地图刷新失败' } finally { loading.value = false }
+    try { overview.value = await replayWritingCuration(runId.value); detail.value = null; activeClusterId.value = null; filter.value = 'key' } catch (cause) { error.value = cause instanceof Error ? cause.message : '实践记录整理失败' } finally { loading.value = false }
   }
 
-  return { runId, overview, detail, activeClusterId, filter, loading, detailLoading, saving, error, acceptedCount, initialize, selectCluster, setFilter, loadMore, setStatus, refresh }
+  const refresh = replay
+
+  return { runId, overview, detail, activeClusterId, filter, loading, detailLoading, saving, error, acceptedCount, initialize, selectCluster, setFilter, loadMore, setStatus, replay, refresh }
 })

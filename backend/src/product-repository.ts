@@ -215,6 +215,7 @@ export interface CreateArtifactInput {
   verificationStatus: VerificationStatus
   content: string
   metadata?: Record<string, unknown>
+  createdAt?: string
 }
 
 export interface AppendEventInput {
@@ -371,11 +372,68 @@ export class ProductRepository {
   }
 
   createArtifact(input: CreateArtifactInput): Artifact {
-    const id = randomUUID(); const now = new Date().toISOString()
+    const id = randomUUID(); const now = input.createdAt ?? new Date().toISOString()
     const checksum = createHash('sha256').update(input.content).digest('hex')
     this.db.prepare(`INSERT INTO artifacts(id, learner_id, practice_run_id, kind, source_kind, verification_status, content, metadata_json, checksum, created_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(id, input.learnerId, input.practiceRunId ?? null, input.kind, input.sourceKind, input.verificationStatus, input.content, JSON.stringify(input.metadata ?? {}), checksum, now)
     return artifactFrom(this.db.prepare('SELECT * FROM artifacts WHERE id = ?').get(id) as Row)
+  }
+
+  replayMissingPracticeArtifacts(practiceRunId: string): { created: number; unresolved: number } {
+    const run = this.getPracticeRun(practiceRunId)
+    const events = this.listEvents(practiceRunId)
+    const artifacts = new Map(this.listArtifacts(practiceRunId).map((artifact) => [artifact.id, artifact]))
+    const replayedByEvent = new Map<string, string>()
+    for (const artifact of artifacts.values()) {
+      const replayedFrom = artifact.metadata.replayedFromEventId
+      if (typeof replayedFrom === 'string' && replayedFrom) replayedByEvent.set(`${artifact.kind}:${replayedFrom}`, artifact.id)
+    }
+    const insertArtifact = this.db.prepare(`INSERT INTO artifacts(id, learner_id, practice_run_id, kind, source_kind, verification_status, content, metadata_json, checksum, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    const updateEvent = this.db.prepare('UPDATE practice_events SET artifact_refs_json = ? WHERE id = ?')
+    let created = 0
+    let unresolved = 0
+    const replayableEventIds = new Set<string>()
+    const resolvedEventIds = new Set<string>()
+    const transaction = this.db.transaction(() => {
+      for (const event of events) {
+        let kind: ArtifactKind | null = null
+        let sourceKind: ArtifactSourceKind | null = null
+        let verificationStatus: VerificationStatus = 'not_applicable'
+        let content: string | null = null
+        if (event.type === 'case_presented' && typeof event.payload.caseId === 'string') {
+          kind = 'external_text'; sourceKind = 'system'; content = `案例上下文：${event.payload.caseId}${typeof event.payload.fixtureVersion === 'string' ? `\nFixture 版本：${event.payload.fixtureVersion}` : ''}`
+        } else if (event.type === 'user_message' && typeof event.payload.message === 'string') {
+          kind = 'user_message'; sourceKind = 'user'; content = event.payload.message
+        } else if (event.type === 'tutor_reply' && typeof event.payload.response === 'string') {
+          kind = 'tutor_reply'; sourceKind = 'tutor'; verificationStatus = 'model_generated'; content = event.payload.response
+        } else if (event.type === 'attempt_submitted' && typeof event.payload.statement === 'string') {
+          kind = 'sql'; sourceKind = 'lab'; content = event.payload.statement
+        }
+        if (!kind || !sourceKind || !content) continue
+        replayableEventIds.add(event.id)
+        const hasExpectedArtifact = event.artifactRefs.some((refId) => artifacts.get(refId)?.kind === kind)
+        if (hasExpectedArtifact) { resolvedEventIds.add(event.id); continue }
+        const existingId = replayedByEvent.get(`${kind}:${event.id}`)
+        const artifactId = existingId ?? randomUUID()
+        if (!existingId) {
+          const metadata: Record<string, unknown> = { replayedFromEventId: event.id }
+          if (event.clientRequestId) metadata.clientRequestId = event.clientRequestId
+          if (event.type === 'tutor_reply') {
+            metadata.sourceRefs = event.payload.sourceRefs ?? []
+            metadata.evidenceRefs = event.payload.evidenceRefs ?? []
+          }
+          insertArtifact.run(artifactId, run.learnerId, practiceRunId, kind, sourceKind, verificationStatus, content, JSON.stringify(metadata), createHash('sha256').update(content).digest('hex'), event.createdAt)
+          artifacts.set(artifactId, { id: artifactId, learnerId: run.learnerId, practiceRunId, kind, sourceKind, verificationStatus, content, metadata, checksum: createHash('sha256').update(content).digest('hex'), createdAt: event.createdAt })
+          replayedByEvent.set(`${kind}:${event.id}`, artifactId)
+          created += 1
+        }
+        resolvedEventIds.add(event.id)
+        if (!event.artifactRefs.includes(artifactId)) updateEvent.run(JSON.stringify([...event.artifactRefs, artifactId]), event.id)
+      }
+    })()
+    unresolved = [...replayableEventIds].filter((eventId) => !resolvedEventIds.has(eventId)).length
+    return { created, unresolved }
   }
 
   listArtifacts(practiceRunId: string): Artifact[] {

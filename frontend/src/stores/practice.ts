@@ -14,6 +14,7 @@ export const usePracticeStore = defineStore('practice', () => {
   const completion = ref<ProductPracticeCompletion | null>(null)
   const messages = ref<ProductTutorMessage[]>([])
   const history = ref<ProductPracticeHistoryItem[]>([])
+  const historyLoading = ref(false)
   const sources = ref<ProductTutorSource[]>([])
   const tutorFailure = ref<{ invocationId: string; code: string; message: string; retryable: boolean } | null>(null)
   const invocationId = ref<string | null>(null)
@@ -42,7 +43,8 @@ export const usePracticeStore = defineStore('practice', () => {
   }
 
   async function loadHistory() {
-    try { history.value = (await getProductPracticeHistory()).items } catch (cause) { error.value = cause instanceof Error ? cause.message : '实践历史加载失败' }
+    historyLoading.value = true
+    try { history.value = (await getProductPracticeHistory()).items } catch (cause) { error.value = cause instanceof Error ? cause.message : '实践历史加载失败' } finally { historyLoading.value = false }
   }
 
   async function selectHistory(practiceId: string) {
@@ -243,5 +245,5 @@ export const usePracticeStore = defineStore('practice', () => {
     if (snapshot.value) snapshot.value = { ...snapshot.value, pins: snapshot.value.pins.filter((item) => item.id !== pinId) }
   }
   function clear() { if (queueTimer !== null) window.clearTimeout(queueTimer); queueTimer = null; run.value = null; snapshot.value = null; completion.value = null; messages.value = []; lastTutor.value = null; sources.value = []; tutorFailure.value = null; invocationId.value = null; error.value = null; if (typeof window !== 'undefined') window.localStorage.removeItem(activePracticeKey) }
-  return { run, snapshot, completion, messages, history, sources, tutorFailure, invocationId, lastTutor, starting, restoring, tutorLoading, verifying, error, currentGap, nextQuestion, start, loadHistory, selectHistory, restoreActive, restoreRecord, ask, retryTutor, reopen, execute, verify, addExternal, pin, unpin, clear }
+  return { run, snapshot, completion, messages, history, historyLoading, sources, tutorFailure, invocationId, lastTutor, starting, restoring, tutorLoading, verifying, error, currentGap, nextQuestion, start, loadHistory, selectHistory, restoreActive, restoreRecord, ask, retryTutor, reopen, execute, verify, addExternal, pin, unpin, clear }
 })

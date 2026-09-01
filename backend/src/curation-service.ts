@@ -6,7 +6,7 @@ import { ProductRepository, type WritingClusterDefinition } from './product-repo
 const clusterMeta: Array<{ key: WritingClusterKey; title: string; relevance: string }> = [
   { key: 'problem', title: '问题与目标', relevance: '确认文章是否准确描述了现象、影响和本次实践要解决的问题。' },
   { key: 'hypothesis', title: '初始判断', relevance: '保留你最初的判断，方便说明哪些假设被支持、削弱或修正。' },
-  { key: 'evidence', title: '关键证据', relevance: '只纳入能直接支持或推翻判断的 EXPLAIN、结果和错误证据。' },
+  { key: 'evidence', title: '关键证据', relevance: '只纳入能直接支持或推翻判断的 SQL、EXPLAIN、结果和错误证据。' },
   { key: 'attempts', title: '尝试与转折', relevance: '展示排查顺序、失败尝试和判断发生变化的节点。' },
   { key: 'solution', title: '候选方案与验证', relevance: '集中呈现候选修复、前后对比和仍需确认的结论边界。' },
   { key: 'principles', title: '原理与参考', relevance: '补充可迁移原理和知乎来源，但不把外部观点当成本次实验结果。' },
@@ -84,6 +84,14 @@ function pathMembers(snapshot: PracticeSnapshot, stages: string[]): WritingClust
   return snapshot.pathNodes.filter((node) => stages.includes(node.stage)).map((node) => ({ refType: 'path_node' as const, refId: node.id, role: 'context' as const }))
 }
 
+function executionId(artifact: Artifact): string | null {
+  const direct = artifact.metadata.executionId
+  if (typeof direct === 'string' && direct) return direct
+  const execution = artifact.metadata.execution
+  if (execution && typeof execution === 'object' && typeof (execution as { executionId?: unknown }).executionId === 'string') return String((execution as { executionId: string }).executionId)
+  return null
+}
+
 function dedupeMembers(members: WritingClusterDefinition['members']): WritingClusterDefinition['members'] {
   const seen = new Set<string>()
   return members.filter((member) => {
@@ -101,12 +109,17 @@ function buildDefinitions(project: WritingProject, snapshot: PracticeSnapshot): 
   const tutorReplies = artifacts.filter((artifact) => artifact.kind === 'tutor_reply')
   const sql = artifacts.filter((artifact) => artifact.kind === 'sql')
   const evidence = artifacts.filter((artifact) => ['explain', 'benchmark', 'result_set', 'error'].includes(artifact.kind))
+  const evidenceExecutionIds = new Set(evidence.map(executionId).filter((value): value is string => Boolean(value)))
+  const evidenceSql = sql.filter((artifact) => {
+    const id = executionId(artifact)
+    return id ? evidenceExecutionIds.has(id) : false
+  })
   const sources = project.materials.filter((material) => material.refType === 'source')
   const lastSuccessful = [...artifacts].reverse().find((artifact) => artifact.verificationStatus === 'verified_lab' && ['sql', 'explain', 'result_set', 'benchmark'].includes(artifact.kind))
   const membersByKey: Record<WritingClusterKey, WritingClusterDefinition['members']> = {
     problem: artifactMembers(unique, (artifact) => artifact.kind === 'external_text' || artifact.kind === 'user_message').slice(0, 8),
     hypothesis: [...artifactMembers(userMessages, () => true).slice(0, 12), ...pathMembers(snapshot, ['hypothesize'])],
-    evidence: [...artifactMembers(evidence, () => true), ...pathMembers(snapshot, ['inspect', 'verify'])],
+    evidence: [...artifactMembers(evidence, () => true), ...artifactMembers(evidenceSql, () => true), ...pathMembers(snapshot, ['inspect', 'verify'])],
     attempts: [...artifactMembers(sql, () => true), ...artifactMembers(artifacts, (artifact) => artifact.kind === 'error'), ...pathMembers(snapshot, ['attempt', 'inspect', 'verify'])],
     solution: [...(lastSuccessful ? [{ refType: 'artifact' as const, refId: lastSuccessful.id, role: 'primary' as const }] : []), ...artifactMembers(evidence, (artifact) => artifact.kind === 'explain' || artifact.kind === 'result_set').slice(-8), ...pathMembers(snapshot, ['verify', 'resolved'])],
     principles: [...sources.map((source) => ({ refType: 'source' as const, refId: source.refId, role: 'supporting' as const })), ...artifactMembers(tutorReplies, () => true).slice(-8)],
@@ -115,7 +128,7 @@ function buildDefinitions(project: WritingProject, snapshot: PracticeSnapshot): 
   const summaries: Record<WritingClusterKey, string> = {
     problem: `本次实践围绕${caseLabel(snapshot.run.caseId)}展开，先从用户描述和案例现象中确认待解决的问题。当前簇包含 ${membersByKey.problem.length} 条关键背景记录。`,
     hypothesis: `保留实践开始阶段的用户判断和 Tutor 引导，共整理 ${membersByKey.hypothesis.length} 条相关记录；需要你确认哪些判断值得写入复盘。`,
-    evidence: `当前收集了 ${evidence.length} 条实验证据，按内容折叠重复项后用于比较 EXPLAIN、结果集和错误。`,
+    evidence: `当前收集了 ${evidence.length} 条实验证据，并关联 ${evidenceSql.length} 条对应 SQL；按内容折叠重复项后用于比较 EXPLAIN、结果集和错误。`,
     attempts: `实践中记录了 ${sql.length} 条 SQL 尝试，原始数据共 ${artifacts.length} 条、去重后 ${unique.length} 条；重复执行将在详情中折叠。`,
     solution: lastSuccessful ? '已找到候选修复和验证证据，但结果是否足以支持最终结论仍由你确认。' : '已收集候选尝试，尚未找到可以作为最终方案的实验结果。',
     principles: `整理了 ${sources.length} 条知乎参考和相关 Tutor 解释；它们只用于补充原理，不替代本次 Lab 证据。`,

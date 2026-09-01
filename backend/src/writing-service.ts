@@ -133,10 +133,10 @@ export class WritingService {
   }
 
   curationOverview(runId: string) {
-    const existingProjectId = this.repository.getWritingProjectIdByRun(runId)
-    if (existingProjectId && this.repository.getWritingClusterOverview(existingProjectId, runId).totalCount > 0) return this.curation.overview(existingProjectId, runId)
     const project = this.ensureProject(runId)
-    this.curation.ensure(project)
+    const candidates = this.curation.buildCandidates(project)
+    const existing = this.repository.listWritingClusterDefinitions(project.id)[0]
+    if (!existing || existing.sourceFingerprint !== candidates.fingerprint) this.curation.ensure(project)
     return this.curation.overview(project.id, runId)
   }
 
@@ -162,6 +162,13 @@ export class WritingService {
   refreshCuration(runId: string) {
     const project = this.ensureProject(runId)
     this.curation.refresh(project)
+    return this.curation.overview(project.id, runId)
+  }
+
+  replayCuration(runId: string) {
+    const project = this.ensureProject(runId)
+    this.repository.replayMissingPracticeArtifacts(runId)
+    this.curation.prepareRun(runId)
     return this.curation.overview(project.id, runId)
   }
 
