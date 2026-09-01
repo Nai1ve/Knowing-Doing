@@ -1,9 +1,9 @@
 import { computed, ref } from 'vue'
 import { defineStore } from 'pinia'
 import { ApiError } from '@/api/client'
-import { executeProductLab, getProductLabAccess, getProductPracticeHistory, getProductSnapshot, reopenProductLab, retryProductTutor, startProductPractice, streamProductTutor, submitProductArtifact } from '@/api/productService'
+import { createProductPin, deleteProductPin, executeProductLab, getProductLabAccess, getProductPracticeHistory, getProductSnapshot, reopenProductLab, retryProductTutor, startProductPractice, streamProductTutor, submitProductArtifact } from '@/api/productService'
 import type { LabCaseId, LabExecutionResult } from '@/types/lab'
-import type { ProductPracticeHistoryItem, ProductPracticeRun, ProductPracticeStart, ProductSnapshot, ProductTutorMessage, ProductTutorResponse, ProductTutorSource, ProductTutorStreamEvent } from '@/types/product'
+import type { ProductPracticeHistoryItem, ProductPracticePin, ProductPracticeRun, ProductPracticeStart, ProductSnapshot, ProductTutorMessage, ProductTutorResponse, ProductTutorSource, ProductTutorStreamEvent } from '@/types/product'
 import { useLabStore } from './lab'
 
 export const usePracticeStore = defineStore('practice', () => {
@@ -217,6 +217,17 @@ export const usePracticeStore = defineStore('practice', () => {
   }
 
   async function addExternal(content: string) { if (run.value && content.trim()) { await submitProductArtifact(run.value.id, content); snapshot.value = await getProductSnapshot(run.value.id); hydrate(snapshot.value) } }
+  async function pin(targetType: ProductPracticePin['targetType'], targetId: string) {
+    if (!run.value || !targetId || targetId.startsWith('local-') || targetId.startsWith('stream-')) return
+    const created = await createProductPin(run.value.id, targetType, targetId)
+    if (!snapshot.value) return
+    snapshot.value = { ...snapshot.value, pins: [created, ...snapshot.value.pins.filter((item) => item.id !== created.id)] }
+  }
+  async function unpin(pinId: string) {
+    if (!run.value) return
+    await deleteProductPin(run.value.id, pinId)
+    if (snapshot.value) snapshot.value = { ...snapshot.value, pins: snapshot.value.pins.filter((item) => item.id !== pinId) }
+  }
   function clear() { if (queueTimer !== null) window.clearTimeout(queueTimer); queueTimer = null; run.value = null; snapshot.value = null; messages.value = []; lastTutor.value = null; sources.value = []; tutorFailure.value = null; invocationId.value = null; error.value = null; if (typeof window !== 'undefined') window.localStorage.removeItem(activePracticeKey) }
-  return { run, snapshot, messages, history, sources, tutorFailure, invocationId, lastTutor, starting, restoring, tutorLoading, error, currentGap, nextQuestion, start, loadHistory, selectHistory, restoreActive, restoreRecord, ask, retryTutor, reopen, execute, addExternal, clear }
+  return { run, snapshot, messages, history, sources, tutorFailure, invocationId, lastTutor, starting, restoring, tutorLoading, error, currentGap, nextQuestion, start, loadHistory, selectHistory, restoreActive, restoreRecord, ask, retryTutor, reopen, execute, addExternal, pin, unpin, clear }
 })

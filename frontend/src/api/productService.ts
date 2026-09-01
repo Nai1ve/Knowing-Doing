@@ -1,6 +1,6 @@
 import { ApiError, apiClient } from './client'
 import type { LabCaseId, LabExecutionResult } from '@/types/lab'
-import type { ProductArtifact, ProductIntake, ProductLabAccess, ProductLabExecution, ProductMemory, ProductPlan, ProductPracticeHistoryPage, ProductPracticeRun, ProductPracticeStart, ProductSnapshot, ProductTutorResponse, ProductTutorStreamEvent, ProductWritingProject } from '@/types/product'
+import type { ProductArtifact, ProductIntake, ProductLabAccess, ProductLabExecution, ProductMemory, ProductPlan, ProductPracticeHistoryPage, ProductPracticePin, ProductPracticeRun, ProductPracticeStart, ProductSnapshot, ProductTutorResponse, ProductTutorStreamEvent, ProductWritingProject } from '@/types/product'
 
 const learnerStorageKey = 'zhixing.learner.id'
 function learnerId(): string {
@@ -21,6 +21,8 @@ export function createProductPlan(intakeId: string): Promise<ProductPlan> { retu
 export function confirmProductPlan(planId: string): Promise<ProductPlan> { return product(`/plans/${planId}/confirm`, { method: 'POST' }) }
 export function startProductPractice(caseId: LabCaseId, planUnitId?: string): Promise<ProductPracticeStart> { return product('/practice-runs', { method: 'POST', body: JSON.stringify({ caseId, planUnitId }) }) }
 export function getProductSnapshot(runId: string): Promise<ProductSnapshot> { return product(`/practice-runs/${runId}`) }
+export function createProductPin(runId: string, targetType: ProductPracticePin['targetType'], targetId: string): Promise<ProductPracticePin> { return product(`/practice-runs/${runId}/pins`, { method: 'POST', body: JSON.stringify({ targetType, targetId }) }) }
+export function deleteProductPin(runId: string, pinId: string): Promise<void> { return product(`/practice-runs/${runId}/pins/${pinId}`, { method: 'DELETE' }) }
 export function getProductLabAccess(runId: string): Promise<ProductLabAccess> { return product(`/practice-runs/${runId}/lab`) }
 export function getProductPracticeHistory(cursor?: string, limit = 20): Promise<ProductPracticeHistoryPage> { return product(`/practice-runs?limit=${limit}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`) }
 export function reopenProductLab(runId: string): Promise<ProductPracticeStart> { return product(`/practice-runs/${runId}/reopen-lab`, { method: 'POST' }) }

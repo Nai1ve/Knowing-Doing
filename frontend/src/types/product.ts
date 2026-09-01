@@ -14,6 +14,7 @@ export interface ProductMemory { id: string; learnerId: string; category: string
 export interface ProductTutorResponse { response: string; intent: string; currentGap: string; nextQuestion: string; suggestedActions: string[]; evidenceRefs: string[]; sourceRefs: Array<{ sourceId: string; reason: string }>; provider: 'model' | 'scripted'; sourceStatus: string }
 export interface ProductTutorMessage { id: string; role: 'user' | 'assistant'; content: string; source?: string }
 export interface ProductTutorSource { id: string; title: string; author: string | null; url: string; excerpt: string; retrievedAt: string; provider: string; role: string; reason: string }
+export interface ProductPracticePin { id: string; learnerId: string; practiceRunId: string; targetType: 'artifact' | 'source'; targetId: string; title: string; body: string; source: string; url: string | null; createdAt: string }
 export interface ProductPracticeHistoryItem { id: string; caseId: LabCaseId; stage: CaseStage; status: 'active' | 'resolved' | 'ended'; createdAt: string; updatedAt: string; lastActivityAt: string; lastTutorProvider: string | null; lastTutorSourceStatus: string | null; labState: 'active' | 'reopen_required' | 'none' }
 export interface ProductPracticeHistoryPage { items: ProductPracticeHistoryItem[]; nextCursor: string | null }
 export type ProductTutorStreamEvent =
@@ -23,7 +24,7 @@ export type ProductTutorStreamEvent =
   | { type: 'answer_delta'; invocationId: string; delta: string }
   | { type: 'completed'; invocationId: string; run: ProductPracticeRun; tutor: ProductTutorResponse; snapshot: ProductSnapshot; sources: ProductTutorSource[] }
   | { type: 'failed'; invocationId: string; code: string; message: string; retryable: boolean }
-export interface ProductSnapshot { run: ProductPracticeRun; events: ProductEvent[]; artifacts: ProductArtifact[]; pathNodes: ProductPathNode[]; stageMemories: ProductStageMemory[]; memories: ProductMemory[]; tutorTurns: Array<{ id: string; userArtifactId: string | null; assistantArtifactId: string | null; mode: string; provider: string; sourceStatus: string; createdAt: string }> }
+export interface ProductSnapshot { run: ProductPracticeRun; events: ProductEvent[]; artifacts: ProductArtifact[]; pathNodes: ProductPathNode[]; stageMemories: ProductStageMemory[]; memories: ProductMemory[]; tutorTurns: Array<{ id: string; userArtifactId: string | null; assistantArtifactId: string | null; mode: string; provider: string; sourceStatus: string; createdAt: string }>; pins: ProductPracticePin[] }
 export interface ProductLabRun { runId: string; caseId: LabCaseId; revision: number; status: 'active'; fixtureVersion: string; expiresAt: string; idleExpiresAt: string; sessions: Array<{ id: string; name: LabSessionName; status: 'open' | 'closed' }> }
 export interface ProductPracticeStart { practice: ProductPracticeRun; lab?: { run: ProductLabRun; accessToken: string }; queue?: { ticketId: string; caseId: LabCaseId; status: string; position?: number; pollAfterMs?: number; expiresAt: string } }
 export interface ProductLabAccess { status: 'waiting' | 'ready' | 'expired' | 'cancelled'; ticketId?: string; run?: ProductLabRun; accessToken?: string }

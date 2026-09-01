@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import { AlertTriangle, CheckCircle2, Clock3, FileCode2, Play, RotateCcw, TerminalSquare } from 'lucide-vue-next'
+import { AlertTriangle, CheckCircle2, Clock3, FileCode2, Pin, Play, RotateCcw, TerminalSquare } from 'lucide-vue-next'
 import type { LabExecutionResponse, LabExecutionResult } from '@/types/lab'
 
 const props = defineProps<{
@@ -9,6 +9,8 @@ const props = defineProps<{
   canExecute: boolean
   executing: boolean
   sessionName?: string
+  resultArtifactId?: string
+  resultPinned?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -17,6 +19,7 @@ const emit = defineEmits<{
   'load-default': []
   'load-create-index': []
   'load-optimized': []
+  pin: []
 }>()
 
 const executionResult = computed<LabExecutionResult | null>(() => {
@@ -55,7 +58,7 @@ const executionResult = computed<LabExecutionResult | null>(() => {
     </div>
 
     <div class="terminal-output" aria-live="polite">
-      <div class="output-heading"><span><TerminalSquare :size="13" aria-hidden="true" />执行输出</span><small v-if="executionResult?.result?.truncated">结果已截断</small></div>
+      <div class="output-heading"><span><TerminalSquare :size="13" aria-hidden="true" />执行输出</span><div class="output-actions"><small v-if="executionResult?.result?.truncated">结果已截断</small><button v-if="resultArtifactId" type="button" class="pin-output" :class="{ pinned: resultPinned }" :aria-label="resultPinned ? '已固定这次 SQL 结果' : '固定这次 SQL 结果'" :title="resultPinned ? '已固定' : '固定到工作台'" @click="emit('pin')"><Pin :size="12" aria-hidden="true" />{{ resultPinned ? '已固定' : '固定结果' }}</button></div></div>
       <div v-if="!result" class="empty-result"><p>执行结果会显示在这里。</p></div>
       <template v-else>
         <div v-if="executionResult" class="result-meta">
@@ -102,7 +105,7 @@ textarea:focus { box-shadow: inset 0 -1px 0 #7896a3; }
 .terminal-footer button { display: inline-flex; align-items: center; gap: 5px; }
 .terminal-output { min-width: 0; padding: 13px; background: #182026; }
 .output-heading { display: flex; align-items: center; justify-content: space-between; gap: 10px; color: #b9c7c0; font: 10px var(--mono); }
-.output-heading span { display: inline-flex; align-items: center; gap: 5px; }
+.output-heading span { display: inline-flex; align-items: center; gap: 5px; }.output-actions { display: flex; align-items: center; gap: 9px; }.pin-output { display: inline-flex; align-items: center; gap: 4px; padding: 3px 5px; border: 1px solid #536477; background: transparent; color: #aab9b3; font: 9px var(--mono); }.pin-output:hover, .pin-output.pinned { border-color: #d3ac6b; color: #e0bd7b; }
 .output-heading small { color: #d3ac6b; font-size: 9px; }
 .empty-result { min-height: 74px; display: flex; align-items: center; color: #718087; font-size: 10px; }
 .empty-result p { margin: 0; }

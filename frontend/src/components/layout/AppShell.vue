@@ -26,14 +26,14 @@ const tocItems = computed(() => ({
 
 <template>
   <main class="app-window" aria-label="知行学习系统">
-    <div class="app-body">
+    <div class="app-body" :class="{ 'lesson-body': currentPage === 'lesson' }">
       <AppSidebar />
-      <section class="main-content">
+      <section class="main-content" :class="{ 'lesson-content': currentPage === 'lesson' }">
         <div v-if="planStore.loading" class="loading-state" role="status">正在载入当前学习计划…</div>
         <div v-else-if="planStore.error" class="error-state" role="alert">{{ planStore.error }}</div>
         <RouterView v-else />
       </section>
-      <PageToc :items="tocItems" />
+      <PageToc v-if="currentPage !== 'lesson'" :items="tocItems" />
     </div>
   </main>
 </template>
@@ -41,7 +41,9 @@ const tocItems = computed(() => ({
 <style scoped>
 .app-window { width: 100%; min-height: 100dvh; background: var(--paper); }
 .app-body { display: grid; grid-template-columns: 210px minmax(0, 1fr) 190px; min-height: 100dvh; }
+.lesson-body { grid-template-columns: 210px minmax(0, 1fr); }
 .main-content { min-width: 0; padding: 32px 40px 52px; background: var(--paper); }
+.lesson-content { padding-inline: 34px; }
 .loading-state, .error-state { max-width: 840px; margin: 80px auto; padding: 16px; border-top: 2px solid var(--blue); background: var(--paper-deep); color: var(--muted); font-size: 12px; }
 .error-state { border-top-color: var(--red); color: var(--red); }
 @media (max-width: 980px) { .app-body { grid-template-columns: 64px minmax(0, 1fr); } .main-content { padding-inline: 28px; } }
