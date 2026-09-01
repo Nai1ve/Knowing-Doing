@@ -175,7 +175,7 @@ export class PracticeService {
   createPin(learnerId: string, runId: string, input: { targetType: PracticePin['targetType']; targetId: string }): PracticePin {
     const run = this.run(runId)
     if (run.learnerId !== learnerId) throw new LabError('forbidden', '无权访问该实践', 403)
-    let title = ''; let body = ''; let source = ''
+    let title = ''; let body = ''; let source = ''; let url: string | null = null
     if (input.targetType === 'artifact') {
       const artifact = this.repository.listArtifacts(runId).find((item) => item.id === input.targetId) as Artifact | undefined
       if (!artifact) throw new LabError('pin_target_not_found', '只能固定当前实践中的证据', 404)
@@ -191,9 +191,9 @@ export class PracticeService {
       if (!sourceIds.includes(input.targetId)) throw new LabError('pin_target_not_found', '只能固定当前实践中引用的知乎来源', 404)
       const item = this.repository.listSources([input.targetId])[0]
       if (!item) throw new LabError('pin_target_not_found', '知乎来源不存在', 404)
-      title = item.title; body = item.excerpt; source = `知乎 · ${item.author ?? '来源'}`
+      title = item.title; body = item.excerpt; source = `知乎 · ${item.author ?? '来源'}`; url = item.url
     }
-    return this.repository.createPracticePin({ learnerId, practiceRunId: runId, targetType: input.targetType, targetId: input.targetId, title, body, source })
+    return this.repository.createPracticePin({ learnerId, practiceRunId: runId, targetType: input.targetType, targetId: input.targetId, title, body, source, url })
   }
 
   deletePin(learnerId: string, runId: string, pinId: string): void {

@@ -76,6 +76,7 @@ describe('product repository', () => {
 
     expect(duplicatePin.id).toBe(artifactPin.id)
     expect(sourcePin.body).toBe(source.excerpt)
+    expect(sourcePin.url).toBe(source.url)
     expect(repository.snapshot(run.id).pins.map((pin) => pin.id)).toEqual([sourcePin.id, artifactPin.id])
     expect(() => service.createPin('learner-2', run.id, { targetType: 'artifact', targetId: tutorReply.id })).toThrow('无权访问该实践')
 

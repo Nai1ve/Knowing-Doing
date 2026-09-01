@@ -137,7 +137,7 @@ function practicePinFrom(row: Row): PracticePin {
   return {
     id: text(row, 'id'), learnerId: text(row, 'learner_id'), practiceRunId: text(row, 'practice_run_id'),
     targetType: text(row, 'target_type') as PracticePin['targetType'], targetId: text(row, 'target_id'),
-    title: text(row, 'title'), body: text(row, 'body'), source: text(row, 'source'), createdAt: text(row, 'created_at'),
+    title: text(row, 'title'), body: text(row, 'body'), source: text(row, 'source'), url: nullableText(row, 'url'), createdAt: text(row, 'created_at'),
   }
 }
 
@@ -367,8 +367,8 @@ export class ProductRepository {
     const existing = this.findPracticePin(input)
     if (existing) return existing
     const id = randomUUID(); const now = new Date().toISOString()
-    this.db.prepare(`INSERT INTO practice_pins(id, learner_id, practice_run_id, target_type, target_id, title, body, source, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(id, input.learnerId, input.practiceRunId, input.targetType, input.targetId, input.title, input.body, input.source, now)
+    this.db.prepare(`INSERT INTO practice_pins(id, learner_id, practice_run_id, target_type, target_id, title, body, source, url, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(id, input.learnerId, input.practiceRunId, input.targetType, input.targetId, input.title, input.body, input.source, input.url, now)
     return this.getPracticePin(id)
   }
 

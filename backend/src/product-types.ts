@@ -194,6 +194,7 @@ export interface PracticePin {
   title: string
   body: string
   source: string
+  url: string | null
   createdAt: string
 }
 
