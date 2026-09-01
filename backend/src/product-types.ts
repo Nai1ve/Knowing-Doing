@@ -183,6 +183,20 @@ export interface TutorResponse {
   sourceStatus: 'retrieved' | 'general_model_knowledge' | 'not_needed' | 'unavailable'
 }
 
+export type PracticePinTargetType = 'artifact' | 'source'
+
+export interface PracticePin {
+  id: string
+  learnerId: string
+  practiceRunId: string
+  targetType: PracticePinTargetType
+  targetId: string
+  title: string
+  body: string
+  source: string
+  createdAt: string
+}
+
 export interface TutorSource {
   id: string
   title: string
@@ -203,6 +217,7 @@ export interface PracticeSnapshot {
   stageMemories: StageMemory[]
   memories: MemoryItem[]
   tutorTurns: Array<{ id: string; userArtifactId: string | null; assistantArtifactId: string | null; mode: string; provider: string; sourceStatus: string; createdAt: string }>
+  pins: PracticePin[]
 }
 
 export interface PracticeHistoryItem {

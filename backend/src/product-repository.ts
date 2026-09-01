@@ -3,7 +3,7 @@ import Database from 'better-sqlite3'
 import { assertProductMigrations, openProductDatabase } from './product-migrate.js'
 import type {
   Artifact, ArtifactKind, ArtifactSourceKind, CaseStage, EventActor, EventType, Intake, LearningPlan,
-  LabSegment, Learner, MemoryItem, PathNode, PlanUnit, PracticeEvent, PracticeRun, PracticeSnapshot, SourceItem,
+  LabSegment, Learner, MemoryItem, PathNode, PlanUnit, PracticeEvent, PracticePin, PracticeRun, PracticeSnapshot, SourceItem,
   StageMemory, TutorInvocation, TutorInvocationStatus, VerificationStatus, WritingClaim, WritingDocument, WritingMaterial, WritingProject, WritingReviewItem, WritingSection,
 } from './product-types.js'
 
@@ -130,6 +130,14 @@ function tutorInvocationFrom(row: Row): TutorInvocation {
     sourceIds: json<string[]>(row.source_ids_json, []), failureCode: nullableText(row, 'failure_code'),
     failureMessage: nullableText(row, 'failure_message'), latencyMs: row.latency_ms == null ? null : number(row, 'latency_ms'),
     createdAt: text(row, 'created_at'), completedAt: nullableText(row, 'completed_at'),
+  }
+}
+
+function practicePinFrom(row: Row): PracticePin {
+  return {
+    id: text(row, 'id'), learnerId: text(row, 'learner_id'), practiceRunId: text(row, 'practice_run_id'),
+    targetType: text(row, 'target_type') as PracticePin['targetType'], targetId: text(row, 'target_id'),
+    title: text(row, 'title'), body: text(row, 'body'), source: text(row, 'source'), createdAt: text(row, 'created_at'),
   }
 }
 
@@ -342,6 +350,35 @@ export class ProductRepository {
 
   listArtifacts(practiceRunId: string): Artifact[] {
     return (this.db.prepare('SELECT * FROM artifacts WHERE practice_run_id = ? ORDER BY created_at ASC').all(practiceRunId) as Row[]).map(artifactFrom)
+  }
+
+  getPracticePin(id: string): PracticePin {
+    const row = this.db.prepare('SELECT * FROM practice_pins WHERE id = ?').get(id) as Row | undefined
+    if (!row) throw new Error(`Practice pin not found: ${id}`)
+    return practicePinFrom(row)
+  }
+
+  findPracticePin(input: { practiceRunId: string; targetType: PracticePin['targetType']; targetId: string }): PracticePin | null {
+    const row = this.db.prepare('SELECT * FROM practice_pins WHERE practice_run_id = ? AND target_type = ? AND target_id = ?').get(input.practiceRunId, input.targetType, input.targetId) as Row | undefined
+    return row ? practicePinFrom(row) : null
+  }
+
+  createPracticePin(input: Omit<PracticePin, 'id' | 'createdAt'>): PracticePin {
+    const existing = this.findPracticePin(input)
+    if (existing) return existing
+    const id = randomUUID(); const now = new Date().toISOString()
+    this.db.prepare(`INSERT INTO practice_pins(id, learner_id, practice_run_id, target_type, target_id, title, body, source, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(id, input.learnerId, input.practiceRunId, input.targetType, input.targetId, input.title, input.body, input.source, now)
+    return this.getPracticePin(id)
+  }
+
+  deletePracticePin(id: string, learnerId: string, practiceRunId: string): boolean {
+    const result = this.db.prepare('DELETE FROM practice_pins WHERE id = ? AND learner_id = ? AND practice_run_id = ?').run(id, learnerId, practiceRunId)
+    return result.changes > 0
+  }
+
+  listPracticePins(practiceRunId: string): PracticePin[] {
+    return (this.db.prepare('SELECT * FROM practice_pins WHERE practice_run_id = ? ORDER BY created_at DESC, id DESC').all(practiceRunId) as Row[]).map(practicePinFrom)
   }
 
   getArtifact(id: string): Artifact {
@@ -604,6 +641,6 @@ export class ProductRepository {
 
   snapshot(practiceRunId: string): PracticeSnapshot {
     const run = this.getPracticeRun(practiceRunId)
-    return { run, events: this.listEvents(practiceRunId), artifacts: this.listArtifacts(practiceRunId), pathNodes: this.listPathNodes(practiceRunId), stageMemories: this.listStageMemories(practiceRunId), memories: this.listMemories(run.learnerId), tutorTurns: this.listTutorTurns(practiceRunId) }
+    return { run, events: this.listEvents(practiceRunId), artifacts: this.listArtifacts(practiceRunId), pathNodes: this.listPathNodes(practiceRunId), stageMemories: this.listStageMemories(practiceRunId), memories: this.listMemories(run.learnerId), tutorTurns: this.listTutorTurns(practiceRunId), pins: this.listPracticePins(practiceRunId) }
   }
 }

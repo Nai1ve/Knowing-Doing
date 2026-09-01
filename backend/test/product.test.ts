@@ -62,6 +62,29 @@ describe('product repository', () => {
     expect(repository.listEvents(run.id)[0]?.sequence).toBe(1)
   }))
 
+  it('persists practice pins, resolves source content server-side, and keeps them scoped', () => withRepository((repository) => {
+    repository.ensureLearner('learner-1')
+    const run = repository.createPracticeRun({ learnerId: 'learner-1', caseId: 'mysql-order-list-index-001' })
+    const tutorReply = repository.createArtifact({ learnerId: run.learnerId, practiceRunId: run.id, kind: 'tutor_reply', sourceKind: 'tutor', verificationStatus: 'model_generated', content: '先观察 EXPLAIN 的扫描类型。', metadata: {} })
+    const source = repository.saveSource({ provider: 'zhihu', externalId: 'pin-source-1', title: 'EXPLAIN 参考', author: '作者', url: 'https://www.zhihu.com/question/1', excerpt: '用于理解扫描类型。', query: 'MySQL EXPLAIN', retrievedAt: new Date().toISOString(), metadata: {} })
+    repository.createArtifact({ learnerId: run.learnerId, practiceRunId: run.id, kind: 'tutor_reply', sourceKind: 'tutor', verificationStatus: 'model_generated', content: '来源说明。', metadata: { sourceRefs: [{ sourceId: source.id }] } })
+
+    const service = new PracticeService(repository, {} as LabScheduler, new TutorEngine({} as LabConfig))
+    const artifactPin = service.createPin('learner-1', run.id, { targetType: 'artifact', targetId: tutorReply.id })
+    const duplicatePin = service.createPin('learner-1', run.id, { targetType: 'artifact', targetId: tutorReply.id })
+    const sourcePin = service.createPin('learner-1', run.id, { targetType: 'source', targetId: source.id })
+
+    expect(duplicatePin.id).toBe(artifactPin.id)
+    expect(sourcePin.body).toBe(source.excerpt)
+    expect(repository.snapshot(run.id).pins.map((pin) => pin.id)).toEqual([sourcePin.id, artifactPin.id])
+    expect(() => service.createPin('learner-2', run.id, { targetType: 'artifact', targetId: tutorReply.id })).toThrow('无权访问该实践')
+
+    const plan = repository.db.prepare('EXPLAIN QUERY PLAN SELECT * FROM practice_pins WHERE practice_run_id = ? ORDER BY created_at DESC').all(run.id) as Array<{ detail: string }>
+    expect(plan.some((row) => row.detail.includes('idx_practice_pins_run_created'))).toBe(true)
+    service.deletePin('learner-1', run.id, artifactPin.id)
+    expect(repository.snapshot(run.id).pins.map((pin) => pin.id)).toEqual([sourcePin.id])
+  }))
+
   it('keeps current stage memory separate from long-term memory', () => withRepository((repository) => {
     repository.ensureLearner('learner-1')
     const run = repository.createPracticeRun({ learnerId: 'learner-1', caseId: 'mysql-order-list-index-001' })

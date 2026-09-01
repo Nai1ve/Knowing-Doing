@@ -196,6 +196,20 @@ function registerProductRoutes(app: FastifyInstance, service: PracticeService, w
     service.assertOwnership(productRunId(request), learnerId(request))
     reply.send(service.snapshot(productRunId(request)))
   })
+  app.post('/api/product/practice-runs/:runId/pins', async (request, reply) => {
+    const body = productBody(request); const runId = productRunId(request)
+    service.assertOwnership(runId, learnerId(request))
+    const targetType = stringField(body, 'targetType')
+    if (!['artifact', 'source'].includes(targetType)) throw new LabError('invalid_request', 'targetType 必须是 artifact 或 source', 400)
+    const pin = service.createPin(learnerId(request), runId, { targetType: targetType as 'artifact' | 'source', targetId: stringField(body, 'targetId') })
+    reply.code(201).send(pin)
+  })
+  app.delete('/api/product/practice-runs/:runId/pins/:pinId', async (request, reply) => {
+    const runId = productRunId(request); const pinId = String((request.params as { pinId: string }).pinId)
+    service.assertOwnership(runId, learnerId(request))
+    service.deletePin(learnerId(request), runId, pinId)
+    reply.code(204).send()
+  })
   app.get('/api/product/practice-runs/:runId/lab', async (request, reply) => {
     service.assertOwnership(productRunId(request), learnerId(request))
     reply.send(service.labAccess(productRunId(request)))

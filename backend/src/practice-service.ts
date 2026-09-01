@@ -5,7 +5,7 @@ import { decideAfterLab, decideAfterMessage, decideAfterVerification } from './c
 import { buildTutorContext } from './context.js'
 import { createPlan } from './planner.js'
 import type { ProductRepository } from './product-repository.js'
-import type { CaseStage, Intake, LabSegment, MemoryItem, PracticeEvent, PracticeHistoryPage, PracticeRun, PracticeSnapshot, SourceItem, TutorInvocation, TutorResponse, TutorSource } from './product-types.js'
+import type { Artifact, CaseStage, Intake, LabSegment, MemoryItem, PracticeEvent, PracticeHistoryPage, PracticePin, PracticeRun, PracticeSnapshot, SourceItem, TutorInvocation, TutorResponse, TutorSource } from './product-types.js'
 import { RetrievalService } from './retrieval.js'
 import { TutorEngine, TutorProviderError, tutorResponseFromGenerated } from './tutor.js'
 import { getManifest } from './fixtures.js'
@@ -171,6 +171,36 @@ export class PracticeService {
   }
 
   memories(learnerId: string) { this.repository.ensureLearner(learnerId); return this.repository.listMemories(learnerId) }
+
+  createPin(learnerId: string, runId: string, input: { targetType: PracticePin['targetType']; targetId: string }): PracticePin {
+    const run = this.run(runId)
+    if (run.learnerId !== learnerId) throw new LabError('forbidden', '无权访问该实践', 403)
+    let title = ''; let body = ''; let source = ''
+    if (input.targetType === 'artifact') {
+      const artifact = this.repository.listArtifacts(runId).find((item) => item.id === input.targetId) as Artifact | undefined
+      if (!artifact) throw new LabError('pin_target_not_found', '只能固定当前实践中的证据', 404)
+      title = artifact.kind === 'tutor_reply' ? 'Tutor Agent 回答' : artifact.kind === 'user_message' ? '我的判断' : '实验室证据'
+      body = artifact.content
+      source = artifact.sourceKind === 'tutor' ? 'Tutor Agent' : artifact.sourceKind === 'lab' ? 'MySQL Lab' : '实践证据'
+    } else {
+      const sourceIds = this.repository.listArtifacts(runId)
+        .filter((artifact) => artifact.kind === 'tutor_reply')
+        .flatMap((artifact) => Array.isArray(artifact.metadata.sourceRefs) ? artifact.metadata.sourceRefs : [])
+        .map((ref) => typeof ref === 'string' ? ref : (ref && typeof ref === 'object' && 'sourceId' in ref ? String(ref.sourceId) : ''))
+        .filter(Boolean)
+      if (!sourceIds.includes(input.targetId)) throw new LabError('pin_target_not_found', '只能固定当前实践中引用的知乎来源', 404)
+      const item = this.repository.listSources([input.targetId])[0]
+      if (!item) throw new LabError('pin_target_not_found', '知乎来源不存在', 404)
+      title = item.title; body = item.excerpt; source = `知乎 · ${item.author ?? '来源'}`
+    }
+    return this.repository.createPracticePin({ learnerId, practiceRunId: runId, targetType: input.targetType, targetId: input.targetId, title, body, source })
+  }
+
+  deletePin(learnerId: string, runId: string, pinId: string): void {
+    const run = this.run(runId)
+    if (run.learnerId !== learnerId) throw new LabError('forbidden', '无权访问该实践', 403)
+    if (!this.repository.deletePracticePin(pinId, learnerId, runId)) throw new ProductNotFoundError('固定内容不存在')
+  }
 
   updateMemory(learnerId: string, memoryId: string, update: { statement?: string; userNote?: string | null; status?: 'active' | 'corrected' | 'deleted' }) {
     this.repository.ensureLearner(learnerId)
