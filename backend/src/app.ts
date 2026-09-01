@@ -300,6 +300,26 @@ function registerProductRoutes(app: FastifyInstance, service: PracticeService, w
 function registerWritingRoutes(app: FastifyInstance, service: WritingService, practiceService: PracticeService): void {
   app.post('/api/product/practice-runs/:runId/writing', async (request, reply) => { practiceService.assertOwnership(productRunId(request), learnerId(request)); reply.code(201).send(service.initialize(productRunId(request))) })
   app.get('/api/product/practice-runs/:runId/writing', async (request, reply) => { practiceService.assertOwnership(productRunId(request), learnerId(request)); reply.send(service.getExisting(productRunId(request))) })
+  app.get('/api/product/practice-runs/:runId/writing/overview', async (request, reply) => {
+    const runId = productRunId(request); practiceService.assertOwnership(runId, learnerId(request)); reply.send(service.curationOverview(runId))
+  })
+  app.get('/api/product/practice-runs/:runId/writing/clusters/:clusterId', async (request, reply) => {
+    const runId = productRunId(request); practiceService.assertOwnership(runId, learnerId(request))
+    const query = request.query as { filter?: string; cursor?: string; limit?: string }
+    const limit = query.limit == null ? 30 : Number(query.limit)
+    if (!Number.isInteger(limit) || limit <= 0) throw new LabError('invalid_request', 'limit 必须是正整数', 400)
+    reply.send(service.curationDetail(runId, String((request.params as { clusterId: string }).clusterId), query.filter, query.cursor, limit))
+  })
+  app.patch('/api/product/practice-runs/:runId/writing/clusters/:clusterId', async (request, reply) => {
+    const runId = productRunId(request); practiceService.assertOwnership(runId, learnerId(request)); const body = productBody(request)
+    const status = stringField(body, 'status')
+    if (!['pending', 'accepted', 'rejected'].includes(status)) throw new LabError('invalid_request', 'status 必须是 pending、accepted 或 rejected', 400)
+    const note = body.userNote == null ? undefined : optionalString(body, 'userNote')
+    reply.send(service.updateCuration(runId, String((request.params as { clusterId: string }).clusterId), numberField(body, 'revision'), status as 'pending' | 'accepted' | 'rejected', note))
+  })
+  app.post('/api/product/practice-runs/:runId/writing/curation/refresh', async (request, reply) => {
+    const runId = productRunId(request); practiceService.assertOwnership(runId, learnerId(request)); reply.send(service.refreshCuration(runId))
+  })
   app.patch('/api/product/practice-runs/:runId/writing/materials/:materialId', async (request, reply) => {
     practiceService.assertOwnership(productRunId(request), learnerId(request))
     const body = productBody(request); const selected = body.selected

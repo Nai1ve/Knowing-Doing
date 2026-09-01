@@ -26,6 +26,10 @@ export type WritingDocumentStatus = 'draft' | 'generated' | 'needs_review' | 'co
 export type WritingMaterialCategory = 'context' | 'symptom' | 'hypothesis' | 'evidence' | 'attempt' | 'solution' | 'source' | 'reflection'
 export type WritingClaimKind = 'observed' | 'inferred' | 'source_based' | 'reflection' | 'recommendation'
 export type WritingClaimStatus = 'supported' | 'needs_review' | 'unsupported'
+export type WritingClusterKey = 'problem' | 'hypothesis' | 'evidence' | 'attempts' | 'solution' | 'principles'
+export type WritingClusterStatus = 'pending' | 'accepted' | 'rejected'
+export type WritingClusterMemberRole = 'primary' | 'supporting' | 'duplicate' | 'context'
+export type WritingClusterSummaryStatus = 'rule_ready' | 'queued' | 'running' | 'model_ready' | 'model_failed'
 
 export type ArtifactKind = 'user_message' | 'sql' | 'explain' | 'benchmark' | 'result_set' | 'error' | 'external_text' | 'tutor_reply' | 'source_excerpt' | 'note_outline' | 'article_draft'
 export type ArtifactSourceKind = 'user' | 'lab' | 'tutor' | 'zhihu' | 'global_search' | 'system'
@@ -362,4 +366,55 @@ export interface WritingProject {
   reviewItems: WritingReviewItem[]
   createdAt: string
   updatedAt: string
+}
+
+export interface WritingCluster {
+  id: string
+  projectId: string
+  clusterKey: WritingClusterKey
+  position: number
+  title: string
+  ruleSummary: string
+  modelSummary: string | null
+  relevance: string
+  userNote: string | null
+  status: WritingClusterStatus
+  summaryStatus: WritingClusterSummaryStatus
+  revision: number
+  sourceFingerprint: string
+  memberCount: number
+  duplicateCount: number
+  createdAt: string
+  updatedAt: string
+}
+
+export interface WritingClusterMember {
+  id: string
+  clusterId: string
+  refType: 'artifact' | 'source' | 'path_node'
+  refId: string
+  role: WritingClusterMemberRole
+  displayOrder: number
+  title: string
+  excerpt: string
+  kind: string
+  verificationStatus: string
+  createdAt: string
+}
+
+export interface WritingClusterOverview {
+  projectId: string
+  practiceRunId: string
+  clusters: WritingCluster[]
+  acceptedCount: number
+  totalCount: number
+  requiredAccepted: string[]
+  canGenerateOutline: boolean
+  curation: { status: 'not_started' | 'queued' | 'running' | 'succeeded' | 'failed'; jobId: string | null; error: string | null }
+}
+
+export interface WritingClusterDetail {
+  cluster: WritingCluster
+  members: WritingClusterMember[]
+  nextCursor: string | null
 }

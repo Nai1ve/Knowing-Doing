@@ -31,6 +31,21 @@ describe('TutorEngine', () => {
     vi.unstubAllGlobals()
   })
 
+  it('preserves code block line breaks and indentation while streaming', async () => {
+    const answer = '先执行这条 SQL：\n\n```sql\nSELECT id\n  FROM orders\n  WHERE status = \'PAID\'\n```\n\n再比较执行计划。'
+    vi.stubGlobal('fetch', vi.fn(async () => new Response([
+      `data: ${JSON.stringify({ choices: [{ delta: { content: answer } }] })}`,
+      '',
+      'data: [DONE]',
+      '',
+    ].join('\n'), { headers: { 'Content-Type': 'text/event-stream' } })))
+    const deltas: string[] = []
+    const result = await engine().generate(run, context, '给我 SQL 示例', [], (delta) => deltas.push(delta))
+    expect(result.response).toBe(answer)
+    expect(deltas.join('')).toBe(answer)
+    vi.unstubAllGlobals()
+  })
+
   it('raises a structured error instead of returning a scripted answer', async () => {
     const missing = new TutorEngine({} as LabConfig)
     await expect(missing.generate(run, context, '继续', [])).rejects.toMatchObject({ code: 'model_not_configured' })

@@ -6,15 +6,18 @@ import { PracticeService } from './practice-service.js'
 import { RetrievalService, ZhihuCliProvider } from './retrieval.js'
 import { TutorEngine } from './tutor.js'
 import { WritingService } from './writing-service.js'
+import { CurationService, ModelCurationSummarizer } from './curation-service.js'
 
 const config = loadConfig()
 const productRepository = new ProductRepository(config.productDbPath)
 productRepository.markRunningTutorInvocationsInterrupted()
 const retrieval = new RetrievalService(productRepository, new ZhihuCliProvider(config), config.retrievalCacheTtlMs)
+const curation = new CurationService(productRepository, new ModelCurationSummarizer(config))
+curation.resume()
 const { app, scheduler } = buildApp({
   config,
-  practiceServiceFactory: (labScheduler) => new PracticeService(productRepository, labScheduler, new TutorEngine(config), retrieval),
-  writingServiceFactory: () => new WritingService(productRepository),
+  practiceServiceFactory: (labScheduler) => new PracticeService(productRepository, labScheduler, new TutorEngine(config), retrieval, curation),
+  writingServiceFactory: () => new WritingService(productRepository, curation),
   runtimeStatus: async () => ({ model: { configured: Boolean(config.modelBaseUrl && config.modelApiKey), name: config.modelName }, zhihu: { configured: Boolean(config.zhihuCliPath), executable: await new ZhihuCliProvider(config).isAvailable(), lastRetrieval: null } }),
 })
 

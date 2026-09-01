@@ -1,5 +1,6 @@
 import type { Artifact, PracticeRun, PracticeSnapshot, SourceItem, WritingClaim, WritingDocument, WritingMaterial, WritingProject, WritingReviewItem, WritingSection } from './product-types.js'
 import { ProductRepository } from './product-repository.js'
+import { CurationService } from './curation-service.js'
 
 export class WritingNotFoundError extends Error {}
 export class WritingConflictError extends Error {}
@@ -106,7 +107,7 @@ function articleSections(outline: WritingDocument, project: WritingProject): Sec
 }
 
 export class WritingService {
-  constructor(private readonly repository: ProductRepository) {}
+  constructor(private readonly repository: ProductRepository, private readonly curation = new CurationService(repository)) {}
 
   private run(runId: string): PracticeRun {
     try { return this.repository.getPracticeRun(runId) } catch { throw new WritingNotFoundError(`Practice run not found: ${runId}`) }
@@ -125,7 +126,44 @@ export class WritingService {
     return this.repository.getWritingProject(project.id)
   }
 
-  initialize(runId: string): WritingProject { return this.ensureProject(runId) }
+  initialize(runId: string): WritingProject {
+    const project = this.ensureProject(runId)
+    this.curation.ensure(project)
+    return project
+  }
+
+  curationOverview(runId: string) {
+    const existingProjectId = this.repository.getWritingProjectIdByRun(runId)
+    if (existingProjectId && this.repository.getWritingClusterOverview(existingProjectId, runId).totalCount > 0) return this.curation.overview(existingProjectId, runId)
+    const project = this.ensureProject(runId)
+    this.curation.ensure(project)
+    return this.curation.overview(project.id, runId)
+  }
+
+  curationDetail(runId: string, clusterId: string, filter?: string, cursor?: string, limit?: number) {
+    const projectId = this.repository.getWritingProjectIdByRun(runId)
+    if (!projectId) throw new WritingNotFoundError(`Writing project not found for practice run: ${runId}`)
+    try { return this.curation.detail(projectId, clusterId, filter, cursor, limit) } catch (error) {
+      if (error instanceof Error && error.message === 'WRITING_CLUSTER_NOT_FOUND') throw new WritingNotFoundError('写作聚类不存在')
+      throw error
+    }
+  }
+
+  updateCuration(runId: string, clusterId: string, revision: number, status: 'pending' | 'accepted' | 'rejected', userNote?: string | null) {
+    const projectId = this.repository.getWritingProjectIdByRun(runId)
+    if (!projectId) throw new WritingNotFoundError(`Writing project not found for practice run: ${runId}`)
+    try { return this.curation.update(projectId, clusterId, revision, status, userNote) } catch (error) {
+      if (error instanceof Error && error.message === 'WRITING_CLUSTER_NOT_FOUND') throw new WritingNotFoundError('写作聚类不存在')
+      if (error instanceof Error && error.message === 'WRITING_CLUSTER_REVISION_CONFLICT') throw new WritingConflictError('聚类已在其他标签页更新，请刷新后再确认')
+      throw error
+    }
+  }
+
+  refreshCuration(runId: string) {
+    const project = this.ensureProject(runId)
+    this.curation.refresh(project)
+    return this.curation.overview(project.id, runId)
+  }
 
   getExisting(runId: string): WritingProject {
     this.run(runId)
@@ -151,9 +189,13 @@ export class WritingService {
 
   generateOutline(runId: string): WritingProject {
     const run = this.run(runId); const project = this.ensureProject(runId); const snapshot = this.repository.snapshot(runId)
-    const materialIds = selectedMaterials(project).map((material) => material.id)
+    const overview = this.curation.overview(project.id, runId)
+    if (!overview.canGenerateOutline) throw new WritingConflictError('请先确认“问题与目标”“关键证据”和“候选方案与验证”三个聚类')
+    const acceptedRefs = new Set(this.repository.listAcceptedWritingRefs(project.id).map((ref) => `${ref.refType}:${ref.refId}`))
+    const curatedProject = { ...project, materials: project.materials.map((material) => ({ ...material, selected: acceptedRefs.has(`${material.refType}:${material.refId}`) })) }
+    const materialIds = selectedMaterials(curatedProject).map((material) => material.id)
     this.repository.updateWritingSnapshot(project.id, materialIds, 'outline_review')
-    const current = this.repository.getWritingProject(project.id); const draft = buildOutline(run, current, snapshot)
+    const current = this.repository.getWritingProject(project.id); const draft = buildOutline(run, { ...current, materials: current.materials.map((material) => ({ ...material, selected: acceptedRefs.has(`${material.refType}:${material.refId}`) })) }, snapshot)
     const document = this.repository.createWritingDocument({ projectId: current.id, kind: 'outline', status: 'generated', title: `${caseLabel(run)} · 实践复盘大纲`, summary: '从实践事件、Lab 证据和已选来源生成的可编辑大纲。', sections: draft.sections, claims: draft.claims })
     const artifact = this.repository.createArtifact({ learnerId: run.learnerId, practiceRunId: runId, kind: 'note_outline', sourceKind: 'system', verificationStatus: 'model_generated', content: draft.sections.map((section) => `## ${section.title}\n${section.content}`).join('\n\n'), metadata: { documentId: document.id, generationMethod: 'evidence_template', materialIds } })
     this.repository.appendEvent({ learnerId: run.learnerId, practiceRunId: runId, actor: 'system', type: 'note_outline_generated', stage: run.stage, payload: { documentId: document.id, artifactId: artifact.id, materialIds }, artifactRefs: [artifact.id] })

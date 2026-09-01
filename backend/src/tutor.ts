@@ -36,19 +36,37 @@ function stripThinking(value: string): string {
   return result.replace(/<\/?think(?:ing)?>/gi, '').trim()
 }
 
+function preserveCodeWhitespace(value: string, trim = false): string {
+  let fence: '`' | '~' | null = null
+  const normalized = value.split('\n').map((line) => {
+    const marker = line.match(/^ {0,3}(`{3,}|~{3,})/)
+    if (fence) {
+      if (marker && marker[1][0] === fence) fence = null
+      return line
+    }
+    if (marker) {
+      fence = marker[1][0] as '`' | '~'
+      return line
+    }
+    if (/^( {4}|\t)/.test(line)) return line
+    return line.replace(/[ \t]{2,}/g, ' ')
+  }).join('\n')
+  return trim ? normalized.trim() : normalized
+}
+
 function extractSourceRefs(value: string, sources: SourceItem[]): TutorGenerated {
   const sourceMap = new Map(sources.map((source) => [source.id, source]))
   const refs: Array<{ sourceId: string; reason: string }> = []
-  const response = value.replace(/\[\[source:([^\]]+)\]\]/g, (_match, sourceId: string) => {
+  const response = preserveCodeWhitespace(value.replace(/\[\[source:([^\]]+)\]\]/g, (_match, sourceId: string) => {
     const source = sourceMap.get(sourceId)
     if (source) refs.push({ sourceId, reason: `用于补充“${source.title}”中的相关经验，仍需以 Lab 证据为准。` })
     return ''
-  }).replace(/\s{2,}/g, ' ').trim()
+  }), true)
   return { response, sourceRefs: refs.filter((ref, index) => refs.findIndex((item) => item.sourceId === ref.sourceId) === index) }
 }
 
 function streamVisible(value: string): string {
-  return value.replace(/\[\[source:[^\]]+\]\]/g, '').replace(/\[\[source:[^\]]*$/, '').replace(/\s{2,}/g, ' ')
+  return preserveCodeWhitespace(value.replace(/\[\[source:[^\]]+\]\]/g, '').replace(/\[\[source:[^\]]*$/, ''))
 }
 
 function sourcesForPrompt(sources: SourceItem[]): Array<Pick<SourceItem, 'id' | 'title' | 'author' | 'url' | 'excerpt' | 'retrievedAt'>> {

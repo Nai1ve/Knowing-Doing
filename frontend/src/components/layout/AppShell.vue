@@ -13,7 +13,7 @@ const tocItems = computed(() => ({
   route: [{ label: '知识树', href: '#route-tree' }, { label: '当前节点', href: '#route-selected' }],
   lesson: [{ label: '实验环境', href: '#lab-run-title' }, { label: 'SQL 工作台', href: '#sql-workbench-title' }, { label: '执行结果', href: '#execution-result-title' }],
   notes: [{ label: '实践记录', href: '#note-capture' }, { label: '整理大纲', href: '#note-outline' }, { label: '成文发布', href: '#note-article' }],
-  'writing-materials': [{ label: '写作流程', href: '#writing-title' }, { label: '实践素材', href: '#materials-title' }],
+  'writing-materials': [{ label: '写作流程', href: '#writing-title' }, { label: '证据地图', href: '#curation-title' }],
   'writing-outline': [{ label: '写作流程', href: '#writing-title' }, { label: '大纲整理', href: '#outline-title' }],
   'writing-article': [{ label: '写作流程', href: '#writing-title' }, { label: '文章初稿', href: '#article-title' }],
   'writing-review': [{ label: '写作流程', href: '#writing-title' }, { label: '发布前检查', href: '#review-title' }],

@@ -1,6 +1,6 @@
 import { ApiError, apiClient } from './client'
 import type { LabCaseId, LabExecutionResult } from '@/types/lab'
-import type { ProductArtifact, ProductIntake, ProductLabAccess, ProductLabExecution, ProductMemory, ProductPlan, ProductPracticeCompletion, ProductPracticeHistoryPage, ProductPracticePin, ProductPracticeRun, ProductPracticeStart, ProductSnapshot, ProductTutorResponse, ProductTutorStreamEvent, ProductWritingProject } from '@/types/product'
+import type { ProductArtifact, ProductIntake, ProductLabAccess, ProductLabExecution, ProductMemory, ProductPlan, ProductPracticeCompletion, ProductPracticeHistoryPage, ProductPracticePin, ProductPracticeRun, ProductPracticeStart, ProductSnapshot, ProductTutorResponse, ProductTutorStreamEvent, ProductWritingCluster, ProductWritingClusterDetail, ProductWritingClusterOverview, ProductWritingProject } from '@/types/product'
 
 const learnerStorageKey = 'zhixing.learner.id'
 function learnerId(): string {
@@ -78,6 +78,15 @@ export function getProductMemories(): Promise<ProductMemory[]> { return product(
 export function updateProductMemory(memoryId: string, input: { statement?: string; userNote?: string | null; status?: string }): Promise<ProductMemory> { return product(`/memories/${memoryId}`, { method: 'PATCH', body: JSON.stringify(input) }) }
 export function initializeWriting(runId: string): Promise<ProductWritingProject> { return product(`/practice-runs/${runId}/writing`, { method: 'POST' }) }
 export function getWriting(runId: string): Promise<ProductWritingProject> { return product(`/practice-runs/${runId}/writing`) }
+export function getWritingCurationOverview(runId: string): Promise<ProductWritingClusterOverview> { return product(`/practice-runs/${runId}/writing/overview`) }
+export function getWritingCurationCluster(runId: string, clusterId: string, filter = 'key', cursor?: string): Promise<ProductWritingClusterDetail> {
+  const query = new URLSearchParams({ filter }); if (cursor) query.set('cursor', cursor)
+  return product(`/practice-runs/${runId}/writing/clusters/${clusterId}?${query.toString()}`)
+}
+export function updateWritingCuration(runId: string, clusterId: string, revision: number, status: ProductWritingCluster['status'], userNote?: string | null): Promise<ProductWritingCluster> {
+  return product(`/practice-runs/${runId}/writing/clusters/${clusterId}`, { method: 'PATCH', body: JSON.stringify({ revision, status, userNote }) })
+}
+export function refreshWritingCuration(runId: string): Promise<ProductWritingClusterOverview> { return product(`/practice-runs/${runId}/writing/curation/refresh`, { method: 'POST' }) }
 export function selectWritingMaterial(runId: string, materialId: string, selected: boolean, editorialNote?: string | null): Promise<ProductWritingProject> {
   return product(`/practice-runs/${runId}/writing/materials/${materialId}`, { method: 'PATCH', body: JSON.stringify({ selected, editorialNote }) })
 }

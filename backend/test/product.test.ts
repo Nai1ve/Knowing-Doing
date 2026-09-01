@@ -6,8 +6,10 @@ import { applyProductMigrations } from '../src/product-migrate.js'
 import { ProductRepository } from '../src/product-repository.js'
 import type { LabConfig } from '../src/config.js'
 import type { LabScheduler } from '../src/scheduler.js'
+import type { WritingClusterKey } from '../src/product-types.js'
 import { TutorEngine } from '../src/tutor.js'
 import { PracticeService } from '../src/practice-service.js'
+import { CurationService } from '../src/curation-service.js'
 import { WritingConflictError, WritingNotFoundError, WritingService } from '../src/writing-service.js'
 
 function withRepository<T>(callback: (repository: ProductRepository) => T): T {
@@ -111,6 +113,14 @@ describe('product repository', () => {
     const initialized = service.initialize(run.id)
     expect(initialized.materials.some((material) => material.refId === explain.id)).toBe(true)
     expect(initialized.materials.some((material) => material.refId === source.id)).toBe(true)
+    const curation = service.curationOverview(run.id)
+    expect(curation.clusters).toHaveLength(6)
+    expect(curation.clusters.every((cluster) => cluster.status === 'pending')).toBe(true)
+    expect(curation.clusters.every((cluster) => cluster.summaryStatus === 'model_failed')).toBe(true)
+    for (const key of ['problem', 'evidence', 'solution'] as const) {
+      const cluster = curation.clusters.find((item) => item.clusterKey === key)!
+      service.updateCuration(run.id, cluster.id, cluster.revision, 'accepted')
+    }
 
     const outlined = service.generateOutline(run.id)
     const outline = outlined.documents.find((document) => document.kind === 'outline')
@@ -132,6 +142,42 @@ describe('product repository', () => {
     expect(() => service.editSection(run.id, document!.id, section!.id, document!.revision, '旧版本覆盖')).toThrow(WritingConflictError)
   }))
 
+  it('folds duplicate evidence and keeps the default inspector focused', () => withRepository((repository) => {
+    repository.ensureLearner('learner-1')
+    const run = repository.createPracticeRun({ learnerId: 'learner-1', caseId: 'mysql-order-list-index-001' })
+    repository.createArtifact({ learnerId: run.learnerId, practiceRunId: run.id, kind: 'sql', sourceKind: 'lab', verificationStatus: 'verified_lab', content: 'EXPLAIN SELECT * FROM orders WHERE user_id = 4242', metadata: {} })
+    repository.createArtifact({ learnerId: run.learnerId, practiceRunId: run.id, kind: 'sql', sourceKind: 'lab', verificationStatus: 'verified_lab', content: 'EXPLAIN SELECT * FROM orders WHERE user_id = 4242', metadata: {} })
+    const service = new WritingService(repository)
+    service.initialize(run.id)
+    const overview = service.curationOverview(run.id)
+    const attempts = overview.clusters.find((cluster) => cluster.clusterKey === 'attempts')!
+    expect(attempts.duplicateCount).toBe(1)
+    const detail = service.curationDetail(run.id, attempts.id, 'key')
+    expect(detail.members).toHaveLength(1)
+    expect(detail.members.every((member) => member.role !== 'duplicate')).toBe(true)
+  }))
+
+  it('summarizes all six clusters and falls back when the model fails', async () => withRepositoryAsync(async (repository) => {
+    repository.ensureLearner('learner-1')
+    const run = repository.createPracticeRun({ learnerId: 'learner-1', caseId: 'mysql-order-list-index-001' })
+    repository.createArtifact({ learnerId: run.learnerId, practiceRunId: run.id, kind: 'user_message', sourceKind: 'user', verificationStatus: 'not_applicable', content: '我想理解这个慢查询。' })
+    const project = repository.createWritingProject({ learnerId: run.learnerId, practiceRunId: run.id })
+    const summarizer = { summarize: vi.fn(async (input: Array<{ clusterKey: WritingClusterKey; ruleSummary: string; evidence: string[] }>) => input.map((item) => ({ clusterKey: item.clusterKey, title: item.clusterKey, summary: item.ruleSummary, relevance: '由模型压缩的相关性' }))) }
+    const curation = new CurationService(repository, summarizer)
+    curation.ensure(project)
+    await vi.waitFor(() => expect(summarizer.summarize).toHaveBeenCalledOnce())
+    const inputKeys = repository.listWritingClusterModelInputs(project.id).map((item) => item.clusterKey)
+    expect(inputKeys).toHaveLength(6)
+    await vi.waitFor(() => expect(curation.overview(project.id, run.id).curation.status).toBe('succeeded'))
+    expect(curation.overview(project.id, run.id).clusters.every((cluster) => cluster.summaryStatus === 'model_ready')).toBe(true)
+
+    repository.createArtifact({ learnerId: run.learnerId, practiceRunId: run.id, kind: 'error', sourceKind: 'lab', verificationStatus: 'verified_lab', content: 'Unknown column', metadata: {} })
+    const failed = new CurationService(repository, { summarize: vi.fn(async () => { throw new Error('provider_timeout') }) })
+    failed.refresh(repository.getWritingProject(project.id))
+    await vi.waitFor(() => expect(failed.overview(project.id, run.id).curation.status).toBe('failed'))
+    expect(failed.overview(project.id, run.id).clusters.every((cluster) => cluster.summaryStatus === 'model_failed')).toBe(true)
+  }))
+
   it('keeps writing resources scoped to their project and scans full artifact content for secrets', () => withRepository((repository) => {
     repository.ensureLearner('learner-1')
     const firstRun = repository.createPracticeRun({ learnerId: 'learner-1', caseId: 'mysql-order-list-index-001' })
@@ -140,6 +186,11 @@ describe('product repository', () => {
     const service = new WritingService(repository)
     const first = service.initialize(firstRun.id)
     const second = service.initialize(secondRun.id)
+    const firstCuration = service.curationOverview(firstRun.id)
+    for (const key of ['problem', 'evidence', 'solution'] as const) {
+      const cluster = firstCuration.clusters.find((item) => item.clusterKey === key)!
+      service.updateCuration(firstRun.id, cluster.id, cluster.revision, 'accepted')
+    }
     const outlined = service.generateOutline(firstRun.id)
     const articleProject = service.generateArticle(firstRun.id)
     const outline = outlined.documents.find((document) => document.kind === 'outline')!

@@ -11,6 +11,7 @@ import { TutorEngine, TutorProviderError, tutorResponseFromGenerated } from './t
 import { getManifest } from './fixtures.js'
 import { validateStatement } from './sql-policy.js'
 import { LabError } from './errors.js'
+import type { CurationService } from './curation-service.js'
 
 export class ProductNotFoundError extends Error {}
 
@@ -47,7 +48,7 @@ export class PracticeService {
   private readonly pendingQueues = new Map<string, string>()
   private readonly runLocks = new Map<string, Promise<void>>()
 
-  constructor(private readonly repository: ProductRepository, private readonly scheduler: LabScheduler, private readonly tutor: TutorEngine, private readonly retrieval?: RetrievalService) {}
+  constructor(private readonly repository: ProductRepository, private readonly scheduler: LabScheduler, private readonly tutor: TutorEngine, private readonly retrieval?: RetrievalService, private readonly curation?: CurationService) {}
 
   private async withRunLock<T>(runId: string, action: () => Promise<T>): Promise<T> {
     const previous = this.runLocks.get(runId) ?? Promise.resolve()
@@ -369,7 +370,10 @@ export class PracticeService {
     const updated = this.repository.updatePracticeRun(runId, { stage: decision.nextStage, status: decision.outcome === 'resolved' ? 'resolved' : run.status === 'ready_to_close' ? 'ready_to_close' : 'active' })
     if (updated.stage !== run.stage) this.repository.appendEvent({ learnerId: run.learnerId, practiceRunId: runId, actor: 'rule', type: 'stage_transitioned', stage: updated.stage, payload: { from: run.stage, to: updated.stage, reason: decision.reason } })
     this.repository.appendEvent({ learnerId: run.learnerId, practiceRunId: runId, actor: 'rule', type: 'attempt_reviewed', stage: updated.stage, payload: { outcome: decision.outcome, reason: decision.reason, nextGap: decision.nextGap } })
-    if (decision.outcome === 'resolved') this.repository.upsertMemory({ learnerId: run.learnerId, category: 'capability', topic: 'mysql-query-optimization', status: 'active', statement: '能够基于执行计划、SQL 尝试和结果集证据验证一次 MySQL 查询优化。', scope: run.caseId, confidence: 0.7, evidenceRefs: snapshot.artifacts.filter((artifact) => artifact.verificationStatus === 'verified_lab').map((artifact) => artifact.id), userNote: null })
+    if (decision.outcome === 'resolved') {
+      this.repository.upsertMemory({ learnerId: run.learnerId, category: 'capability', topic: 'mysql-query-optimization', status: 'active', statement: '能够基于执行计划、SQL 尝试和结果集证据验证一次 MySQL 查询优化。', scope: run.caseId, confidence: 0.7, evidenceRefs: snapshot.artifacts.filter((artifact) => artifact.verificationStatus === 'verified_lab').map((artifact) => artifact.id), userNote: null })
+      this.curation?.prepareRun(runId)
+    }
     const finalSnapshot = this.repository.snapshot(runId)
     return { run: updated, decision, snapshot: finalSnapshot, completion: evaluatePracticeCompletion(updated, finalSnapshot) }
   }

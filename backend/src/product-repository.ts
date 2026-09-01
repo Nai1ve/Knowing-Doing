@@ -5,10 +5,19 @@ import { evaluatePracticeCompletion } from './coach.js'
 import type {
   Artifact, ArtifactKind, ArtifactSourceKind, CaseStage, EventActor, EventType, Intake, LearningPlan,
   LabSegment, Learner, MemoryItem, PathNode, PlanUnit, PracticeEvent, PracticePin, PracticeRun, PracticeSnapshot, SourceItem,
-  StageMemory, TutorInvocation, TutorInvocationStatus, VerificationStatus, WritingClaim, WritingDocument, WritingMaterial, WritingProject, WritingReviewItem, WritingSection,
+  StageMemory, TutorInvocation, TutorInvocationStatus, VerificationStatus, WritingClaim, WritingCluster, WritingClusterDetail, WritingClusterKey, WritingClusterMember, WritingClusterMemberRole, WritingClusterOverview, WritingClusterStatus, WritingClusterSummaryStatus, WritingDocument, WritingMaterial, WritingProject, WritingReviewItem, WritingSection,
 } from './product-types.js'
 
 type Row = Record<string, unknown>
+
+export interface WritingClusterDefinition {
+  clusterKey: WritingClusterKey
+  position: number
+  title: string
+  ruleSummary: string
+  relevance: string
+  members: Array<{ refType: 'artifact' | 'source' | 'path_node'; refId: string; role: WritingClusterMemberRole }>
+}
 
 function text(row: Row, key: string): string {
   return String(row[key])
@@ -175,6 +184,26 @@ function writingReviewItemFrom(row: Row): WritingReviewItem {
   return {
     id: text(row, 'id'), projectId: text(row, 'project_id'), code: text(row, 'code'), severity: text(row, 'severity') as WritingReviewItem['severity'],
     status: text(row, 'status') as WritingReviewItem['status'], message: text(row, 'message'), sectionId: nullableText(row, 'section_id'), createdAt: text(row, 'created_at'),
+  }
+}
+
+function writingClusterFrom(row: Row): WritingCluster {
+  return {
+    id: text(row, 'id'), projectId: text(row, 'project_id'), clusterKey: text(row, 'cluster_key') as WritingClusterKey,
+    position: number(row, 'position'), title: text(row, 'title'), ruleSummary: text(row, 'rule_summary'),
+    modelSummary: nullableText(row, 'model_summary'), relevance: text(row, 'relevance'), userNote: nullableText(row, 'user_note'),
+    status: text(row, 'status') as WritingClusterStatus, summaryStatus: text(row, 'summary_status') as WritingClusterSummaryStatus,
+    revision: number(row, 'revision'), sourceFingerprint: text(row, 'source_fingerprint'),
+    memberCount: number(row, 'member_count'), duplicateCount: number(row, 'duplicate_count'),
+    createdAt: text(row, 'created_at'), updatedAt: text(row, 'updated_at'),
+  }
+}
+
+function writingClusterMemberFrom(row: Row): WritingClusterMember {
+  return {
+    id: text(row, 'id'), clusterId: text(row, 'cluster_id'), refType: text(row, 'ref_type') as WritingClusterMember['refType'],
+    refId: text(row, 'ref_id'), role: text(row, 'role') as WritingClusterMemberRole, displayOrder: number(row, 'display_order'),
+    title: text(row, 'title'), excerpt: text(row, 'excerpt'), kind: text(row, 'kind'), verificationStatus: text(row, 'verification_status'), createdAt: text(row, 'created_at'),
   }
 }
 
@@ -513,6 +542,183 @@ export class ProductRepository {
   getWritingProjectByRun(practiceRunId: string): WritingProject | null {
     const row = this.db.prepare('SELECT id FROM writing_projects WHERE practice_run_id = ?').get(practiceRunId) as Row | undefined
     return row ? this.getWritingProject(text(row, 'id')) : null
+  }
+
+  getWritingProjectIdByRun(practiceRunId: string): string | null {
+    const row = this.db.prepare('SELECT id FROM writing_projects WHERE practice_run_id = ?').get(practiceRunId) as Row | undefined
+    return row ? text(row, 'id') : null
+  }
+
+  replaceWritingClusters(projectId: string, fingerprint: string, definitions: WritingClusterDefinition[]): void {
+    const now = new Date().toISOString()
+    const transaction = this.db.transaction(() => {
+      for (const definition of definitions) {
+        const existing = this.db.prepare('SELECT id, status, revision, model_summary, source_fingerprint FROM writing_clusters WHERE project_id = ? AND cluster_key = ?').get(projectId, definition.clusterKey) as Row | undefined
+        const clusterId = existing ? text(existing, 'id') : randomUUID()
+        const status = existing ? text(existing, 'status') : 'pending'
+        const revision = existing ? number(existing, 'revision') : 1
+        const sameFingerprint = existing && text(existing, 'source_fingerprint') === fingerprint
+        if (existing) {
+          this.db.prepare(`UPDATE writing_clusters SET position = ?, title = ?, rule_summary = ?, relevance = ?, source_fingerprint = ?,
+            model_summary = CASE WHEN ? = 1 THEN model_summary ELSE NULL END,
+            summary_status = CASE WHEN ? = 1 THEN summary_status ELSE 'rule_ready' END, updated_at = ? WHERE id = ?`).run(
+            definition.position, definition.title, definition.ruleSummary, definition.relevance, fingerprint, sameFingerprint ? 1 : 0, sameFingerprint ? 1 : 0, now, clusterId,
+          )
+        } else {
+          this.db.prepare(`INSERT INTO writing_clusters(id, project_id, cluster_key, position, title, rule_summary, model_summary, relevance, user_note, status, summary_status, revision, source_fingerprint, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, NULL, ?, NULL, 'pending', 'rule_ready', ?, ?, ?, ?)`).run(
+            clusterId, projectId, definition.clusterKey, definition.position, definition.title, definition.ruleSummary, definition.relevance, revision, fingerprint, now, now,
+          )
+        }
+        this.db.prepare('DELETE FROM writing_cluster_members WHERE cluster_id = ?').run(clusterId)
+        const insert = this.db.prepare(`INSERT INTO writing_cluster_members(id, cluster_id, ref_type, ref_id, role, display_order, created_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?)`)
+        definition.members.forEach((member, index) => insert.run(randomUUID(), clusterId, member.refType, member.refId, member.role, index + 1, now))
+      }
+    })
+    transaction.immediate()
+  }
+
+  listWritingClusterDefinitions(projectId: string): Array<{ clusterKey: WritingClusterKey; sourceFingerprint: string; members: Array<{ refType: string; refId: string; role: string }> }> {
+    const clusters = this.db.prepare('SELECT id, cluster_key, source_fingerprint FROM writing_clusters WHERE project_id = ? ORDER BY position ASC').all(projectId) as Row[]
+    return clusters.map((cluster) => ({
+      clusterKey: text(cluster, 'cluster_key') as WritingClusterKey,
+      sourceFingerprint: text(cluster, 'source_fingerprint'),
+      members: (this.db.prepare('SELECT ref_type, ref_id, role FROM writing_cluster_members WHERE cluster_id = ? ORDER BY display_order ASC').all(text(cluster, 'id')) as Row[]).map((member) => ({ refType: text(member, 'ref_type'), refId: text(member, 'ref_id'), role: text(member, 'role') })),
+    }))
+  }
+
+  listWritingClusterModelInputs(projectId: string): Array<{ clusterKey: WritingClusterKey; ruleSummary: string; evidence: string[] }> {
+    const rows = this.db.prepare(`SELECT c.cluster_key, c.rule_summary, m.role,
+      CASE WHEN m.ref_type = 'artifact' THEN substr(a.content, 1, 700)
+           WHEN m.ref_type = 'source' THEN substr(s.excerpt, 1, 700)
+           ELSE substr(p.judgment, 1, 700) END AS excerpt
+      FROM writing_clusters c
+      LEFT JOIN writing_cluster_members m ON m.cluster_id = c.id AND m.role != 'duplicate'
+      LEFT JOIN artifacts a ON m.ref_type = 'artifact' AND a.id = m.ref_id
+      LEFT JOIN source_items s ON m.ref_type = 'source' AND s.id = m.ref_id
+      LEFT JOIN path_nodes p ON m.ref_type = 'path_node' AND p.id = m.ref_id
+      WHERE c.project_id = ? ORDER BY c.position ASC, m.display_order ASC`).all(projectId) as Row[]
+    const grouped = new Map<WritingClusterKey, { ruleSummary: string; evidence: string[] }>()
+    for (const row of rows) {
+      const key = text(row, 'cluster_key') as WritingClusterKey
+      const current = grouped.get(key) ?? { ruleSummary: text(row, 'rule_summary'), evidence: [] }
+      const value = nullableText(row, 'excerpt')
+      if (value && current.evidence.length < 3) current.evidence.push(value)
+      grouped.set(key, current)
+    }
+    return [...grouped.entries()].map(([clusterKey, value]) => ({ clusterKey, ...value }))
+  }
+
+  getWritingClusterOverview(projectId: string, practiceRunId: string): WritingClusterOverview {
+    const clusters = (this.db.prepare(`SELECT c.*, COUNT(m.id) AS member_count,
+      COALESCE(SUM(CASE WHEN m.role = 'duplicate' THEN 1 ELSE 0 END), 0) AS duplicate_count
+      FROM writing_clusters c LEFT JOIN writing_cluster_members m ON m.cluster_id = c.id
+      WHERE c.project_id = ? GROUP BY c.id ORDER BY c.position ASC`).all(projectId) as Row[]).map(writingClusterFrom)
+    const job = this.db.prepare(`SELECT id, status, failure_message FROM writing_curation_jobs WHERE project_id = ? ORDER BY created_at DESC LIMIT 1`).get(projectId) as Row | undefined
+    const status = job ? text(job, 'status') : 'not_started'
+    const accepted = clusters.filter((cluster) => cluster.status === 'accepted').map((cluster) => cluster.clusterKey)
+    const required = ['problem', 'evidence', 'solution']
+    return {
+      projectId, practiceRunId, clusters, acceptedCount: accepted.length, totalCount: clusters.length,
+      requiredAccepted: required.filter((key) => accepted.includes(key as WritingClusterKey)), canGenerateOutline: required.every((key) => accepted.includes(key as WritingClusterKey)),
+      curation: { status: status === 'succeeded' ? 'succeeded' : status === 'failed' ? 'failed' : status === 'running' ? 'running' : status === 'queued' ? 'queued' : 'not_started', jobId: job ? text(job, 'id') : null, error: job ? nullableText(job, 'failure_message') : null },
+    }
+  }
+
+  getWritingCluster(clusterId: string, projectId: string): WritingCluster {
+    const row = this.db.prepare(`SELECT c.*, COUNT(m.id) AS member_count,
+      COALESCE(SUM(CASE WHEN m.role = 'duplicate' THEN 1 ELSE 0 END), 0) AS duplicate_count
+      FROM writing_clusters c LEFT JOIN writing_cluster_members m ON m.cluster_id = c.id
+      WHERE c.id = ? AND c.project_id = ? GROUP BY c.id`).get(clusterId, projectId) as Row | undefined
+    if (!row) throw new Error('WRITING_CLUSTER_NOT_FOUND')
+    return writingClusterFrom(row)
+  }
+
+  listWritingClusterMembers(clusterId: string, filter: string | undefined, cursor: string | undefined, limit: number): WritingClusterDetail {
+    const params: unknown[] = [clusterId]
+    const clauses = ['m.cluster_id = ?', "m.role != 'duplicate'"]
+    if (cursor) {
+      const [order, id] = cursor.split('|')
+      if (order && id) { clauses.push('(m.display_order > ? OR (m.display_order = ? AND m.id > ?))'); params.push(Number(order), Number(order), id) }
+    }
+    if (filter === 'zhihu') clauses.push("m.ref_type = 'source'")
+    if (filter === 'user') clauses.push("m.ref_type = 'artifact' AND a.kind = 'user_message'")
+    if (filter === 'tutor') clauses.push("m.ref_type = 'artifact' AND a.kind = 'tutor_reply'")
+    if (filter === 'error') clauses.push("m.ref_type = 'artifact' AND a.kind = 'error'")
+    if (filter === 'evidence') clauses.push("m.ref_type = 'artifact' AND a.kind IN ('sql', 'explain', 'benchmark', 'result_set')")
+    const rows = this.db.prepare(`SELECT m.id, m.cluster_id, m.ref_type, m.ref_id, m.role, m.display_order, m.created_at,
+      CASE WHEN m.ref_type = 'artifact' THEN CASE a.kind WHEN 'user_message' THEN '用户判断' WHEN 'tutor_reply' THEN 'Tutor 回复' WHEN 'sql' THEN 'SQL 尝试' WHEN 'explain' THEN 'EXPLAIN 证据' WHEN 'error' THEN '错误证据' ELSE a.kind END
+           WHEN m.ref_type = 'source' THEN '知乎来源' ELSE p.title END AS title,
+      CASE WHEN m.ref_type = 'artifact' THEN substr(a.content, 1, 1600) WHEN m.ref_type = 'source' THEN substr(s.excerpt, 1, 1600) ELSE p.judgment END AS excerpt,
+      CASE WHEN m.ref_type = 'artifact' THEN a.kind WHEN m.ref_type = 'source' THEN s.provider ELSE p.stage END AS kind,
+      CASE WHEN m.ref_type = 'artifact' THEN a.verification_status WHEN m.ref_type = 'source' THEN 'source_verified' ELSE 'path_record' END AS verification_status
+      FROM writing_cluster_members m
+      LEFT JOIN artifacts a ON m.ref_type = 'artifact' AND a.id = m.ref_id
+      LEFT JOIN source_items s ON m.ref_type = 'source' AND s.id = m.ref_id
+      LEFT JOIN path_nodes p ON m.ref_type = 'path_node' AND p.id = m.ref_id
+      WHERE ${clauses.join(' AND ')} ORDER BY m.display_order ASC, m.id ASC LIMIT ?`).all(...params, limit + 1) as Row[]
+    const hasNext = rows.length > limit; const page = rows.slice(0, limit).map(writingClusterMemberFrom)
+    const next = hasNext && page.length > 0 ? `${page[page.length - 1]!.displayOrder}|${page[page.length - 1]!.id}` : null
+    return { cluster: this.getWritingCluster(clusterId, text((this.db.prepare('SELECT project_id FROM writing_clusters WHERE id = ?').get(clusterId) as Row), 'project_id')), members: page, nextCursor: next }
+  }
+
+  listAcceptedWritingRefs(projectId: string): Array<{ refType: string; refId: string }> {
+    return (this.db.prepare(`SELECT m.ref_type, m.ref_id FROM writing_cluster_members m
+      INNER JOIN writing_clusters c ON c.id = m.cluster_id WHERE c.project_id = ? AND c.status = 'accepted' AND m.role != 'duplicate'`).all(projectId) as Row[]).map((row) => ({ refType: text(row, 'ref_type'), refId: text(row, 'ref_id') }))
+  }
+
+  updateWritingCluster(clusterId: string, projectId: string, expectedRevision: number, status: WritingClusterStatus, userNote?: string | null): WritingCluster {
+    const hasNote = userNote !== undefined
+    const result = this.db.prepare(`UPDATE writing_clusters SET status = ?, user_note = ${hasNote ? '?' : 'user_note'}, revision = revision + 1, updated_at = ?
+      WHERE id = ? AND project_id = ? AND revision = ?`).run(...(hasNote ? [status, userNote] : [status]), new Date().toISOString(), clusterId, projectId, expectedRevision)
+    if (result.changes === 0) throw new Error('WRITING_CLUSTER_REVISION_CONFLICT')
+    return this.getWritingCluster(clusterId, projectId)
+  }
+
+  queueWritingCurationJob(projectId: string, fingerprint: string, provider: string, model: string, retryFailed = false): { id: string; status: string } {
+    const id = randomUUID(); const now = new Date().toISOString()
+    this.db.prepare(`INSERT INTO writing_curation_jobs(id, project_id, input_fingerprint, status, provider, model, created_at, updated_at)
+      VALUES (?, ?, ?, 'queued', ?, ?, ?, ?) ON CONFLICT(project_id, input_fingerprint) DO NOTHING`).run(id, projectId, fingerprint, provider, model, now, now)
+    const row = this.db.prepare('SELECT id, status FROM writing_curation_jobs WHERE project_id = ? AND input_fingerprint = ?').get(projectId, fingerprint) as Row
+    if (retryFailed && text(row, 'status') === 'failed') {
+      this.db.prepare(`UPDATE writing_curation_jobs SET status = 'queued', attempt_count = 0, provider = ?, model = ?, failure_code = NULL,
+        failure_message = NULL, updated_at = ?, completed_at = NULL WHERE id = ? AND status = 'failed'`).run(provider, model, now, text(row, 'id'))
+    }
+    this.db.prepare("UPDATE writing_clusters SET summary_status = 'queued', updated_at = ? WHERE project_id = ? AND source_fingerprint = ? AND summary_status IN ('rule_ready', 'model_failed')").run(now, projectId, fingerprint)
+    const current = this.db.prepare('SELECT id, status FROM writing_curation_jobs WHERE project_id = ? AND input_fingerprint = ?').get(projectId, fingerprint) as Row
+    return { id: text(current, 'id'), status: text(current, 'status') }
+  }
+
+  getWritingCurationJob(id: string): { id: string; projectId: string; inputFingerprint: string; status: string; attemptCount: number; failureCode: string | null; failureMessage: string | null } {
+    const row = this.db.prepare('SELECT * FROM writing_curation_jobs WHERE id = ?').get(id) as Row | undefined
+    if (!row) throw new Error('WRITING_CURATION_JOB_NOT_FOUND')
+    return { id: text(row, 'id'), projectId: text(row, 'project_id'), inputFingerprint: text(row, 'input_fingerprint'), status: text(row, 'status'), attemptCount: number(row, 'attempt_count'), failureCode: nullableText(row, 'failure_code'), failureMessage: nullableText(row, 'failure_message') }
+  }
+
+  listPendingWritingCurationJobs(): Array<{ id: string; projectId: string; inputFingerprint: string }> {
+    return (this.db.prepare("SELECT id, project_id, input_fingerprint FROM writing_curation_jobs WHERE status IN ('queued', 'running') ORDER BY created_at ASC").all() as Row[]).map((row) => ({ id: text(row, 'id'), projectId: text(row, 'project_id'), inputFingerprint: text(row, 'input_fingerprint') }))
+  }
+
+  markWritingCurationJobRunning(id: string): boolean {
+    const result = this.db.prepare("UPDATE writing_curation_jobs SET status = 'running', attempt_count = attempt_count + 1, updated_at = ? WHERE id = ? AND status IN ('queued', 'running')").run(new Date().toISOString(), id)
+    return result.changes > 0
+  }
+
+  finishWritingCurationJob(id: string, status: 'succeeded' | 'failed', failureCode?: string, failureMessage?: string): void {
+    const now = new Date().toISOString()
+    this.db.prepare('UPDATE writing_curation_jobs SET status = ?, failure_code = ?, failure_message = ?, updated_at = ?, completed_at = ? WHERE id = ?').run(status, failureCode ?? null, failureMessage ?? null, now, now, id)
+  }
+
+  applyWritingClusterSummaries(projectId: string, fingerprint: string, summaries: Array<{ clusterKey: WritingClusterKey; title: string; summary: string; relevance: string }>): void {
+    const update = this.db.prepare(`UPDATE writing_clusters SET title = ?, model_summary = ?, relevance = ?, summary_status = 'model_ready', updated_at = ?
+      WHERE project_id = ? AND cluster_key = ? AND source_fingerprint = ?`)
+    const now = new Date().toISOString()
+    this.db.transaction(() => { for (const summary of summaries) update.run(summary.title, summary.summary.slice(0, 120), summary.relevance.slice(0, 180), now, projectId, summary.clusterKey, fingerprint) })()
+  }
+
+  markWritingClusterSummaryFailed(projectId: string, fingerprint: string): void {
+    this.db.prepare("UPDATE writing_clusters SET summary_status = 'model_failed', updated_at = ? WHERE project_id = ? AND source_fingerprint = ?").run(new Date().toISOString(), projectId, fingerprint)
   }
 
   getWritingProject(projectId: string): WritingProject {
