@@ -8,6 +8,7 @@ import { usePlanStore } from '@/stores/plan'
 const route = useRoute()
 const planStore = usePlanStore()
 const currentPage = computed(() => String(route.name ?? 'overview'))
+const isWorkspacePage = computed(() => currentPage.value === 'lesson' || currentPage.value.startsWith('writing-'))
 const tocItems = computed(() => ({
   overview: [{ label: '总目标', href: '#goal' }, { label: '当前状况', href: '#status' }, { label: '整体路线', href: '#overview-route' }, { label: '当前节点', href: '#current-node' }],
   route: [{ label: '知识树', href: '#route-tree' }, { label: '当前节点', href: '#route-selected' }],
@@ -26,14 +27,14 @@ const tocItems = computed(() => ({
 
 <template>
   <main class="app-window" aria-label="知行学习系统">
-    <div class="app-body" :class="{ 'lesson-body': currentPage === 'lesson' }">
+    <div class="app-body" :class="{ 'lesson-body': isWorkspacePage }">
       <AppSidebar />
-      <section class="main-content" :class="{ 'lesson-content': currentPage === 'lesson' }">
+      <section class="main-content" :class="{ 'lesson-content': isWorkspacePage }">
         <div v-if="planStore.loading" class="loading-state" role="status">正在载入当前学习计划…</div>
         <div v-else-if="planStore.error" class="error-state" role="alert">{{ planStore.error }}</div>
         <RouterView v-else />
       </section>
-      <PageToc v-if="currentPage !== 'lesson'" :items="tocItems" />
+      <PageToc v-if="!isWorkspacePage" :items="tocItems" />
     </div>
   </main>
 </template>
