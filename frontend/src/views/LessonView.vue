@@ -27,6 +27,7 @@ async function initialize() {
     v-else-if="practiceStore.run"
     :practice="practiceStore.run"
     :snapshot="practiceStore.snapshot"
+    :completion="practiceStore.completion"
     :lab-run="labStore.run"
     :lab-error="labStore.error"
     :practice-error="practiceStore.error"
@@ -38,6 +39,7 @@ async function initialize() {
     :practice-starting="practiceStore.starting"
     :lab-resetting="labStore.resetting"
     :lab-ending="labStore.ending"
+    :practice-verifying="practiceStore.verifying"
     :messages="practiceStore.messages"
     :sources="practiceStore.sources"
     :source-status="practiceStore.lastTutor?.sourceStatus"
@@ -57,6 +59,7 @@ async function initialize() {
     @retry="practiceStore.retryTutor"
     @pin="practiceStore.pin"
     @unpin="practiceStore.unpin"
+    @verify="practiceStore.verify"
   />
   <PracticeLauncher
     v-else

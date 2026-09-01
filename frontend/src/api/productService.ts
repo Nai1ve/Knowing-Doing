@@ -1,6 +1,6 @@
 import { ApiError, apiClient } from './client'
 import type { LabCaseId, LabExecutionResult } from '@/types/lab'
-import type { ProductArtifact, ProductIntake, ProductLabAccess, ProductLabExecution, ProductMemory, ProductPlan, ProductPracticeHistoryPage, ProductPracticePin, ProductPracticeRun, ProductPracticeStart, ProductSnapshot, ProductTutorResponse, ProductTutorStreamEvent, ProductWritingProject } from '@/types/product'
+import type { ProductArtifact, ProductIntake, ProductLabAccess, ProductLabExecution, ProductMemory, ProductPlan, ProductPracticeCompletion, ProductPracticeHistoryPage, ProductPracticePin, ProductPracticeRun, ProductPracticeStart, ProductSnapshot, ProductTutorResponse, ProductTutorStreamEvent, ProductWritingProject } from '@/types/product'
 
 const learnerStorageKey = 'zhixing.learner.id'
 function learnerId(): string {
@@ -71,7 +71,7 @@ export function executeProductLab(runId: string, labToken: string, input: { revi
     throw error
   })
 }
-export function verifyProductPractice(runId: string): Promise<{ run: ProductPracticeRun; decision: { outcome: string; reason: string; nextGap: string }; snapshot: ProductSnapshot }> { return product(`/practice-runs/${runId}/verify`, { method: 'POST' }) }
+export function verifyProductPractice(runId: string): Promise<{ run: ProductPracticeRun; decision: { outcome: string; reason: string; nextGap: string }; snapshot: ProductSnapshot; completion: ProductPracticeCompletion }> { return product(`/practice-runs/${runId}/verify`, { method: 'POST' }) }
 export function generateProductOutline(runId: string): Promise<{ artifact: ProductArtifact; snapshot: ProductSnapshot }> { return product(`/practice-runs/${runId}/note-outline`, { method: 'POST' }) }
 export function generateProductArticle(runId: string, outline?: string): Promise<{ artifact: ProductArtifact; snapshot: ProductSnapshot }> { return product(`/practice-runs/${runId}/article-draft`, { method: 'POST', body: JSON.stringify({ outline }) }) }
 export function getProductMemories(): Promise<ProductMemory[]> { return product('/memories') }

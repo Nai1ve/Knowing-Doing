@@ -12,7 +12,7 @@ const rendered = computed(() => renderSafeMarkdown(props.content))
 </template>
 
 <style scoped>
-.markdown-content { overflow-wrap: anywhere; color: inherit; font-size: 13px; line-height: 1.7; }
+.markdown-content { min-width: 0; overflow-wrap: anywhere; color: inherit; font-size: 13px; line-height: 1.7; }
 .markdown-content :deep(:first-child) { margin-top: 0; }
 .markdown-content :deep(:last-child) { margin-bottom: 0; }
 .markdown-content :deep(p) { margin: 8px 0; }
@@ -22,8 +22,8 @@ const rendered = computed(() => renderSafeMarkdown(props.content))
 .markdown-content :deep(li + li) { margin-top: 4px; }
 .markdown-content :deep(blockquote) { margin: 10px 0; padding: 2px 0 2px 12px; border-left: 2px solid var(--orange); color: #68716e; }
 .markdown-content :deep(code) { padding: 1px 4px; background: #e8e8df; color: #3347af; font: .9em/1.5 var(--mono); }
-.markdown-content :deep(pre) { max-width: 100%; margin: 10px 0; overflow: auto; padding: 11px 12px; background: #20272e; color: #dce3dc; }
-.markdown-content :deep(pre code) { padding: 0; background: transparent; color: inherit; font: 11px/1.65 var(--mono); }
+.markdown-content :deep(pre) { display: block; width: 100%; max-width: 100%; margin: 10px 0; overflow-x: auto; overflow-y: hidden; padding: 11px 12px; background: #20272e; color: #dce3dc; white-space: pre; overflow-wrap: normal; word-break: normal; }
+.markdown-content :deep(pre code) { display: block; min-width: max-content; padding: 0; background: transparent; color: inherit; font: 11px/1.65 var(--mono); }
 .markdown-content :deep(a) { color: var(--blue-deep); text-decoration: underline; text-underline-offset: 2px; }
 .markdown-content :deep(table) { display: block; max-width: 100%; margin: 10px 0; overflow-x: auto; border-collapse: collapse; font-size: 12px; }
 .markdown-content :deep(th), .markdown-content :deep(td) { padding: 6px 8px; border: 1px solid #d5d9d1; text-align: left; white-space: nowrap; }

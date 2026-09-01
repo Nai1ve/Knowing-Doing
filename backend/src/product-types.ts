@@ -1,7 +1,7 @@
 import type { CaseId } from './domain.js'
 
 export type CaseStage = 'observe' | 'hypothesize' | 'inspect' | 'attempt' | 'verify' | 'resolved'
-export type PracticeStatus = 'active' | 'resolved' | 'ended'
+export type PracticeStatus = 'active' | 'ready_to_close' | 'resolved' | 'ended'
 export type EventActor = 'system' | 'user' | 'tutor' | 'lab' | 'rule'
 export type EventType =
   | 'case_presented'
@@ -198,6 +198,21 @@ export interface PracticePin {
   createdAt: string
 }
 
+export interface PracticeCompletionCheck {
+  key: string
+  label: string
+  complete: boolean
+  detail: string
+}
+
+export interface PracticeCompletion {
+  status: 'in_progress' | 'ready_to_close' | 'resolved' | 'ended'
+  ready: boolean
+  checks: PracticeCompletionCheck[]
+  missing: string[]
+  summary: string
+}
+
 export interface TutorSource {
   id: string
   title: string
@@ -219,6 +234,7 @@ export interface PracticeSnapshot {
   memories: MemoryItem[]
   tutorTurns: Array<{ id: string; userArtifactId: string | null; assistantArtifactId: string | null; mode: string; provider: string; sourceStatus: string; createdAt: string }>
   pins: PracticePin[]
+  completion: PracticeCompletion
 }
 
 export interface PracticeHistoryItem {

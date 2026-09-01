@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import type { LabExecutionResult } from './domain.js'
 import type { LabScheduler } from './scheduler.js'
-import { decideAfterLab, decideAfterMessage, decideAfterVerification } from './coach.js'
+import { decideAfterLab, decideAfterMessage, decideAfterVerification, evaluatePracticeCompletion } from './coach.js'
 import { buildTutorContext } from './context.js'
 import { createPlan } from './planner.js'
 import type { ProductRepository } from './product-repository.js'
@@ -61,6 +61,16 @@ export class PracticeService {
 
   private run(runId: string): PracticeRun {
     try { return this.repository.getPracticeRun(runId) } catch { throw new ProductNotFoundError(`Practice run not found: ${runId}`) }
+  }
+
+  private refreshCompletion(runId: string): { run: PracticeRun; snapshot: PracticeSnapshot } {
+    let run = this.run(runId)
+    let snapshot = this.repository.snapshot(runId)
+    if (run.status === 'active' && snapshot.completion.ready) {
+      run = this.repository.updatePracticeRun(runId, { status: 'ready_to_close' })
+      snapshot = this.repository.snapshot(runId)
+    }
+    return { run, snapshot }
   }
 
   assertOwnership(runId: string, learnerId: string): PracticeRun {
@@ -233,6 +243,7 @@ export class PracticeService {
 
   private async runTutor(input: { runId: string; message: string; clientRequestId: string }, emit?: (event: TutorStreamEvent) => Promise<void> | void): Promise<TutorStreamResult> {
     const run = this.run(input.runId)
+    if (run.status === 'resolved') throw new LabError('practice_resolved', '该实践已经完成，不能继续创建 Tutor 对话', 409)
     const existing = this.repository.getTutorInvocationByRequest(input.runId, input.clientRequestId)
     if (existing) {
       const replay = existing.status === 'succeeded' ? this.replayTutor(existing) : null
@@ -279,7 +290,8 @@ export class PracticeService {
       const updated = this.repository.updatePracticeRun(input.runId, { stage: decision.nextStage, noProgressCount: nextCount, hintLevel: nextCount >= 3 ? Math.min(3, run.hintLevel + 1) : run.hintLevel })
       this.repository.upsertStageMemory({ practiceRunId: input.runId, stage: updated.stage, memory: { currentGap: tutor.currentGap, latestQuestion: tutor.nextQuestion, hintLevel: updated.hintLevel }, sourceEventRefs: this.repository.listEvents(input.runId).slice(-2).map((event) => event.id) })
       const completedInvocation = this.repository.updateTutorInvocation(invocation.id, { status: 'succeeded', retrievalStatus: retrievalResult.status, sourceIds: sources.map((source) => source.id), latencyMs: Date.now() - startedAt })
-      const result = { invocation: completedInvocation, run: updated, tutor, snapshot: this.repository.snapshot(input.runId), sources: this.tutorSources(sources) }
+      const completion = this.refreshCompletion(input.runId)
+      const result = { invocation: completedInvocation, run: completion.run, tutor, snapshot: completion.snapshot, sources: this.tutorSources(sources) }
       await emit?.({ type: 'completed', invocationId: completedInvocation.id, run: result.run, tutor, snapshot: result.snapshot, sources: result.sources })
       return result
     } catch (error) {
@@ -316,6 +328,7 @@ export class PracticeService {
 
   async executeLab(input: { runId: string; token: string; revision: number; sessionId: string; statement: string; clientRequestId: string }): Promise<{ execution: LabExecutionResult; run: PracticeRun; snapshot: PracticeSnapshot }> {
     const run = this.run(input.runId)
+    if (run.status === 'resolved') throw new LabError('practice_resolved', '该实践已经完成，不能继续执行实验', 409)
     if (!run.labRunId) throw new LabError('lab_run_not_ready', '当前实践尚未获得可执行的 Lab 运行', 409, true)
     validateStatement(input.statement, getManifest(run.caseId))
     const existingEvidence = this.repository.findEventByClientRequestId(run.id, `${input.clientRequestId}:evidence`)
@@ -337,7 +350,8 @@ export class PracticeService {
     if (updated.stage !== run.stage) this.repository.appendEvent({ learnerId: run.learnerId, practiceRunId: run.id, actor: 'rule', type: 'stage_transitioned', stage: updated.stage, payload: { from: run.stage, to: updated.stage, reason: decision.reason } })
     this.repository.createPathNode({ practiceRunId: run.id, stage: updated.stage, title: decision.reason, judgment: decision.judgmentChange ?? '记录一次新的实验结果。', outcome: execution.status, judgmentChange: decision.judgmentChange, nextGap: decision.nextGap, importance: 'high', eventRefs: this.repository.listEvents(run.id).slice(-3).map((event) => event.id), artifactRefs: [outputArtifact.id, statementArtifact.id] })
     this.repository.upsertStageMemory({ practiceRunId: run.id, stage: updated.stage, memory: { currentGap: decision.nextGap, lastExecutionId: execution.executionId, lastArtifactId: outputArtifact.id }, sourceEventRefs: this.repository.listEvents(run.id).slice(-3).map((event) => event.id) })
-    return { execution, run: updated, snapshot: this.repository.snapshot(run.id) }
+    const completion = this.refreshCompletion(run.id)
+    return { execution, run: completion.run, snapshot: completion.snapshot }
   }
 
   addExternalArtifact(runId: string, input: { kind?: 'external_text' | 'source_excerpt'; content: string; sourceKind?: 'user' | 'zhihu' | 'global_search'; metadata?: Record<string, unknown> }) {
@@ -349,13 +363,15 @@ export class PracticeService {
 
   verify(runId: string) {
     const run = this.run(runId); const snapshot = this.repository.snapshot(runId)
-    const kinds = new Set(snapshot.artifacts.filter((artifact) => artifact.verificationStatus === 'verified_lab').map((artifact) => artifact.kind))
-    const decision = decideAfterVerification(run, snapshot.events, kinds.has('explain') && kinds.has('sql') && kinds.has('result_set'))
-    const updated = this.repository.updatePracticeRun(runId, { stage: decision.nextStage, status: decision.outcome === 'resolved' ? 'resolved' : run.status })
+    const completion = evaluatePracticeCompletion(run, snapshot)
+    const decision = decideAfterVerification(run, snapshot.events, completion.ready)
+    if (run.status === 'resolved') return { run, decision, snapshot, completion }
+    const updated = this.repository.updatePracticeRun(runId, { stage: decision.nextStage, status: decision.outcome === 'resolved' ? 'resolved' : run.status === 'ready_to_close' ? 'ready_to_close' : 'active' })
     if (updated.stage !== run.stage) this.repository.appendEvent({ learnerId: run.learnerId, practiceRunId: runId, actor: 'rule', type: 'stage_transitioned', stage: updated.stage, payload: { from: run.stage, to: updated.stage, reason: decision.reason } })
     this.repository.appendEvent({ learnerId: run.learnerId, practiceRunId: runId, actor: 'rule', type: 'attempt_reviewed', stage: updated.stage, payload: { outcome: decision.outcome, reason: decision.reason, nextGap: decision.nextGap } })
     if (decision.outcome === 'resolved') this.repository.upsertMemory({ learnerId: run.learnerId, category: 'capability', topic: 'mysql-query-optimization', status: 'active', statement: '能够基于执行计划、SQL 尝试和结果集证据验证一次 MySQL 查询优化。', scope: run.caseId, confidence: 0.7, evidenceRefs: snapshot.artifacts.filter((artifact) => artifact.verificationStatus === 'verified_lab').map((artifact) => artifact.id), userNote: null })
-    return { run: updated, decision, snapshot: this.repository.snapshot(runId) }
+    const finalSnapshot = this.repository.snapshot(runId)
+    return { run: updated, decision, snapshot: finalSnapshot, completion: evaluatePracticeCompletion(updated, finalSnapshot) }
   }
 
   generateNoteOutline(runId: string) {

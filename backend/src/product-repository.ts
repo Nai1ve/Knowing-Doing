@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto'
 import Database from 'better-sqlite3'
 import { assertProductMigrations, openProductDatabase } from './product-migrate.js'
+import { evaluatePracticeCompletion } from './coach.js'
 import type {
   Artifact, ArtifactKind, ArtifactSourceKind, CaseStage, EventActor, EventType, Intake, LearningPlan,
   LabSegment, Learner, MemoryItem, PathNode, PlanUnit, PracticeEvent, PracticePin, PracticeRun, PracticeSnapshot, SourceItem,
@@ -366,7 +367,12 @@ export class ProductRepository {
   createPracticePin(input: Omit<PracticePin, 'id' | 'createdAt'>): PracticePin {
     const existing = this.findPracticePin(input)
     if (existing) return existing
-    const id = randomUUID(); const now = new Date().toISOString()
+    const id = randomUUID()
+    const current = this.db.prepare('SELECT MAX(created_at) AS created_at FROM practice_pins WHERE practice_run_id = ?').get(input.practiceRunId) as Row | undefined
+    const currentCreatedAt = nullableText(current ?? {}, 'created_at')
+    const currentMs = currentCreatedAt ? Date.parse(currentCreatedAt) : 0
+    const nowMs = Math.max(Date.now(), currentMs + 1)
+    const now = new Date(nowMs).toISOString()
     this.db.prepare(`INSERT INTO practice_pins(id, learner_id, practice_run_id, target_type, target_id, title, body, source, url, created_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(id, input.learnerId, input.practiceRunId, input.targetType, input.targetId, input.title, input.body, input.source, input.url, now)
     return this.getPracticePin(id)
@@ -641,6 +647,7 @@ export class ProductRepository {
 
   snapshot(practiceRunId: string): PracticeSnapshot {
     const run = this.getPracticeRun(practiceRunId)
-    return { run, events: this.listEvents(practiceRunId), artifacts: this.listArtifacts(practiceRunId), pathNodes: this.listPathNodes(practiceRunId), stageMemories: this.listStageMemories(practiceRunId), memories: this.listMemories(run.learnerId), tutorTurns: this.listTutorTurns(practiceRunId), pins: this.listPracticePins(practiceRunId) }
+    const snapshot = { run, events: this.listEvents(practiceRunId), artifacts: this.listArtifacts(practiceRunId), pathNodes: this.listPathNodes(practiceRunId), stageMemories: this.listStageMemories(practiceRunId), memories: this.listMemories(run.learnerId), tutorTurns: this.listTutorTurns(practiceRunId), pins: this.listPracticePins(practiceRunId) }
+    return { ...snapshot, completion: evaluatePracticeCompletion(run, snapshot) }
   }
 }

@@ -82,6 +82,8 @@ describe('product repository', () => {
 
     const plan = repository.db.prepare('EXPLAIN QUERY PLAN SELECT * FROM practice_pins WHERE practice_run_id = ? ORDER BY created_at DESC').all(run.id) as Array<{ detail: string }>
     expect(plan.some((row) => row.detail.includes('idx_practice_pins_run_created'))).toBe(true)
+    const timestampPlan = repository.db.prepare('EXPLAIN QUERY PLAN SELECT MAX(created_at) AS created_at FROM practice_pins WHERE practice_run_id = ?').all(run.id) as Array<{ detail: string }>
+    expect(timestampPlan.some((row) => row.detail.includes('idx_practice_pins_run_created'))).toBe(true)
     service.deletePin('learner-1', run.id, artifactPin.id)
     expect(repository.snapshot(run.id).pins.map((pin) => pin.id)).toEqual([sourcePin.id])
   }))

@@ -13,6 +13,20 @@ describe('renderSafeMarkdown', () => {
     expect(html).toContain('<pre><code>SELECT 1')
   })
 
+  it('keeps multiline SQL readable inside a fenced code block', () => {
+    const html = renderSafeMarkdown('执行这条 SQL：\n\n```sql\nSELECT id\n  FROM orders\n  WHERE status = \'PAID\'\n```\n\n再观察执行计划。')
+    expect(html).toContain('<pre><code>SELECT id\n  FROM orders\n  WHERE status = \'PAID\'\n</code></pre>')
+    expect(html).toContain('<p>再观察执行计划。</p>')
+  })
+
+  it('repairs legacy fences embedded in prose', () => {
+    const html = renderSafeMarkdown('比如： ```sql\nSELECT id\nFROM orders\nORDER BY created_at DESC LIMIT 20; ``` **第二条 SQL：**\n\n```sql\nSELECT 1\n```')
+    expect(html).toContain('<p>比如：</p>')
+    expect(html).toContain('<pre><code>SELECT id\nFROM orders\nORDER BY created_at DESC LIMIT 20;\n</code></pre>')
+    expect(html).toContain('<p><strong>第二条 SQL：</strong></p>')
+    expect(html).toContain('<pre><code>SELECT 1\n</code></pre>')
+  })
+
   it('keeps http links and strips raw HTML and unsafe links', () => {
     const html = renderSafeMarkdown('<script>alert(1)</script>\n\n[知乎](https://www.zhihu.com/question/1) [危险](javascript:alert(1))')
     expect(html).not.toContain('<script')
