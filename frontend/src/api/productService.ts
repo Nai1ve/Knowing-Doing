@@ -1,6 +1,6 @@
 import { ApiError, apiClient } from './client'
 import type { LabCaseId, LabExecutionResult } from '@/types/lab'
-import type { ProductArtifact, ProductIntake, ProductLabAccess, ProductLabExecution, ProductMemory, ProductPlan, ProductPracticeCompletion, ProductPracticeHistoryPage, ProductPracticePin, ProductPracticeRun, ProductPracticeStart, ProductSnapshot, ProductTutorResponse, ProductTutorStreamEvent, ProductWritingCluster, ProductWritingClusterDetail, ProductWritingClusterOverview, ProductWritingProject } from '@/types/product'
+import type { ProductArtifact, ProductIntake, ProductLabAccess, ProductLabExecution, ProductMemory, ProductPlan, ProductPracticeCompletion, ProductPracticeHistoryPage, ProductPracticePin, ProductPracticeRun, ProductPracticeStart, ProductSnapshot, ProductTutorResponse, ProductTutorStreamEvent, ProductWritingCluster, ProductWritingClusterDetail, ProductWritingClusterOverview, ProductWritingGenerationJob, ProductWritingProject, ProductWritingDocument } from '@/types/product'
 
 const learnerStorageKey = 'zhixing.learner.id'
 function learnerId(): string {
@@ -93,6 +93,10 @@ export function selectWritingMaterial(runId: string, materialId: string, selecte
 }
 export function generateWritingOutline(runId: string): Promise<ProductWritingProject> { return product(`/practice-runs/${runId}/writing/outline`, { method: 'POST' }) }
 export function generateWritingArticle(runId: string): Promise<ProductWritingProject> { return product(`/practice-runs/${runId}/writing/article`, { method: 'POST' }) }
+export function startWritingGeneration(runId: string, kind: 'outline' | 'article', clientRequestId = crypto.randomUUID()): Promise<ProductWritingGenerationJob> { return product(`/practice-runs/${runId}/writing/generations`, { method: 'POST', body: JSON.stringify({ kind, clientRequestId }) }) }
+export function getWritingGenerationJob(runId: string, jobId: string): Promise<ProductWritingGenerationJob> { return product(`/practice-runs/${runId}/writing/generation-jobs/${jobId}`) }
+export function retryWritingGeneration(runId: string, jobId: string): Promise<ProductWritingGenerationJob> { return product(`/practice-runs/${runId}/writing/generation-jobs/${jobId}/retry`, { method: 'POST' }) }
+export function confirmWritingOutline(runId: string, documentId: string): Promise<ProductWritingDocument> { return product(`/practice-runs/${runId}/writing/documents/${documentId}/confirm`, { method: 'POST' }) }
 export function reviewWriting(runId: string): Promise<ProductWritingProject> { return product(`/practice-runs/${runId}/writing/review`, { method: 'POST' }) }
 export function editWritingSection(runId: string, documentId: string, sectionId: string, revision: number, content: string): Promise<ProductWritingProject> {
   return product(`/practice-runs/${runId}/writing/documents/${documentId}/sections/${sectionId}`, { method: 'PATCH', body: JSON.stringify({ revision, content }) })
