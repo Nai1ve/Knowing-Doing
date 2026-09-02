@@ -127,9 +127,10 @@ function packNodes(pack: WritingEvidencePack): PackNode[] {
 function validateAgentDraft(value: WritingAgentDraft, pack: WritingEvidencePack): WritingAgentDraft {
   if (!value || typeof value !== 'object' || !Array.isArray(value.sections) || !Array.isArray(value.claims)) throw new WritingAgentError('agent_invalid_shape', '写作 Agent 返回的章节结构不完整', false)
   const nodes = packNodes(pack); const allowed = new Set(nodes.map((node) => `${node.refType}:${node.refId}`)); const allowedSources = new Set(nodes.filter((node) => node.sourceOnly).map((node) => node.refId)); const expected = new Map(sectionTemplate.map((section) => [section.key, section]))
-  const sections = value.sections.filter((section) => section && typeof section === 'object')
+    const sections = value.sections.filter((section) => section && typeof section === 'object')
     const sectionKeys = new Set(sections.map((section) => section.sectionKey))
-    if (sections.length !== sectionKeys.size || sections.some((section) => !expected.has(section.sectionKey)) || sectionTemplate.some((template) => template.required && !sectionKeys.has(template.key))) throw new WritingAgentError('agent_incomplete_sections', '写作 Agent 没有覆盖完整必需章节', false)
+    const missing = sectionTemplate.filter((template) => template.required && !sectionKeys.has(template.key)).map((template) => template.key)
+    if (sections.length !== sectionKeys.size || sections.some((section) => !expected.has(section.sectionKey)) || missing.length > 0) throw new WritingAgentError('agent_incomplete_sections', `写作 Agent 没有覆盖完整必需章节${missing.length > 0 ? `，缺少：${missing.join('、')}` : ''}`, false)
   for (const section of sections) {
       if (typeof section.title !== 'string' || typeof section.content !== 'string' || section.content.length > 6000 || !Array.isArray(section.evidenceRefs) || !Array.isArray(section.sourceRefs)) throw new WritingAgentError('agent_invalid_section', '写作 Agent 返回了无效章节', false)
       if (section.content.trim() && section.evidenceRefs.length === 0 && section.sourceRefs.length === 0) throw new WritingAgentError('agent_unsupported_section', '写作 Agent 返回了没有依据的章节内容', false)
@@ -311,6 +312,7 @@ export class WritingService {
       void document
     } catch (error) {
       const job = this.repository.getWritingGenerationJob(jobId)
+      console.warn('[zhixing-writing] generation_failed', { jobId, code: error instanceof WritingAgentError ? error.code : 'generation_failed', attemptCount: job.attemptCount })
       if (job.status === 'running') this.repository.finishWritingGenerationJob(jobId, 'failed', null, error instanceof WritingAgentError ? error.code : 'generation_failed', error instanceof Error ? error.message : '写作生成失败', job.attemptCount)
     } finally { this.processing.delete(jobId) }
   }
