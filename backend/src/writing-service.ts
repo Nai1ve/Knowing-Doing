@@ -142,7 +142,14 @@ function narrativeBlocks(markdown: string): NarrativeBlockDraft[] {
     const evidenceRefs: string[] = []; const sourceRefs: string[] = []
     const referenceMarkers: string[] = []; const content = raw.replace(/\[\[ref:([^:\]]+):([^\]]+)\]\]/g, (match, type: string, id: string) => { referenceMarkers.push(match); if (type === 'source') sourceRefs.push(id); else if (['artifact', 'event', 'path_node'].includes(type)) evidenceRefs.push(id); return '' }).trim()
     const first = content.split('\n')[0] ?? ''; const blockType = /^```/.test(first) ? 'code' : /^#{1,6}\s/.test(first) ? 'heading' : /^>\s?/.test(first) ? 'quote' : /^(?:[-*+]\s|\d+[.)]\s)/.test(first) ? 'list' : 'paragraph'
-    blocks.push({ content: blockType === 'code' ? content.replace(/^```[^\n]*\n?/, '').replace(/\n?```$/, '') : content, position: blocks.length, blockType, evidenceRefs: [...new Set(evidenceRefs)], sourceRefs: [...new Set(sourceRefs)], referenceMarkers, referenceRoles: Object.fromEntries([...new Set(evidenceRefs)].map((id) => [id, 'lab']).concat([...new Set(sourceRefs)].map((id) => [id, 'source']))) as NarrativeBlockDraft['referenceRoles'] })
+    const normalizedContent = blockType === 'code'
+      ? content.replace(/^```[^\n]*\n?/, '').replace(/\n?```$/, '')
+      : blockType === 'heading'
+        ? content.replace(/^#{1,6}\s+/, '')
+        : blockType === 'quote'
+          ? content.split('\n').map((line) => line.replace(/^>\s?/, '')).join('\n')
+          : content
+    blocks.push({ content: normalizedContent, position: blocks.length, blockType, evidenceRefs: [...new Set(evidenceRefs)], sourceRefs: [...new Set(sourceRefs)], referenceMarkers, referenceRoles: Object.fromEntries([...new Set(evidenceRefs)].map((id) => [id, 'lab']).concat([...new Set(sourceRefs)].map((id) => [id, 'source']))) as NarrativeBlockDraft['referenceRoles'] })
   }
   for (const line of lines) {
     if (line.trim().startsWith('```')) fenced = !fenced

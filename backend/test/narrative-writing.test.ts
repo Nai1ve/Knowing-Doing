@@ -33,6 +33,8 @@ describe('narrative writing', () => {
       expect(article?.format).toBe('narrative')
       expect(article?.contentMarkdown).toContain('我先从问题开始查。')
       expect(article?.blocks.map((block) => block.blockType)).toEqual(['heading', 'paragraph', 'quote'])
+      expect(article?.blocks[0]?.content).toBe('一次实践复盘')
+      expect(article?.blocks[2]?.content).toBe('这条记录改变了我的判断。')
       expect(repository.listWritingEvidenceItems(workspace.draftRun!.evidencePackId!, '想弄清楚').length).toBeGreaterThanOrEqual(1)
       expect(repository.getWritingGenerationJob(workspace.draftRun!.draftJobId!).kind).toBe('draft')
       expect(repository.getWritingGenerationJob(workspace.draftRun!.humanizeJobId!).kind).toBe('humanize')
