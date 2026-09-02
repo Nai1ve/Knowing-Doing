@@ -11,6 +11,7 @@ import { TutorEngine } from '../src/tutor.js'
 import { PracticeService } from '../src/practice-service.js'
 import { CurationService } from '../src/curation-service.js'
 import { WritingConflictError, WritingNotFoundError, WritingService } from '../src/writing-service.js'
+import { WritingAgentError, type WritingAgentDraft, type WritingAgentProvider } from '../src/writing-agent.js'
 
 function withRepository<T>(callback: (repository: ProductRepository) => T): T {
   const directory = mkdtempSync(path.join(tmpdir(), 'zhixing-product-'))
@@ -26,6 +27,11 @@ async function withRepositoryAsync<T>(callback: (repository: ProductRepository) 
   applyProductMigrations(dbPath)
   const repository = new ProductRepository(dbPath)
   try { return await callback(repository) } finally { repository.close(); rmSync(directory, { recursive: true, force: true }) }
+}
+
+function agentDraft(evidenceRef: string): WritingAgentDraft {
+  const keys = ['context', 'symptom', 'hypothesis', 'evidence', 'attempts', 'solution', 'verification', 'principles', 'boundaries', 'reproduction']
+  return { title: 'MySQL 慢查询实践', summary: '基于冻结证据包生成的可编辑写作草稿。', sections: keys.map((sectionKey) => ({ sectionKey, title: sectionKey, content: `基于证据 ${evidenceRef} 的记录。`, required: true, evidenceRefs: [evidenceRef], sourceRefs: [] })), claims: [{ sectionKey: 'evidence', text: '本次实验记录了可回放的执行证据。', kind: 'observed', evidenceRefs: [evidenceRef], sourceRefs: [] }] }
 }
 
 describe('product repository', () => {
@@ -215,6 +221,7 @@ describe('product repository', () => {
     failed.refresh(repository.getWritingProject(project.id))
     await vi.waitFor(() => expect(failed.overview(project.id, run.id).curation.status).toBe('failed'))
     expect(failed.overview(project.id, run.id).clusters.every((cluster) => cluster.summaryStatus === 'model_failed')).toBe(true)
+    expect(repository.listCurrentWritingCapsules(project.id).every((capsule) => capsule.status === 'model_failed')).toBe(true)
   }))
 
   it('keeps writing resources scoped to their project and scans full artifact content for secrets', () => withRepository((repository) => {
@@ -238,5 +245,104 @@ describe('product repository', () => {
     expect(second.materials.some((material) => material.refId === secretArtifact.id)).toBe(false)
     expect(articleProject.reviewItems.some((item) => item.code.startsWith('privacy_'))).toBe(true)
     expect(first.materials.some((material) => material.refId === secretArtifact.id)).toBe(true)
+  }))
+
+  it('builds versioned capsules, deduplicates the evidence pack, and runs idempotent Agent generations', async () => withRepositoryAsync(async (repository) => {
+    repository.ensureLearner('learner-1')
+    const run = repository.createPracticeRun({ learnerId: 'learner-1', caseId: 'mysql-order-list-index-001' })
+    const artifact = repository.createArtifact({ learnerId: run.learnerId, practiceRunId: run.id, kind: 'explain', sourceKind: 'lab', verificationStatus: 'verified_lab', content: 'type=ALL key=NULL rows=100000', metadata: {} })
+    const agent: WritingAgentProvider = { providerName: 'test', modelName: 'test-model', generate: vi.fn(async () => agentDraft(artifact.id)) }
+    const service = new WritingService(repository, new CurationService(repository), agent)
+    const project = service.initialize(run.id)
+    const overview = service.curationOverview(run.id)
+    expect(overview.capsules).toHaveLength(6)
+    expect(overview.capsules.every((capsule) => capsule.representativeCount <= 6)).toBe(true)
+    for (const key of ['problem', 'evidence', 'solution'] as const) {
+      const cluster = overview.clusters.find((item) => item.clusterKey === key)!
+      service.updateCuration(run.id, cluster.id, cluster.revision, 'accepted')
+    }
+    const first = service.startGeneration(run.id, 'outline', 'outline-request')
+    const duplicate = service.startGeneration(run.id, 'outline', 'outline-request')
+    expect(duplicate.id).toBe(first.id)
+    await vi.waitFor(() => { const current = repository.getWritingGenerationJob(first.id); expect(current.status, current.failureMessage ?? '').toBe('succeeded') })
+    const outlined = repository.getWritingProject(project.id)
+    const outline = outlined.documents.find((document) => document.kind === 'outline')!
+    expect(outline.evidencePackId).toBeTruthy()
+    expect(repository.getCurrentWritingEvidencePack(project.id)?.nodeCount).toBe(1)
+    expect(() => service.startGeneration(run.id, 'article', 'article-request')).toThrow(WritingConflictError)
+    service.confirmOutline(run.id, outline.id)
+    const articleJob = service.startGeneration(run.id, 'article', 'article-request')
+    await vi.waitFor(() => expect(repository.getWritingGenerationJob(articleJob.id).status).toBe('succeeded'))
+    expect(repository.getWritingProject(project.id).documents.some((document) => document.kind === 'article')).toBe(true)
+    expect(agent.generate).toHaveBeenCalledTimes(2)
+  }))
+
+  it('rejects invalid Agent references without creating a document', async () => withRepositoryAsync(async (repository) => {
+    repository.ensureLearner('learner-1')
+    const run = repository.createPracticeRun({ learnerId: 'learner-1', caseId: 'mysql-order-list-index-001' })
+    const artifact = repository.createArtifact({ learnerId: run.learnerId, practiceRunId: run.id, kind: 'explain', sourceKind: 'lab', verificationStatus: 'verified_lab', content: 'type=ALL', metadata: {} })
+    const agent: WritingAgentProvider = { providerName: 'test', modelName: 'test-model', generate: vi.fn(async () => agentDraft(`${artifact.id}-unknown`)) }
+    const service = new WritingService(repository, new CurationService(repository), agent)
+    service.initialize(run.id); const overview = service.curationOverview(run.id)
+    for (const key of ['problem', 'evidence', 'solution'] as const) { const cluster = overview.clusters.find((item) => item.clusterKey === key)!; service.updateCuration(run.id, cluster.id, cluster.revision, 'accepted') }
+    const job = service.startGeneration(run.id, 'outline', 'invalid-request')
+    await vi.waitFor(() => expect(repository.getWritingGenerationJob(job.id).status).toBe('failed'))
+    expect(repository.getWritingProjectByRun(run.id)?.documents).toHaveLength(0)
+  }))
+
+  it('retries a failed generation and does not leave partial writing state', async () => withRepositoryAsync(async (repository) => {
+    repository.ensureLearner('learner-1')
+    const run = repository.createPracticeRun({ learnerId: 'learner-1', caseId: 'mysql-order-list-index-001' })
+    const artifact = repository.createArtifact({ learnerId: run.learnerId, practiceRunId: run.id, kind: 'explain', sourceKind: 'lab', verificationStatus: 'verified_lab', content: 'type=ALL', metadata: {} })
+    let calls = 0
+    const agent: WritingAgentProvider = { providerName: 'test', modelName: 'test-model', generate: vi.fn(async () => { calls += 1; if (calls === 1) throw new WritingAgentError('model_timeout', '测试超时'); return agentDraft(artifact.id) }) }
+    const service = new WritingService(repository, new CurationService(repository), agent)
+    service.initialize(run.id); const overview = service.curationOverview(run.id)
+    for (const key of ['problem', 'evidence', 'solution'] as const) { const cluster = overview.clusters.find((item) => item.clusterKey === key)!; service.updateCuration(run.id, cluster.id, cluster.revision, 'accepted') }
+    const failed = service.startGeneration(run.id, 'outline', 'retryable-request')
+    await vi.waitFor(() => expect(repository.getWritingGenerationJob(failed.id).status).toBe('failed'))
+    expect(repository.getWritingProjectByRun(run.id)?.documents).toHaveLength(0)
+    const retried = service.startGeneration(run.id, 'outline', 'retry-request', true)
+    expect(retried.id).toBe(failed.id)
+    await vi.waitFor(() => expect(repository.getWritingGenerationJob(failed.id).status).toBe('succeeded'))
+    expect(repository.getWritingProjectByRun(run.id)?.documents).toHaveLength(1)
+    expect(agent.generate).toHaveBeenCalledTimes(2)
+  }))
+
+  it('recovers stale generation workers with an attempt fence', () => withRepository((repository) => {
+    repository.ensureLearner('learner-1')
+    const run = repository.createPracticeRun({ learnerId: 'learner-1', caseId: 'mysql-order-list-index-001' })
+    const project = repository.createWritingProject({ learnerId: run.learnerId, practiceRunId: run.id })
+    const queued = repository.queueWritingGenerationJob({ projectId: project.id, kind: 'outline', inputFingerprint: 'stale-fingerprint' })
+    expect(repository.claimWritingGenerationJob(queued.id)).toBe(true)
+    repository.recoverWritingGenerationJobs(-1)
+    const recovered = repository.getWritingGenerationJob(queued.id)
+    expect(recovered.status).toBe('queued')
+    expect(recovered.attemptCount).toBe(1)
+    expect(repository.claimWritingGenerationJob(queued.id)).toBe(true)
+    expect(repository.getWritingGenerationJob(queued.id).attemptCount).toBe(2)
+  }))
+
+  it('supersedes evidence packs without changing documents generated from an older pack', async () => withRepositoryAsync(async (repository) => {
+    repository.ensureLearner('learner-1')
+    const run = repository.createPracticeRun({ learnerId: 'learner-1', caseId: 'mysql-order-list-index-001' })
+    const firstArtifact = repository.createArtifact({ learnerId: run.learnerId, practiceRunId: run.id, kind: 'explain', sourceKind: 'lab', verificationStatus: 'verified_lab', content: 'type=ALL', metadata: {} })
+    const agent: WritingAgentProvider = { providerName: 'test', modelName: 'test-model', generate: vi.fn(async () => agentDraft(firstArtifact.id)) }
+    const service = new WritingService(repository, new CurationService(repository), agent)
+    service.initialize(run.id); const overview = service.curationOverview(run.id)
+    for (const key of ['problem', 'evidence', 'solution'] as const) { const cluster = overview.clusters.find((item) => item.clusterKey === key)!; service.updateCuration(run.id, cluster.id, cluster.revision, 'accepted') }
+    const firstJob = service.startGeneration(run.id, 'outline', 'pack-one')
+    await vi.waitFor(() => expect(repository.getWritingGenerationJob(firstJob.id).status).toBe('succeeded'))
+    const firstDocument = repository.getWritingProjectByRun(run.id)!.documents.find((document) => document.kind === 'outline')!
+    const firstPackId = firstDocument.evidencePackId!
+    repository.createArtifact({ learnerId: run.learnerId, practiceRunId: run.id, kind: 'error', sourceKind: 'lab', verificationStatus: 'verified_lab', content: 'new evidence', metadata: {} })
+    service.curationOverview(run.id)
+    const secondJob = service.startGeneration(run.id, 'outline', 'pack-two')
+    await vi.waitFor(() => expect(repository.getWritingGenerationJob(secondJob.id).status).toBe('succeeded'))
+    const documents = repository.getWritingProjectByRun(run.id)!.documents.filter((document) => document.kind === 'outline')
+    expect(documents).toHaveLength(1)
+    expect(repository.getWritingDocument(firstDocument.id).evidencePackId).toBe(firstPackId)
+    expect(repository.getWritingEvidencePack(firstPackId, repository.getWritingProjectByRun(run.id)!.id).status).toBe('superseded')
+    expect(documents[0]!.evidencePackId).not.toBe(firstPackId)
   }))
 })

@@ -1,6 +1,8 @@
-import type { Artifact, PracticeRun, PracticeSnapshot, SourceItem, WritingClaim, WritingDocument, WritingMaterial, WritingProject, WritingReviewItem, WritingSection } from './product-types.js'
+import { createHash } from 'node:crypto'
+import type { Artifact, PracticeRun, PracticeSnapshot, SourceItem, WritingClaim, WritingDocument, WritingMaterial, WritingProject, WritingReviewItem, WritingSection, WritingGenerationJob, WritingGenerationKind, WritingEvidencePack } from './product-types.js'
 import { ProductRepository } from './product-repository.js'
 import { CurationService } from './curation-service.js'
+import { WritingAgentError, type WritingAgentDraft, type WritingAgentProvider } from './writing-agent.js'
 
 export class WritingNotFoundError extends Error {}
 export class WritingConflictError extends Error {}
@@ -106,8 +108,46 @@ function articleSections(outline: WritingDocument, project: WritingProject): Sec
   }))
 }
 
+interface PackNode {
+  refType: 'artifact' | 'source' | 'path_node'
+  refId: string
+  title: string
+  excerpt: string
+  kind: string
+  verificationStatus: string
+  sourceOnly: boolean
+  clusterKeys: string[]
+}
+
+function packNodes(pack: WritingEvidencePack): PackNode[] {
+  const nodes = pack.snapshot.nodes
+  return Array.isArray(nodes) ? nodes.filter((node): node is PackNode => Boolean(node) && typeof node === 'object' && typeof (node as PackNode).refType === 'string' && typeof (node as PackNode).refId === 'string') : []
+}
+
+function validateAgentDraft(value: WritingAgentDraft, pack: WritingEvidencePack): WritingAgentDraft {
+  if (!value || typeof value !== 'object' || !Array.isArray(value.sections) || !Array.isArray(value.claims)) throw new WritingAgentError('agent_invalid_shape', '写作 Agent 返回的章节结构不完整', false)
+  const nodes = packNodes(pack); const allowed = new Set(nodes.map((node) => `${node.refType}:${node.refId}`)); const allowedSources = new Set(nodes.filter((node) => node.sourceOnly).map((node) => node.refId)); const expected = new Map(sectionTemplate.map((section) => [section.key, section]))
+  const sections = value.sections.filter((section) => section && typeof section === 'object')
+    const sectionKeys = new Set(sections.map((section) => section.sectionKey))
+    if (sections.length !== sectionKeys.size || sections.some((section) => !expected.has(section.sectionKey)) || sectionTemplate.some((template) => template.required && !sectionKeys.has(template.key))) throw new WritingAgentError('agent_incomplete_sections', '写作 Agent 没有覆盖完整必需章节', false)
+  for (const section of sections) {
+      if (typeof section.title !== 'string' || typeof section.content !== 'string' || section.content.length > 6000 || !Array.isArray(section.evidenceRefs) || !Array.isArray(section.sourceRefs)) throw new WritingAgentError('agent_invalid_section', '写作 Agent 返回了无效章节', false)
+      if (section.content.trim() && section.evidenceRefs.length === 0 && section.sourceRefs.length === 0) throw new WritingAgentError('agent_unsupported_section', '写作 Agent 返回了没有依据的章节内容', false)
+    if (section.evidenceRefs.some((ref) => typeof ref !== 'string' || !allowed.has(`artifact:${ref}`) && !allowed.has(`path_node:${ref}`))) throw new WritingAgentError('agent_unknown_evidence_ref', '写作 Agent 引用了不存在的实验证据', false)
+    if (section.sourceRefs.some((ref) => typeof ref !== 'string' || !allowedSources.has(ref))) throw new WritingAgentError('agent_unknown_source_ref', '写作 Agent 引用了不在证据包中的来源', false)
+  }
+  for (const claim of value.claims) {
+    if (!claim || typeof claim !== 'object' || typeof claim.sectionKey !== 'string' || !expected.has(claim.sectionKey) || typeof claim.text !== 'string' || !Array.isArray(claim.evidenceRefs) || !Array.isArray(claim.sourceRefs)) throw new WritingAgentError('agent_invalid_claim', '写作 Agent 返回了无效断言', false)
+    if (claim.evidenceRefs.length === 0 && claim.sourceRefs.length === 0) throw new WritingAgentError('agent_unsupported_claim', '写作 Agent 返回了没有依据的事实断言', false)
+    if (claim.evidenceRefs.some((ref) => typeof ref !== 'string' || !allowed.has(`artifact:${ref}`) && !allowed.has(`path_node:${ref}`)) || claim.sourceRefs.some((ref) => typeof ref !== 'string' || !allowedSources.has(ref))) throw new WritingAgentError('agent_invalid_claim_ref', '写作 Agent 的断言引用不在证据包中', false)
+  }
+  return { title: typeof value.title === 'string' ? value.title.trim().slice(0, 120) : '工程实践复盘', summary: typeof value.summary === 'string' ? value.summary.trim().slice(0, 300) : '', sections: sections.map((section) => ({ ...section, required: expected.get(section.sectionKey)!.required, evidenceRefs: [...new Set(section.evidenceRefs)], sourceRefs: [...new Set(section.sourceRefs)], status: 'generated' as const })), claims: value.claims.map((claim) => ({ ...claim, evidenceRefs: [...new Set(claim.evidenceRefs)], sourceRefs: [...new Set(claim.sourceRefs)] })) }
+}
+
 export class WritingService {
-  constructor(private readonly repository: ProductRepository, private readonly curation = new CurationService(repository)) {}
+  private readonly processing = new Set<string>()
+
+  constructor(private readonly repository: ProductRepository, private readonly curation = new CurationService(repository), private readonly agent?: WritingAgentProvider) {}
 
   private run(runId: string): PracticeRun {
     try { return this.repository.getPracticeRun(runId) } catch { throw new WritingNotFoundError(`Practice run not found: ${runId}`) }
@@ -192,6 +232,87 @@ export class WritingService {
     this.repository.updateWritingStatus(project.id, 'materials_ready')
     this.repository.appendEvent({ learnerId: run.learnerId, practiceRunId: run.id, actor: 'user', type: 'writing_material_selected', stage: run.stage, payload: { materialId: material.id, selected: material.selected } })
     return this.repository.getWritingProject(project.id)
+  }
+
+  private createEvidencePack(project: WritingProject): WritingEvidencePack {
+    const overview = this.curation.overview(project.id, project.practiceRunId)
+    if (!overview.canGenerateOutline) throw new WritingConflictError('请先确认“问题与目标”“关键证据”和“候选方案与验证”三个聚类')
+    const accepted = overview.clusters.filter((cluster) => cluster.status === 'accepted')
+      const capsules = this.repository.listCurrentWritingCapsules(project.id)
+      const capsuleById = new Map(capsules.map((capsule) => [capsule.id, capsule]))
+    const keys = new Map(overview.clusters.map((cluster) => [cluster.id, cluster.clusterKey]))
+    const members = this.repository.listCurrentWritingCapsuleMembers(project.id)
+    const acceptedIds = new Set(accepted.map((cluster) => cluster.id)); const seen = new Map<string, PackNode>(); const ordered: PackNode[] = []
+    for (const member of members) {
+        const capsule = capsuleById.get(member.capsuleId); const clusterKey = capsule ? keys.get(capsule.clusterId) : undefined
+      if (!capsule || !clusterKey || !acceptedIds.has(capsule.clusterId) || member.role === 'duplicate') continue
+      const refKey = `${member.refType}:${member.refId}`; const existing = seen.get(refKey)
+      if (existing) { if (!existing.clusterKeys.includes(clusterKey)) existing.clusterKeys.push(clusterKey); continue }
+      const node: PackNode = { refType: member.refType, refId: member.refId, title: member.title, excerpt: member.excerpt.slice(0, 520), kind: member.kind, verificationStatus: member.verificationStatus, sourceOnly: member.refType === 'source', clusterKeys: [clusterKey] }
+      seen.set(refKey, node); ordered.push(node)
+    }
+    const clusterSnapshots = accepted.map((cluster) => { const capsule = capsules.find((item) => item.clusterId === cluster.id); return { clusterKey: cluster.clusterKey, title: cluster.title, summary: capsule?.modelSummary ?? capsule?.ruleSummary ?? cluster.ruleSummary, keyFindings: capsule?.keyFindings ?? [], turningPoints: capsule?.turningPoints ?? [], unresolvedQuestions: capsule?.unresolvedQuestions ?? [] } })
+    let nodes = ordered.slice(0, 30); let snapshot = { version: 1, generatedAt: new Date().toISOString(), constraints: { maxNodes: 30, maxChars: 18000 }, clusters: clusterSnapshots, nodes }
+    while (JSON.stringify(snapshot).length > snapshot.constraints.maxChars && nodes.length > 0) {
+      nodes = nodes.slice(0, -1)
+      snapshot = { ...snapshot, nodes }
+    }
+    const inputFingerprint = createHash('sha256').update(JSON.stringify({ clusters: snapshot.clusters, nodes: nodes.map((node) => [node.refType, node.refId, node.clusterKeys]) })).digest('hex')
+    return this.repository.createWritingEvidencePack(project.id, inputFingerprint, snapshot, nodes.length, JSON.stringify(snapshot).length)
+  }
+
+  startGeneration(runId: string, kind: WritingGenerationKind, clientRequestId: string, retryFailed = false): WritingGenerationJob {
+    const run = this.run(runId); const project = this.ensureProject(runId); let pack: WritingEvidencePack; let outline: WritingDocument | undefined; let outlineDocumentId: string | null = null
+    if (kind === 'outline') pack = this.createEvidencePack(project)
+    else {
+      outline = project.documents.find((document) => document.kind === 'outline')
+      if (!outline || outline.status !== 'confirmed') throw new WritingConflictError('请先确认大纲后再生成文章')
+      if (!outline.evidencePackId) throw new WritingConflictError('当前大纲没有绑定证据包，请重新生成大纲')
+      pack = this.repository.getWritingEvidencePack(outline.evidencePackId, project.id); outlineDocumentId = outline.id
+    }
+    const inputFingerprint = createHash('sha256').update(JSON.stringify({ kind, packId: pack.id, packVersion: pack.version, outlineId: outlineDocumentId, outlineRevision: outline?.revision ?? null })).digest('hex')
+    const job = this.repository.queueWritingGenerationJob({ projectId: project.id, kind, inputFingerprint, clientRequestId, evidencePackId: pack.id, outlineDocumentId, provider: this.agent?.providerName ?? 'unavailable', model: this.agent?.modelName ?? 'unavailable', retryFailed })
+    if (!this.agent) this.repository.finishWritingGenerationJob(job.id, 'failed', null, 'model_not_configured', '模型服务尚未配置')
+    else void this.processGeneration(job.id)
+    return this.repository.getWritingGenerationJob(job.id, project.id)
+  }
+
+  getGenerationJob(runId: string, jobId: string): WritingGenerationJob {
+    const projectId = this.repository.getWritingProjectIdByRun(runId)
+    if (!projectId) throw new WritingNotFoundError('写作工程不存在')
+    try { return this.repository.getWritingGenerationJob(jobId, projectId) } catch { throw new WritingNotFoundError('写作任务不存在') }
+  }
+
+  confirmOutline(runId: string, documentId: string): WritingDocument {
+    const project = this.getExisting(runId)
+    try { return this.repository.confirmWritingDocument(project.id, documentId) } catch { throw new WritingConflictError('当前大纲无法确认，请先生成并保存大纲') }
+  }
+
+  resumeGenerations(leaseMs = 10 * 60 * 1000): void {
+    this.repository.recoverWritingGenerationJobs(leaseMs)
+    for (const job of this.repository.listPendingWritingGenerationJobs()) void this.processGeneration(job.id)
+  }
+
+  private async processGeneration(jobId: string): Promise<void> {
+    if (!this.agent || this.processing.has(jobId)) return
+    this.processing.add(jobId)
+    try {
+      if (!this.repository.claimWritingGenerationJob(jobId)) return
+      const job = this.repository.getWritingGenerationJob(jobId); const project = this.repository.getWritingProject(job.projectId)
+      if (!job.evidencePackId) throw new WritingAgentError('missing_evidence_pack', '写作任务没有证据包', false)
+      const pack = this.repository.getWritingEvidencePack(job.evidencePackId, job.projectId); const outlineDocument = job.outlineDocumentId ? project.documents.find((document) => document.id === job.outlineDocumentId) : undefined
+      const outline = outlineDocument ? { title: outlineDocument.title, summary: outlineDocument.summary, sections: outlineDocument.sections.map((section) => ({ sectionKey: section.sectionKey, title: section.title, content: section.content, required: section.required, evidenceRefs: section.evidenceRefs, sourceRefs: section.sourceRefs })), claims: outlineDocument.claims.map((claim) => ({ sectionKey: outlineDocument.sections.find((section) => section.id === claim.sectionId)?.sectionKey ?? 'evidence', text: claim.text, kind: claim.kind, evidenceRefs: claim.evidenceRefs, sourceRefs: claim.sourceRefs })) } satisfies WritingAgentDraft : undefined
+      if (job.kind === 'capsule') throw new WritingAgentError('unsupported_generation_kind', '不支持直接生成胶囊文档', false)
+      const draft = validateAgentDraft(await this.agent.generate({ kind: job.kind, evidencePack: pack, outline }), pack); const content = draft.sections.map((section) => `## ${section.title}\n${section.content}`).join('\n\n')
+      const sections = draft.sections.map((section) => ({ ...section, position: sectionTemplate.findIndex((item) => item.key === section.sectionKey) + 1, status: 'generated' as const }))
+      const claims = draft.claims.map((claim) => ({ ...claim, status: 'supported' as const }))
+      const document = this.repository.persistWritingGeneration({ jobId: job.id, attemptCount: job.attemptCount, projectId: job.projectId, learnerId: project.learnerId, practiceRunId: project.practiceRunId, kind: job.kind, evidencePackId: pack.id, title: draft.title, summary: draft.summary, sections, claims, artifactKind: job.kind === 'outline' ? 'note_outline' : 'article_draft', eventType: job.kind === 'outline' ? 'note_outline_generated' : 'article_draft_generated', stage: this.run(project.practiceRunId).stage, artifactContent: content, projectStatus: job.kind === 'outline' ? 'outline_review' : 'article_review' })
+      if (job.kind === 'article') this.review(project.practiceRunId)
+      void document
+    } catch (error) {
+      const job = this.repository.getWritingGenerationJob(jobId)
+      if (job.status === 'running') this.repository.finishWritingGenerationJob(jobId, 'failed', null, error instanceof WritingAgentError ? error.code : 'generation_failed', error instanceof Error ? error.message : '写作生成失败', job.attemptCount)
+    } finally { this.processing.delete(jobId) }
   }
 
   generateOutline(runId: string): WritingProject {

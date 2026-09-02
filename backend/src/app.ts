@@ -332,6 +332,23 @@ function registerWritingRoutes(app: FastifyInstance, service: WritingService, pr
   })
   app.post('/api/product/practice-runs/:runId/writing/outline', async (request, reply) => { practiceService.assertOwnership(productRunId(request), learnerId(request)); reply.code(201).send(service.generateOutline(productRunId(request))) })
   app.post('/api/product/practice-runs/:runId/writing/article', async (request, reply) => { practiceService.assertOwnership(productRunId(request), learnerId(request)); reply.code(201).send(service.generateArticle(productRunId(request))) })
+  app.post('/api/product/practice-runs/:runId/writing/generations', async (request, reply) => {
+    const runId = productRunId(request); practiceService.assertOwnership(runId, learnerId(request)); const body = productBody(request); const kind = stringField(body, 'kind')
+    if (!['outline', 'article'].includes(kind)) throw new LabError('invalid_request', 'kind 必须是 outline 或 article', 400)
+    const clientRequestId = optionalString(body, 'clientRequestId') ?? randomUUID()
+    reply.code(202).send(service.startGeneration(runId, kind as 'outline' | 'article', clientRequestId))
+  })
+  app.get('/api/product/practice-runs/:runId/writing/generation-jobs/:jobId', async (request, reply) => {
+    const runId = productRunId(request); practiceService.assertOwnership(runId, learnerId(request)); const jobId = String((request.params as { jobId: string }).jobId)
+    reply.send(service.getGenerationJob(runId, jobId))
+  })
+  app.post('/api/product/practice-runs/:runId/writing/generation-jobs/:jobId/retry', async (request, reply) => {
+    const runId = productRunId(request); practiceService.assertOwnership(runId, learnerId(request)); const job = service.getGenerationJob(runId, String((request.params as { jobId: string }).jobId))
+    reply.code(202).send(service.startGeneration(runId, job.kind as 'outline' | 'article', job.clientRequestId ?? randomUUID(), true))
+  })
+  app.post('/api/product/practice-runs/:runId/writing/documents/:documentId/confirm', async (request, reply) => {
+    const runId = productRunId(request); practiceService.assertOwnership(runId, learnerId(request)); reply.send(service.confirmOutline(runId, String((request.params as { documentId: string }).documentId)))
+  })
   app.post('/api/product/practice-runs/:runId/writing/review', async (request, reply) => { practiceService.assertOwnership(productRunId(request), learnerId(request)); reply.send(service.review(productRunId(request))) })
   app.patch('/api/product/practice-runs/:runId/writing/documents/:documentId/sections/:sectionId', async (request, reply) => {
     practiceService.assertOwnership(productRunId(request), learnerId(request))
