@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto'
 import type { LabConfig } from './config.js'
 import type { Artifact, PracticeSnapshot, WritingClusterKey, WritingMaterial, WritingProject } from './product-types.js'
-import { ProductRepository, type WritingClusterDefinition } from './product-repository.js'
+import { ProductRepository, type WritingCapsuleDefinition, type WritingClusterDefinition } from './product-repository.js'
 
 const clusterMeta: Array<{ key: WritingClusterKey; title: string; relevance: string }> = [
   { key: 'problem', title: '问题与目标', relevance: '确认文章是否准确描述了现象、影响和本次实践要解决的问题。' },
@@ -188,12 +188,27 @@ export class CurationService {
   ensure(project: WritingProject, retryFailed = false): void {
     const { definitions, fingerprint } = this.buildCandidates(project)
     this.repository.replaceWritingClusters(project.id, fingerprint, definitions)
+    this.ensureCapsules(project, definitions, fingerprint)
     const job = this.repository.queueWritingCurationJob(project.id, fingerprint, this.summarizer ? 'deepseek' : 'unavailable', this.summarizer ? 'configured' : 'unavailable', retryFailed)
     if (this.summarizer) void this.process(job.id)
     else {
       this.repository.markWritingClusterSummaryFailed(project.id, fingerprint)
+      this.repository.markWritingCapsuleSummaryFailed(project.id, fingerprint, 'model_not_configured', '模型未配置，当前使用规则摘要')
       this.repository.finishWritingCurationJob(job.id, 'failed', 'model_not_configured', '模型未配置，当前使用规则摘要')
     }
+  }
+
+  private ensureCapsules(project: WritingProject, definitions: WritingClusterDefinition[], fingerprint: string): void {
+    const overview = this.repository.getWritingClusterOverview(project.id, project.practiceRunId)
+    const clusterIds = new Map(overview.clusters.map((cluster) => [cluster.clusterKey, cluster.id]))
+    const capsuleDefinitions: WritingCapsuleDefinition[] = definitions.flatMap((definition) => {
+      const clusterId = clusterIds.get(definition.clusterKey)
+      if (!clusterId) return []
+      const candidates = definition.members.filter((member) => member.role !== 'duplicate')
+      const representative = [...candidates.filter((member) => member.role === 'primary'), ...candidates.filter((member) => member.role !== 'primary')].slice(0, 6)
+      return [{ clusterId, inputFingerprint: fingerprint, ruleSummary: definition.ruleSummary, keyFindings: [definition.ruleSummary], turningPoints: [], unresolvedQuestions: ['哪些证据足以支持这组结论？'], rawCount: definition.members.length, members: representative }]
+    })
+    this.repository.replaceWritingCapsules(project.id, capsuleDefinitions)
   }
 
   refresh(project: WritingProject): void { this.ensure(project, true) }
@@ -220,11 +235,13 @@ export class CurationService {
       const input = this.repository.listWritingClusterModelInputs(job.projectId)
       const summaries = await this.summarizer.summarize(input)
       this.repository.applyWritingClusterSummaries(job.projectId, job.inputFingerprint, summaries)
-      this.repository.finishWritingCurationJob(jobId, 'succeeded')
+      this.repository.applyWritingCapsuleSummaries(job.projectId, job.inputFingerprint, summaries)
+      this.repository.finishWritingCurationJob(jobId, 'succeeded', undefined, undefined, job.attemptCount)
     } catch (error) {
       const job = this.repository.getWritingCurationJob(jobId)
       this.repository.markWritingClusterSummaryFailed(job.projectId, job.inputFingerprint)
-      this.repository.finishWritingCurationJob(jobId, 'failed', 'summary_failed', error instanceof Error ? error.message : '摘要润色失败')
+      this.repository.markWritingCapsuleSummaryFailed(job.projectId, job.inputFingerprint, 'summary_failed', error instanceof Error ? error.message : '摘要润色失败')
+      this.repository.finishWritingCurationJob(jobId, 'failed', 'summary_failed', error instanceof Error ? error.message : '摘要润色失败', job.attemptCount)
     } finally { this.processing.delete(jobId) }
   }
 }

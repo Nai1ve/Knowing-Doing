@@ -5,7 +5,7 @@ import { evaluatePracticeCompletion } from './coach.js'
 import type {
   Artifact, ArtifactKind, ArtifactSourceKind, CaseStage, EventActor, EventType, Intake, LearningPlan,
   LabSegment, Learner, MemoryItem, PathNode, PlanUnit, PracticeEvent, PracticePin, PracticeRun, PracticeSnapshot, SourceItem,
-  StageMemory, TutorInvocation, TutorInvocationStatus, VerificationStatus, WritingClaim, WritingCluster, WritingClusterDetail, WritingClusterKey, WritingClusterMember, WritingClusterMemberRole, WritingClusterOverview, WritingClusterStatus, WritingClusterSummaryStatus, WritingDocument, WritingMaterial, WritingProject, WritingReviewItem, WritingSection,
+  StageMemory, TutorInvocation, TutorInvocationStatus, VerificationStatus, WritingCapsuleMember, WritingClusterCapsule, WritingClaim, WritingCluster, WritingClusterDetail, WritingClusterKey, WritingClusterMember, WritingClusterMemberRole, WritingClusterOverview, WritingClusterStatus, WritingClusterSummaryStatus, WritingDocument, WritingEvidencePack, WritingGenerationJob, WritingGenerationKind, WritingGenerationStatus, WritingMaterial, WritingProject, WritingReviewItem, WritingSection,
 } from './product-types.js'
 
 type Row = Record<string, unknown>
@@ -16,6 +16,17 @@ export interface WritingClusterDefinition {
   title: string
   ruleSummary: string
   relevance: string
+  members: Array<{ refType: 'artifact' | 'source' | 'path_node'; refId: string; role: WritingClusterMemberRole }>
+}
+
+export interface WritingCapsuleDefinition {
+  clusterId: string
+  inputFingerprint: string
+  ruleSummary: string
+  keyFindings: string[]
+  turningPoints: string[]
+  unresolvedQuestions: string[]
+  rawCount: number
   members: Array<{ refType: 'artifact' | 'source' | 'path_node'; refId: string; role: WritingClusterMemberRole }>
 }
 
@@ -177,7 +188,7 @@ function writingClaimFrom(row: Row): WritingClaim {
 }
 
 function writingDocumentFrom(row: Row, sections: WritingSection[], claims: WritingClaim[]): WritingDocument {
-  return { id: text(row, 'id'), projectId: text(row, 'project_id'), kind: text(row, 'kind') as WritingDocument['kind'], revision: number(row, 'revision'), status: text(row, 'status') as WritingDocument['status'], title: text(row, 'title'), summary: text(row, 'summary'), sections, claims, createdAt: text(row, 'created_at'), updatedAt: text(row, 'updated_at') }
+  return { id: text(row, 'id'), projectId: text(row, 'project_id'), kind: text(row, 'kind') as WritingDocument['kind'], revision: number(row, 'revision'), status: text(row, 'status') as WritingDocument['status'], title: text(row, 'title'), summary: text(row, 'summary'), evidencePackId: nullableText(row, 'evidence_pack_id'), sections, claims, createdAt: text(row, 'created_at'), updatedAt: text(row, 'updated_at') }
 }
 
 function writingReviewItemFrom(row: Row): WritingReviewItem {
@@ -204,6 +215,34 @@ function writingClusterMemberFrom(row: Row): WritingClusterMember {
     id: text(row, 'id'), clusterId: text(row, 'cluster_id'), refType: text(row, 'ref_type') as WritingClusterMember['refType'],
     refId: text(row, 'ref_id'), role: text(row, 'role') as WritingClusterMemberRole, displayOrder: number(row, 'display_order'),
     title: text(row, 'title'), excerpt: text(row, 'excerpt'), kind: text(row, 'kind'), verificationStatus: text(row, 'verification_status'), createdAt: text(row, 'created_at'),
+  }
+}
+
+function writingCapsuleFrom(row: Row): WritingClusterCapsule {
+  return {
+    id: text(row, 'id'), projectId: text(row, 'project_id'), clusterId: text(row, 'cluster_id'), inputFingerprint: text(row, 'input_fingerprint'),
+    version: number(row, 'version'), ruleSummary: text(row, 'rule_summary'), modelSummary: nullableText(row, 'model_summary'),
+    keyFindings: json<string[]>(row.key_findings_json, []), turningPoints: json<string[]>(row.turning_points_json, []), unresolvedQuestions: json<string[]>(row.unresolved_questions_json, []),
+    status: text(row, 'status') as WritingClusterCapsule['status'], rawCount: number(row, 'raw_count'), representativeCount: number(row, 'representative_count'), omittedCount: number(row, 'omitted_count'),
+    modelFailureCode: nullableText(row, 'model_failure_code'), modelFailureMessage: nullableText(row, 'model_failure_message'), createdAt: text(row, 'created_at'), updatedAt: text(row, 'updated_at'),
+  }
+}
+
+function writingCapsuleMemberFrom(row: Row): WritingCapsuleMember {
+  return {
+    id: text(row, 'id'), capsuleId: text(row, 'capsule_id'), refType: text(row, 'ref_type') as WritingCapsuleMember['refType'], refId: text(row, 'ref_id'), role: text(row, 'role') as WritingCapsuleMember['role'], displayOrder: number(row, 'display_order'),
+    title: text(row, 'title'), excerpt: text(row, 'excerpt'), kind: text(row, 'kind'), verificationStatus: text(row, 'verification_status'),
+  }
+}
+
+function writingEvidencePackFrom(row: Row): WritingEvidencePack {
+  return { id: text(row, 'id'), projectId: text(row, 'project_id'), inputFingerprint: text(row, 'input_fingerprint'), version: number(row, 'version'), snapshot: json<Record<string, unknown>>(row.snapshot_json, {}), nodeCount: number(row, 'node_count'), charCount: number(row, 'char_count'), status: text(row, 'status') as WritingEvidencePack['status'], createdAt: text(row, 'created_at') }
+}
+
+function writingGenerationJobFrom(row: Row): WritingGenerationJob {
+  return {
+    id: text(row, 'id'), projectId: text(row, 'project_id'), kind: text(row, 'kind') as WritingGenerationKind, inputFingerprint: text(row, 'input_fingerprint'), clientRequestId: nullableText(row, 'client_request_id'), evidencePackId: nullableText(row, 'evidence_pack_id'), outlineDocumentId: nullableText(row, 'outline_document_id'),
+    status: text(row, 'status') as WritingGenerationStatus, attemptCount: number(row, 'attempt_count'), provider: nullableText(row, 'provider'), model: nullableText(row, 'model'), failureCode: nullableText(row, 'failure_code'), failureMessage: nullableText(row, 'failure_message'), resultDocumentId: nullableText(row, 'result_document_id'), createdAt: text(row, 'created_at'), updatedAt: text(row, 'updated_at'), completedAt: nullableText(row, 'completed_at'),
   }
 }
 
@@ -638,12 +677,17 @@ export class ProductRepository {
   }
 
   listWritingClusterDefinitions(projectId: string): Array<{ clusterKey: WritingClusterKey; sourceFingerprint: string; members: Array<{ refType: string; refId: string; role: string }> }> {
-    const clusters = this.db.prepare('SELECT id, cluster_key, source_fingerprint FROM writing_clusters WHERE project_id = ? ORDER BY position ASC').all(projectId) as Row[]
-    return clusters.map((cluster) => ({
-      clusterKey: text(cluster, 'cluster_key') as WritingClusterKey,
-      sourceFingerprint: text(cluster, 'source_fingerprint'),
-      members: (this.db.prepare('SELECT ref_type, ref_id, role FROM writing_cluster_members WHERE cluster_id = ? ORDER BY display_order ASC').all(text(cluster, 'id')) as Row[]).map((member) => ({ refType: text(member, 'ref_type'), refId: text(member, 'ref_id'), role: text(member, 'role') })),
-    }))
+    const rows = this.db.prepare(`SELECT c.cluster_key, c.source_fingerprint, m.ref_type, m.ref_id, m.role
+      FROM writing_clusters c LEFT JOIN writing_cluster_members m ON m.cluster_id = c.id
+      WHERE c.project_id = ? ORDER BY c.position ASC, m.display_order ASC, m.id ASC`).all(projectId) as Row[]
+    const definitions = new Map<WritingClusterKey, { sourceFingerprint: string; members: Array<{ refType: string; refId: string; role: string }> }>()
+    for (const row of rows) {
+      const clusterKey = text(row, 'cluster_key') as WritingClusterKey
+      const definition = definitions.get(clusterKey) ?? { sourceFingerprint: text(row, 'source_fingerprint'), members: [] }
+      if (row.ref_id != null) definition.members.push({ refType: text(row, 'ref_type'), refId: text(row, 'ref_id'), role: text(row, 'role') })
+      definitions.set(clusterKey, definition)
+    }
+    return [...definitions.entries()].map(([clusterKey, definition]) => ({ clusterKey, ...definition }))
   }
 
   listWritingClusterModelInputs(projectId: string): Array<{ clusterKey: WritingClusterKey; ruleSummary: string; evidence: string[] }> {
@@ -668,6 +712,160 @@ export class ProductRepository {
     return [...grouped.entries()].map(([clusterKey, value]) => ({ clusterKey, ...value }))
   }
 
+  replaceWritingCapsules(projectId: string, definitions: WritingCapsuleDefinition[]): void {
+    const now = new Date().toISOString()
+    const transaction = this.db.transaction(() => {
+      const insertCapsule = this.db.prepare(`INSERT INTO writing_cluster_capsules(id, project_id, cluster_id, input_fingerprint, version, rule_summary, model_summary, key_findings_json, turning_points_json, unresolved_questions_json, status, raw_count, representative_count, omitted_count, model_failure_code, model_failure_message, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, 'rule_ready', ?, ?, ?, NULL, NULL, ?, ?)`)
+      const insertMember = this.db.prepare(`INSERT INTO writing_capsule_members(id, capsule_id, ref_type, ref_id, role, display_order, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`)
+      for (const definition of definitions) {
+        const existing = this.db.prepare('SELECT id FROM writing_cluster_capsules WHERE project_id = ? AND cluster_id = ? AND input_fingerprint = ?').get(projectId, definition.clusterId, definition.inputFingerprint) as Row | undefined
+        if (existing) continue
+        const latest = this.db.prepare('SELECT COALESCE(MAX(version), 0) AS version FROM writing_cluster_capsules WHERE project_id = ? AND cluster_id = ?').get(projectId, definition.clusterId) as Row
+        const capsuleId = randomUUID(); const representativeCount = definition.members.filter((member) => member.role !== 'duplicate').length
+        insertCapsule.run(capsuleId, projectId, definition.clusterId, definition.inputFingerprint, number(latest, 'version') + 1, definition.ruleSummary, JSON.stringify(definition.keyFindings), JSON.stringify(definition.turningPoints), JSON.stringify(definition.unresolvedQuestions), definition.rawCount, representativeCount, Math.max(definition.rawCount - representativeCount, 0), now, now)
+        for (const [index, member] of definition.members.entries()) insertMember.run(randomUUID(), capsuleId, member.refType, member.refId, member.role, index + 1, now)
+      }
+    })
+    transaction.immediate()
+  }
+
+  listCurrentWritingCapsules(projectId: string): WritingClusterCapsule[] {
+    return (this.db.prepare(`SELECT cap.* FROM writing_cluster_capsules cap INNER JOIN writing_clusters c ON c.id = cap.cluster_id AND c.source_fingerprint = cap.input_fingerprint
+      WHERE cap.project_id = ? ORDER BY c.position ASC`).all(projectId) as Row[]).map(writingCapsuleFrom)
+  }
+
+  getWritingCapsule(capsuleId: string, projectId: string): WritingClusterCapsule {
+    const row = this.db.prepare('SELECT * FROM writing_cluster_capsules WHERE id = ? AND project_id = ?').get(capsuleId, projectId) as Row | undefined
+    if (!row) throw new Error('WRITING_CAPSULE_NOT_FOUND')
+    return writingCapsuleFrom(row)
+  }
+
+  getWritingClusterCapsuleByCluster(clusterId: string, projectId: string): WritingClusterCapsule | null {
+    const row = this.db.prepare(`SELECT cap.* FROM writing_cluster_capsules cap INNER JOIN writing_clusters c ON c.id = cap.cluster_id AND c.source_fingerprint = cap.input_fingerprint
+      WHERE cap.cluster_id = ? AND cap.project_id = ? ORDER BY cap.version DESC LIMIT 1`).get(clusterId, projectId) as Row | undefined
+    return row ? writingCapsuleFrom(row) : null
+  }
+
+  updateWritingCapsuleModel(capsuleId: string, input: { modelSummary: string; keyFindings: string[]; turningPoints: string[]; unresolvedQuestions: string[] }): WritingClusterCapsule {
+    const updated = this.db.prepare(`UPDATE writing_cluster_capsules SET model_summary = ?, key_findings_json = ?, turning_points_json = ?, unresolved_questions_json = ?, status = 'model_ready', model_failure_code = NULL, model_failure_message = NULL, updated_at = ? WHERE id = ?`).run(input.modelSummary, JSON.stringify(input.keyFindings), JSON.stringify(input.turningPoints), JSON.stringify(input.unresolvedQuestions), new Date().toISOString(), capsuleId)
+    if (updated.changes === 0) throw new Error('WRITING_CAPSULE_NOT_FOUND')
+    const row = this.db.prepare('SELECT * FROM writing_cluster_capsules WHERE id = ?').get(capsuleId) as Row
+    return writingCapsuleFrom(row)
+  }
+
+  failWritingCapsule(capsuleId: string, failureCode: string, failureMessage: string): void {
+    this.db.prepare("UPDATE writing_cluster_capsules SET status = 'model_failed', model_failure_code = ?, model_failure_message = ?, updated_at = ? WHERE id = ?").run(failureCode, failureMessage, new Date().toISOString(), capsuleId)
+  }
+
+  markWritingCapsuleSummaryFailed(projectId: string, fingerprint: string, failureCode: string, failureMessage: string): void {
+    this.db.prepare(`UPDATE writing_cluster_capsules SET status = 'model_failed', model_failure_code = ?, model_failure_message = ?, updated_at = ?
+      WHERE project_id = ? AND input_fingerprint = ?`).run(failureCode, failureMessage, new Date().toISOString(), projectId, fingerprint)
+  }
+
+  applyWritingCapsuleSummaries(projectId: string, fingerprint: string, summaries: Array<{ clusterKey: WritingClusterKey; title: string; summary: string; relevance: string }>): void {
+    const capsules = this.listCurrentWritingCapsules(projectId)
+    const clusters = (this.db.prepare('SELECT id, cluster_key FROM writing_clusters WHERE project_id = ? AND source_fingerprint = ?').all(projectId, fingerprint) as Row[])
+    const clusterKeys = new Map(clusters.map((row) => [text(row, 'id'), text(row, 'cluster_key') as WritingClusterKey]))
+    const summaryMap = new Map(summaries.map((summary) => [summary.clusterKey, summary]))
+    for (const capsule of capsules) {
+      const summary = summaryMap.get(clusterKeys.get(capsule.clusterId) as WritingClusterKey)
+      if (!summary || capsule.inputFingerprint !== fingerprint) continue
+      this.updateWritingCapsuleModel(capsule.id, { modelSummary: summary.summary, keyFindings: [summary.summary], turningPoints: [], unresolvedQuestions: [summary.relevance] })
+    }
+  }
+
+  confirmWritingDocument(projectId: string, documentId: string): WritingDocument {
+    const updated = this.db.prepare("UPDATE writing_documents SET status = 'confirmed', updated_at = ? WHERE id = ? AND project_id = ? AND kind = 'outline' AND status IN ('generated', 'draft')").run(new Date().toISOString(), documentId, projectId)
+    if (updated.changes === 0) throw new Error('WRITING_DOCUMENT_CONFIRM_CONFLICT')
+    return this.getWritingDocument(documentId)
+  }
+
+  listWritingCapsuleMembers(capsuleId: string): WritingCapsuleMember[] {
+    return (this.db.prepare(`SELECT m.*, CASE WHEN m.ref_type = 'artifact' THEN CASE a.kind WHEN 'user_message' THEN '用户判断' WHEN 'tutor_reply' THEN 'Tutor 回复' WHEN 'sql' THEN 'SQL 尝试' WHEN 'explain' THEN 'EXPLAIN 证据' WHEN 'error' THEN '错误证据' ELSE a.kind END
+      WHEN m.ref_type = 'source' THEN '知乎来源' ELSE p.title END AS title,
+      CASE WHEN m.ref_type = 'artifact' THEN substr(a.content, 1, 1600) WHEN m.ref_type = 'source' THEN substr(s.excerpt, 1, 1600) ELSE p.judgment END AS excerpt,
+      CASE WHEN m.ref_type = 'artifact' THEN a.kind WHEN m.ref_type = 'source' THEN s.provider ELSE p.stage END AS kind,
+      CASE WHEN m.ref_type = 'artifact' THEN a.verification_status WHEN m.ref_type = 'source' THEN 'source_verified' ELSE 'path_record' END AS verification_status
+      FROM writing_capsule_members m LEFT JOIN artifacts a ON m.ref_type = 'artifact' AND a.id = m.ref_id LEFT JOIN source_items s ON m.ref_type = 'source' AND s.id = m.ref_id LEFT JOIN path_nodes p ON m.ref_type = 'path_node' AND p.id = m.ref_id
+      WHERE m.capsule_id = ? ORDER BY m.display_order ASC, m.id ASC`).all(capsuleId) as Row[]).map(writingCapsuleMemberFrom)
+  }
+
+  listCurrentWritingCapsuleMembers(projectId: string): WritingCapsuleMember[] {
+    return (this.db.prepare(`SELECT m.*, CASE WHEN m.ref_type = 'artifact' THEN CASE a.kind WHEN 'user_message' THEN '用户判断' WHEN 'tutor_reply' THEN 'Tutor 回复' WHEN 'sql' THEN 'SQL 尝试' WHEN 'explain' THEN 'EXPLAIN 证据' WHEN 'error' THEN '错误证据' ELSE a.kind END
+      WHEN m.ref_type = 'source' THEN '知乎来源' ELSE p.title END AS title,
+      CASE WHEN m.ref_type = 'artifact' THEN substr(a.content, 1, 1600) WHEN m.ref_type = 'source' THEN substr(s.excerpt, 1, 1600) ELSE p.judgment END AS excerpt,
+      CASE WHEN m.ref_type = 'artifact' THEN a.kind WHEN m.ref_type = 'source' THEN s.provider ELSE p.stage END AS kind,
+      CASE WHEN m.ref_type = 'artifact' THEN a.verification_status WHEN m.ref_type = 'source' THEN 'source_verified' ELSE 'path_record' END AS verification_status
+      FROM writing_capsule_members m INNER JOIN writing_cluster_capsules cap ON cap.id = m.capsule_id
+      INNER JOIN writing_clusters c ON c.id = cap.cluster_id AND c.source_fingerprint = cap.input_fingerprint
+      LEFT JOIN artifacts a ON m.ref_type = 'artifact' AND a.id = m.ref_id LEFT JOIN source_items s ON m.ref_type = 'source' AND s.id = m.ref_id LEFT JOIN path_nodes p ON m.ref_type = 'path_node' AND p.id = m.ref_id
+      WHERE cap.project_id = ? ORDER BY c.position ASC, m.display_order ASC, m.id ASC`).all(projectId) as Row[]).map(writingCapsuleMemberFrom)
+  }
+
+  createWritingEvidencePack(projectId: string, inputFingerprint: string, snapshot: Record<string, unknown>, nodeCount: number, charCount: number): WritingEvidencePack {
+    const existing = this.db.prepare('SELECT * FROM writing_evidence_packs WHERE project_id = ? AND input_fingerprint = ?').get(projectId, inputFingerprint) as Row | undefined
+    if (existing) return writingEvidencePackFrom(existing)
+    const now = new Date().toISOString(); const packId = randomUUID()
+    const create = this.db.transaction(() => {
+      const latest = this.db.prepare('SELECT COALESCE(MAX(version), 0) AS version FROM writing_evidence_packs WHERE project_id = ?').get(projectId) as Row
+      this.db.prepare("UPDATE writing_evidence_packs SET status = 'superseded' WHERE project_id = ? AND status = 'active'").run(projectId)
+      this.db.prepare(`INSERT INTO writing_evidence_packs(id, project_id, input_fingerprint, version, snapshot_json, node_count, char_count, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?)`)
+        .run(packId, projectId, inputFingerprint, number(latest, 'version') + 1, JSON.stringify(snapshot), nodeCount, charCount, now)
+      this.db.prepare('UPDATE writing_projects SET current_evidence_pack_id = ?, updated_at = ? WHERE id = ?').run(packId, now, projectId)
+    })
+    create.immediate()
+    return this.getWritingEvidencePack(packId, projectId)
+  }
+
+  getWritingEvidencePack(packId: string, projectId: string): WritingEvidencePack {
+    const row = this.db.prepare('SELECT * FROM writing_evidence_packs WHERE id = ? AND project_id = ?').get(packId, projectId) as Row | undefined
+    if (!row) throw new Error('WRITING_EVIDENCE_PACK_NOT_FOUND')
+    return writingEvidencePackFrom(row)
+  }
+
+  getCurrentWritingEvidencePack(projectId: string): WritingEvidencePack | null {
+    const row = this.db.prepare("SELECT * FROM writing_evidence_packs WHERE project_id = ? AND status = 'active' ORDER BY version DESC LIMIT 1").get(projectId) as Row | undefined
+    return row ? writingEvidencePackFrom(row) : null
+  }
+
+  queueWritingGenerationJob(input: { projectId: string; kind: WritingGenerationKind; inputFingerprint: string; clientRequestId?: string | null; evidencePackId?: string | null; outlineDocumentId?: string | null; provider?: string | null; model?: string | null; retryFailed?: boolean }): WritingGenerationJob {
+    const now = new Date().toISOString(); const jobId = randomUUID()
+    const existingByRequest = input.clientRequestId ? this.db.prepare('SELECT * FROM writing_generation_jobs WHERE project_id = ? AND kind = ? AND client_request_id = ?').get(input.projectId, input.kind, input.clientRequestId) as Row | undefined : undefined
+    if (!existingByRequest) this.db.prepare(`INSERT INTO writing_generation_jobs(id, project_id, kind, input_fingerprint, client_request_id, evidence_pack_id, outline_document_id, status, provider, model, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?) ON CONFLICT(project_id, kind, input_fingerprint) DO NOTHING`).run(jobId, input.projectId, input.kind, input.inputFingerprint, input.clientRequestId ?? null, input.evidencePackId ?? null, input.outlineDocumentId ?? null, input.provider ?? null, input.model ?? null, now, now)
+    const row = existingByRequest ?? this.db.prepare('SELECT * FROM writing_generation_jobs WHERE project_id = ? AND kind = ? AND input_fingerprint = ?').get(input.projectId, input.kind, input.inputFingerprint) as Row
+    if (input.retryFailed && text(row, 'status') === 'failed') this.db.prepare("UPDATE writing_generation_jobs SET status = 'queued', attempt_count = 0, failure_code = NULL, failure_message = NULL, updated_at = ?, completed_at = NULL WHERE id = ? AND status = 'failed'").run(now, text(row, 'id'))
+    return writingGenerationJobFrom(this.db.prepare('SELECT * FROM writing_generation_jobs WHERE id = ?').get(text(row, 'id')) as Row)
+  }
+
+  getWritingGenerationJob(jobId: string, projectId?: string): WritingGenerationJob {
+    const row = this.db.prepare(projectId ? 'SELECT * FROM writing_generation_jobs WHERE id = ? AND project_id = ?' : 'SELECT * FROM writing_generation_jobs WHERE id = ?').get(...(projectId ? [jobId, projectId] : [jobId])) as Row | undefined
+    if (!row) throw new Error('WRITING_GENERATION_JOB_NOT_FOUND')
+    return writingGenerationJobFrom(row)
+  }
+
+  listPendingWritingGenerationJobs(): WritingGenerationJob[] {
+    return (this.db.prepare("SELECT * FROM writing_generation_jobs WHERE status IN ('queued', 'running') ORDER BY created_at ASC").all() as Row[]).map(writingGenerationJobFrom)
+  }
+
+  recoverWritingGenerationJobs(leaseMs: number): void {
+    const threshold = new Date(Date.now() - leaseMs).toISOString()
+    this.db.prepare("UPDATE writing_generation_jobs SET status = 'queued', updated_at = ?, failure_code = 'worker_recovered' WHERE status = 'running' AND updated_at < ?").run(new Date().toISOString(), threshold)
+  }
+
+  claimWritingGenerationJob(jobId: string): boolean {
+    const result = this.db.prepare("UPDATE writing_generation_jobs SET status = 'running', attempt_count = attempt_count + 1, updated_at = ? WHERE id = ? AND status = 'queued'").run(new Date().toISOString(), jobId)
+    return result.changes > 0
+  }
+
+  finishWritingGenerationJob(jobId: string, status: 'succeeded' | 'failed' | 'interrupted', resultDocumentId?: string | null, failureCode?: string | null, failureMessage?: string | null, expectedAttemptCount?: number): void {
+    const now = new Date().toISOString()
+    const where = expectedAttemptCount === undefined ? 'id = ?' : 'id = ? AND status = \'running\' AND attempt_count = ?'
+    const values = expectedAttemptCount === undefined ? [status, resultDocumentId ?? null, failureCode ?? null, failureMessage ?? null, now, now, jobId] : [status, resultDocumentId ?? null, failureCode ?? null, failureMessage ?? null, now, now, jobId, expectedAttemptCount]
+    this.db.prepare(`UPDATE writing_generation_jobs SET status = ?, result_document_id = ?, failure_code = ?, failure_message = ?, updated_at = ?, completed_at = ? WHERE ${where}`).run(...values)
+  }
+
   getWritingClusterOverview(projectId: string, practiceRunId: string): WritingClusterOverview {
     const clusters = (this.db.prepare(`SELECT c.*, COUNT(m.id) AS member_count,
       COALESCE(SUM(CASE WHEN m.role = 'duplicate' THEN 1 ELSE 0 END), 0) AS duplicate_count
@@ -677,9 +875,11 @@ export class ProductRepository {
     const status = job ? text(job, 'status') : 'not_started'
     const accepted = clusters.filter((cluster) => cluster.status === 'accepted').map((cluster) => cluster.clusterKey)
     const required = ['problem', 'evidence', 'solution']
+    const capsules = this.listCurrentWritingCapsules(projectId)
     return {
       projectId, practiceRunId, clusters, acceptedCount: accepted.length, totalCount: clusters.length,
       requiredAccepted: required.filter((key) => accepted.includes(key as WritingClusterKey)), canGenerateOutline: required.every((key) => accepted.includes(key as WritingClusterKey)),
+      capsules,
       curation: { status: status === 'succeeded' ? 'succeeded' : status === 'failed' ? 'failed' : status === 'running' ? 'running' : status === 'queued' ? 'queued' : 'not_started', jobId: job ? text(job, 'id') : null, error: job ? nullableText(job, 'failure_message') : null },
     }
   }
@@ -759,13 +959,15 @@ export class ProductRepository {
   }
 
   markWritingCurationJobRunning(id: string): boolean {
-    const result = this.db.prepare("UPDATE writing_curation_jobs SET status = 'running', attempt_count = attempt_count + 1, updated_at = ? WHERE id = ? AND status IN ('queued', 'running')").run(new Date().toISOString(), id)
+    const result = this.db.prepare("UPDATE writing_curation_jobs SET status = 'running', attempt_count = attempt_count + 1, updated_at = ? WHERE id = ? AND status = 'queued'").run(new Date().toISOString(), id)
     return result.changes > 0
   }
 
-  finishWritingCurationJob(id: string, status: 'succeeded' | 'failed', failureCode?: string, failureMessage?: string): void {
+  finishWritingCurationJob(id: string, status: 'succeeded' | 'failed', failureCode?: string, failureMessage?: string, expectedAttemptCount?: number): void {
     const now = new Date().toISOString()
-    this.db.prepare('UPDATE writing_curation_jobs SET status = ?, failure_code = ?, failure_message = ?, updated_at = ?, completed_at = ? WHERE id = ?').run(status, failureCode ?? null, failureMessage ?? null, now, now, id)
+    const where = expectedAttemptCount === undefined ? 'id = ?' : 'id = ? AND status = \'running\' AND attempt_count = ?'
+    const values = expectedAttemptCount === undefined ? [status, failureCode ?? null, failureMessage ?? null, now, now, id] : [status, failureCode ?? null, failureMessage ?? null, now, now, id, expectedAttemptCount]
+    this.db.prepare(`UPDATE writing_curation_jobs SET status = ?, failure_code = ?, failure_message = ?, updated_at = ?, completed_at = ? WHERE ${where}`).run(...values)
   }
 
   applyWritingClusterSummaries(projectId: string, fingerprint: string, summaries: Array<{ clusterKey: WritingClusterKey; title: string; summary: string; relevance: string }>): void {
@@ -787,7 +989,7 @@ export class ProductRepository {
     const reviewItems = (this.db.prepare('SELECT * FROM writing_review_items WHERE project_id = ? ORDER BY severity DESC, created_at ASC').all(projectId) as Row[]).map(writingReviewItemFrom)
     return {
       id: text(row, 'id'), learnerId: text(row, 'learner_id'), practiceRunId: text(row, 'practice_run_id'), articleType: 'engineering_practice_review',
-      status: text(row, 'status') as WritingProject['status'], evidenceSnapshot: json<WritingProject['evidenceSnapshot']>(row.evidence_snapshot_json, { capturedAt: null, materialIds: [] }),
+      status: text(row, 'status') as WritingProject['status'], evidenceSnapshot: json<WritingProject['evidenceSnapshot']>(row.evidence_snapshot_json, { capturedAt: null, materialIds: [] }), currentEvidencePackId: nullableText(row, 'current_evidence_pack_id'),
       materials, documents, reviewItems, createdAt: text(row, 'created_at'), updatedAt: text(row, 'updated_at'),
     }
   }
@@ -827,6 +1029,7 @@ export class ProductRepository {
     status: WritingDocument['status']
     title: string
     summary: string
+    evidencePackId?: string | null
     sections: Array<Pick<WritingSection, 'sectionKey' | 'position' | 'title' | 'content' | 'required' | 'status' | 'evidenceRefs' | 'sourceRefs'>>
     claims: Array<{ sectionKey: string; text: string; kind: WritingClaim['kind']; status: WritingClaim['status']; evidenceRefs: string[]; sourceRefs: string[] }>
   }): WritingDocument {
@@ -835,8 +1038,8 @@ export class ProductRepository {
     const create = this.db.transaction(() => {
       const current = this.db.prepare('SELECT COALESCE(MAX(revision), 0) AS revision FROM writing_documents WHERE project_id = ? AND kind = ?').get(input.projectId, input.kind) as Row
       const revision = number(current, 'revision') + 1
-      this.db.prepare(`INSERT INTO writing_documents(id, project_id, kind, revision, status, title, summary, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(documentId, input.projectId, input.kind, revision, input.status, input.title, input.summary, now, now)
+      this.db.prepare(`INSERT INTO writing_documents(id, project_id, kind, revision, status, title, summary, evidence_pack_id, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(documentId, input.projectId, input.kind, revision, input.status, input.title, input.summary, input.evidencePackId ?? null, now, now)
       const insertSection = this.db.prepare(`INSERT INTO writing_sections(id, document_id, section_key, position, title, content, required, status, evidence_refs_json, source_refs_json, updated_at)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
       for (const section of input.sections) {
@@ -852,6 +1055,49 @@ export class ProductRepository {
       }
     })
     create.immediate()
+    return this.getWritingDocument(documentId)
+  }
+
+  persistWritingGeneration(input: {
+    jobId: string
+    attemptCount: number
+    projectId: string
+    learnerId: string
+    practiceRunId: string
+    kind: WritingDocument['kind']
+    evidencePackId: string
+    title: string
+    summary: string
+    sections: Array<Pick<WritingSection, 'sectionKey' | 'position' | 'title' | 'content' | 'required' | 'status' | 'evidenceRefs' | 'sourceRefs'>>
+    claims: Array<{ sectionKey: string; text: string; kind: WritingClaim['kind']; status: WritingClaim['status']; evidenceRefs: string[]; sourceRefs: string[] }>
+    artifactKind: ArtifactKind
+    eventType: EventType
+    stage: CaseStage
+    artifactContent: string
+    projectStatus: WritingProject['status']
+  }): WritingDocument {
+    const documentId = randomUUID(); const artifactId = randomUUID(); const eventId = randomUUID(); const now = new Date().toISOString(); const checksum = createHash('sha256').update(input.artifactContent).digest('hex')
+    const persist = this.db.transaction(() => {
+      const running = this.db.prepare("SELECT id FROM writing_generation_jobs WHERE id = ? AND status = 'running' AND attempt_count = ?").get(input.jobId, input.attemptCount) as Row | undefined
+      if (!running) throw new Error('WRITING_GENERATION_JOB_NOT_RUNNING')
+      const current = this.db.prepare('SELECT COALESCE(MAX(revision), 0) AS revision FROM writing_documents WHERE project_id = ? AND kind = ?').get(input.projectId, input.kind) as Row
+      const revision = number(current, 'revision') + 1
+      this.db.prepare(`INSERT INTO writing_documents(id, project_id, kind, revision, status, title, summary, evidence_pack_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+        .run(documentId, input.projectId, input.kind, revision, input.kind === 'outline' ? 'generated' : 'needs_review', input.title, input.summary, input.evidencePackId, now, now)
+      const sectionIds = new Map<string, string>(); const insertSection = this.db.prepare(`INSERT INTO writing_sections(id, document_id, section_key, position, title, content, required, status, evidence_refs_json, source_refs_json, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      for (const section of input.sections) { const sectionId = randomUUID(); sectionIds.set(section.sectionKey, sectionId); insertSection.run(sectionId, documentId, section.sectionKey, section.position, section.title, section.content, section.required ? 1 : 0, section.status, JSON.stringify(section.evidenceRefs), JSON.stringify(section.sourceRefs), now) }
+      const insertClaim = this.db.prepare(`INSERT INTO writing_claims(id, document_id, section_id, text, kind, status, evidence_refs_json, source_refs_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      for (const claim of input.claims) { const sectionId = sectionIds.get(claim.sectionKey); if (sectionId) insertClaim.run(randomUUID(), documentId, sectionId, claim.text, claim.kind, claim.status, JSON.stringify(claim.evidenceRefs), JSON.stringify(claim.sourceRefs), now) }
+      this.db.prepare(`INSERT INTO artifacts(id, learner_id, practice_run_id, kind, source_kind, verification_status, content, metadata_json, checksum, created_at) VALUES (?, ?, ?, ?, 'system', 'model_generated', ?, ?, ?, ?)`)
+        .run(artifactId, input.learnerId, input.practiceRunId, input.artifactKind, input.artifactContent, JSON.stringify({ documentId, evidencePackId: input.evidencePackId, generationJobId: input.jobId }), checksum, now)
+      const next = this.db.prepare('SELECT COALESCE(MAX(sequence), 0) + 1 AS sequence FROM practice_events WHERE practice_run_id = ?').get(input.practiceRunId) as Row
+      this.db.prepare(`INSERT INTO practice_events(id, learner_id, practice_run_id, sequence, actor, type, stage, payload_json, artifact_refs_json, client_request_id, created_at) VALUES (?, ?, ?, ?, 'system', ?, ?, ?, ?, NULL, ?)`)
+        .run(eventId, input.learnerId, input.practiceRunId, number(next, 'sequence'), input.eventType, input.stage, JSON.stringify({ documentId, artifactId, evidencePackId: input.evidencePackId, generationJobId: input.jobId }), JSON.stringify([artifactId]), now)
+      this.db.prepare('UPDATE writing_projects SET status = ?, evidence_snapshot_json = ?, current_evidence_pack_id = ?, updated_at = ? WHERE id = ?').run(input.projectStatus, JSON.stringify({ capturedAt: now, materialIds: [], evidencePackId: input.evidencePackId }), input.evidencePackId, now, input.projectId)
+      const claimed = this.db.prepare("UPDATE writing_generation_jobs SET status = 'succeeded', result_document_id = ?, updated_at = ?, completed_at = ? WHERE id = ? AND status = 'running' AND attempt_count = ?").run(documentId, now, now, input.jobId, input.attemptCount)
+      if (claimed.changes === 0) throw new Error('WRITING_GENERATION_JOB_NOT_RUNNING')
+    })
+    persist.immediate()
     return this.getWritingDocument(documentId)
   }
 

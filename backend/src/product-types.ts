@@ -30,6 +30,9 @@ export type WritingClusterKey = 'problem' | 'hypothesis' | 'evidence' | 'attempt
 export type WritingClusterStatus = 'pending' | 'accepted' | 'rejected'
 export type WritingClusterMemberRole = 'primary' | 'supporting' | 'duplicate' | 'context'
 export type WritingClusterSummaryStatus = 'rule_ready' | 'queued' | 'running' | 'model_ready' | 'model_failed'
+export type WritingCapsuleStatus = 'rule_ready' | 'queued' | 'running' | 'model_ready' | 'model_failed'
+export type WritingGenerationKind = 'capsule' | 'outline' | 'article'
+export type WritingGenerationStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'interrupted'
 
 export type ArtifactKind = 'user_message' | 'sql' | 'explain' | 'benchmark' | 'result_set' | 'error' | 'external_text' | 'tutor_reply' | 'source_excerpt' | 'note_outline' | 'article_draft'
 export type ArtifactSourceKind = 'user' | 'lab' | 'tutor' | 'zhihu' | 'global_search' | 'system'
@@ -348,6 +351,7 @@ export interface WritingDocument {
   status: WritingDocumentStatus
   title: string
   summary: string
+  evidencePackId: string | null
   sections: WritingSection[]
   claims: WritingClaim[]
   createdAt: string
@@ -361,6 +365,7 @@ export interface WritingProject {
   articleType: 'engineering_practice_review'
   status: WritingStatus
   evidenceSnapshot: { capturedAt: string | null; materialIds: string[] }
+  currentEvidencePackId: string | null
   materials: WritingMaterial[]
   documents: WritingDocument[]
   reviewItems: WritingReviewItem[]
@@ -410,6 +415,7 @@ export interface WritingClusterOverview {
   totalCount: number
   requiredAccepted: string[]
   canGenerateOutline: boolean
+  capsules: WritingClusterCapsule[]
   curation: { status: 'not_started' | 'queued' | 'running' | 'succeeded' | 'failed'; jobId: string | null; error: string | null }
 }
 
@@ -417,4 +423,70 @@ export interface WritingClusterDetail {
   cluster: WritingCluster
   members: WritingClusterMember[]
   nextCursor: string | null
+}
+
+export interface WritingClusterCapsule {
+  id: string
+  projectId: string
+  clusterId: string
+  inputFingerprint: string
+  version: number
+  ruleSummary: string
+  modelSummary: string | null
+  keyFindings: string[]
+  turningPoints: string[]
+  unresolvedQuestions: string[]
+  status: WritingCapsuleStatus
+  rawCount: number
+  representativeCount: number
+  omittedCount: number
+  modelFailureCode: string | null
+  modelFailureMessage: string | null
+  createdAt: string
+  updatedAt: string
+}
+
+export interface WritingCapsuleMember {
+  id: string
+  capsuleId: string
+  refType: 'artifact' | 'source' | 'path_node'
+  refId: string
+  role: WritingClusterMemberRole
+  displayOrder: number
+  title: string
+  excerpt: string
+  kind: string
+  verificationStatus: string
+}
+
+export interface WritingEvidencePack {
+  id: string
+  projectId: string
+  inputFingerprint: string
+  version: number
+  snapshot: Record<string, unknown>
+  nodeCount: number
+  charCount: number
+  status: 'active' | 'superseded'
+  createdAt: string
+}
+
+export interface WritingGenerationJob {
+  id: string
+  projectId: string
+  kind: WritingGenerationKind
+  inputFingerprint: string
+  clientRequestId: string | null
+  evidencePackId: string | null
+  outlineDocumentId: string | null
+  status: WritingGenerationStatus
+  attemptCount: number
+  provider: string | null
+  model: string | null
+  failureCode: string | null
+  failureMessage: string | null
+  resultDocumentId: string | null
+  createdAt: string
+  updatedAt: string
+  completedAt: string | null
 }
