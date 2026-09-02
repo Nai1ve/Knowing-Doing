@@ -11,6 +11,7 @@
 | [zhixing-demo-flow.md](zhixing-demo-flow.md) | 三分钟主路径、异常分支和现场兜底 | Demo 脚本、分支模拟和覆盖验收 |
 | [zhixing-case-source-module.md](zhixing-case-source-module.md) | 真实来源如何经过 AI 改造成可复现案例，以及模块输入输出 | 案例生成、来源追溯和后续推荐 |
 | [zhixing-mysql-case-pack.md](zhixing-mysql-case-pack.md) | 三个 MySQL 案例及其共同的讨论、Tutor 和尝试协议 | MVP 案例准备和案例引擎实现 |
+| [zhixing-post-mvp-capabilities.md](zhixing-post-mvp-capabilities.md) | MVP 之后的学习主线、画像、计划、反馈和案例扩展能力 | 后续产品规划和开发排期 |
 | [../backend/README.md](../backend/README.md) | Docker Lab API、人工 migration、权限与验收边界 | 后端启动、部署和集成测试 |
 | [.design/zhixing-learning/DESIGN_BRIEF.md](../.design/zhixing-learning/DESIGN_BRIEF.md) | 体验原则和视觉方向 | 前端设计决策 |
 | [.design/zhixing-learning/INFORMATION_ARCHITECTURE.md](../.design/zhixing-learning/INFORMATION_ARCHITECTURE.md) | 页面、路由、信息和数据边界 | 信息架构与接口设计 |
