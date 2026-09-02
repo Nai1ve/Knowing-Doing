@@ -1,12 +1,16 @@
 <script setup lang="ts">
-import { onMounted, onUnmounted } from 'vue'
+import { computed, onMounted, onUnmounted } from 'vue'
 import PracticeLauncher from '@/components/learning/PracticeLauncher.vue'
 import PracticeWorkspace from '@/components/learning/PracticeWorkspace.vue'
 import { useLabStore } from '@/stores/lab'
 import { usePracticeStore } from '@/stores/practice'
+import { usePlanStore } from '@/stores/plan'
 
 const labStore = useLabStore()
 const practiceStore = usePracticeStore()
+const planStore = usePlanStore()
+const nextUnit = computed(() => planStore.productPlan?.units.find((unit) => unit.status === 'current') ?? planStore.productPlan?.units.find((unit) => unit.status === 'upcoming') ?? null)
+const currentUnit = computed(() => planStore.productPlan?.units.find((unit) => unit.status === 'current' && unit.availability === 'available') ?? null)
 
 onMounted(() => {
   void initialize()
@@ -18,6 +22,11 @@ async function initialize() {
   await Promise.all([labStore.load(), practiceStore.loadHistory()])
   await practiceStore.restoreActive()
   if (!practiceStore.run) await practiceStore.restoreRecord()
+}
+
+function startCurrentPractice() {
+  if (planStore.productPlan && currentUnit.value) void practiceStore.startPlanned(planStore.productPlan.id, currentUnit.value.id)
+  else practiceStore.error = '请先在总览创建学习计划。'
 }
 </script>
 
@@ -76,7 +85,8 @@ async function initialize() {
     :resetting="labStore.resetting"
     :ending="labStore.ending"
     :error="labStore.error || practiceStore.error"
-    @start="practiceStore.start(labStore.selectedCaseId)"
+    :plan-unit="currentUnit ?? nextUnit"
+    @start="startCurrentPractice"
     @reset="labStore.reset"
     @end="labStore.end"
     @cancel="labStore.cancelQueue"

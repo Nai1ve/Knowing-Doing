@@ -1,14 +1,14 @@
-import { mockMilestones, mockPlan } from '@/data/mock'
-import type { LearningPlan, Milestone } from '@/types/domain'
+import type { ProductPlan } from '@/types/product'
 import { apiClient } from './client'
-import { useMockApi } from './mode'
 
-export async function getActivePlan(): Promise<LearningPlan> {
-  if (useMockApi) return structuredClone(mockPlan)
-  return apiClient.request<LearningPlan>('/plans/active')
+export async function getActivePlan(): Promise<ProductPlan | null> {
+  return apiClient.request<ProductPlan | null>('/product/plans/active')
 }
 
-export async function getPlanRoute(planId: string): Promise<Milestone[]> {
-  if (useMockApi) return structuredClone(mockMilestones)
-  return apiClient.request<Milestone[]>(`/plans/${planId}/route`)
+export async function createMysqlPerformancePlan(): Promise<ProductPlan> {
+  return apiClient.request<ProductPlan>('/product/sample-plans/mysql-performance', { method: 'POST' })
+}
+
+export async function getPlan(planId: string): Promise<ProductPlan> {
+  return apiClient.request<ProductPlan>(`/product/plans/${planId}`)
 }

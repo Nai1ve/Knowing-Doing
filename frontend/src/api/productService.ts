@@ -19,7 +19,8 @@ function product<T>(path: string, init: RequestInit = {}, token?: string): Promi
 export function createProductIntake(input: { goal: string; technology?: string; outcome?: string; weeklyMinutes?: number }): Promise<ProductIntake> { return product('/intakes', { method: 'POST', body: JSON.stringify(input) }) }
 export function createProductPlan(intakeId: string): Promise<ProductPlan> { return product(`/intakes/${intakeId}/plan`, { method: 'POST' }) }
 export function confirmProductPlan(planId: string): Promise<ProductPlan> { return product(`/plans/${planId}/confirm`, { method: 'POST' }) }
-export function startProductPractice(caseId: LabCaseId, planUnitId?: string): Promise<ProductPracticeStart> { return product('/practice-runs', { method: 'POST', body: JSON.stringify({ caseId, planUnitId }) }) }
+export function startProductPractice(planId: string, planUnitId: string): Promise<ProductPracticeStart> { return product('/practice-runs', { method: 'POST', body: JSON.stringify({ planId, planUnitId }) }) }
+export function startPlannedProductPractice(planId: string, planUnitId: string): Promise<ProductPracticeStart> { return product(`/plans/${planId}/units/${planUnitId}/practice`, { method: 'POST' }) }
 export function getProductSnapshot(runId: string): Promise<ProductSnapshot> { return product(`/practice-runs/${runId}`) }
 export function createProductPin(runId: string, targetType: ProductPracticePin['targetType'], targetId: string): Promise<ProductPracticePin> { return product(`/practice-runs/${runId}/pins`, { method: 'POST', body: JSON.stringify({ targetType, targetId }) }) }
 export function deleteProductPin(runId: string, pinId: string): Promise<void> { return product(`/practice-runs/${runId}/pins/${pinId}`, { method: 'DELETE' }) }

@@ -42,6 +42,15 @@ export type VerificationStatus = 'verified_lab' | 'external_unverified' | 'model
 
 export interface Learner {
   id: string
+  userId: string | null
+  createdAt: string
+  updatedAt: string
+}
+
+export interface User {
+  id: string
+  displayName: string | null
+  status: 'active' | 'disabled'
   createdAt: string
   updatedAt: string
 }
@@ -66,6 +75,8 @@ export interface PlanUnit {
   objective: string
   caseId: CaseId | null
   status: 'upcoming' | 'current' | 'completed'
+  availability: 'available' | 'coming_soon'
+  completedAt: string | null
   sourceRefs: string[]
 }
 
@@ -77,6 +88,8 @@ export interface LearningPlan {
   goal: string
   sourceStatus: 'local_catalog' | 'retrieved' | 'general_model_knowledge'
   status: 'draft' | 'confirmed' | 'active' | 'completed'
+  templateKey: string
+  revision: number
   createdAt: string
   updatedAt: string
   units: PlanUnit[]

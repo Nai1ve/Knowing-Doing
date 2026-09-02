@@ -59,6 +59,73 @@ describe('product repository', () => {
     expect(repository.getIntake(intake.id).status).toBe('planned')
   }))
 
+  it('persists one fixed MySQL plan per learner and records its creation', () => withRepository((repository) => {
+    repository.ensureLearner('learner-plan')
+    const first = repository.getOrCreateMysqlPerformancePlan('learner-plan')
+    const second = repository.getOrCreateMysqlPerformancePlan('learner-plan')
+
+    expect(second.id).toBe(first.id)
+    expect(first.templateKey).toBe('mysql-performance-v1')
+    expect(first.revision).toBe(1)
+    expect(first.units.map((unit) => [unit.title, unit.status, unit.availability])).toEqual([
+      ['慢查询与联合索引', 'current', 'available'],
+      ['死锁与锁等待', 'upcoming', 'coming_soon'],
+      ['深分页与产品约束', 'upcoming', 'coming_soon'],
+    ])
+    expect(repository.db.prepare("SELECT COUNT(*) AS count FROM learning_plans WHERE learner_id = ?").get('learner-plan')).toMatchObject({ count: 1 })
+    expect(repository.db.prepare("SELECT type FROM plan_events WHERE plan_id = ?").get(first.id)).toMatchObject({ type: 'plan_created' })
+  }))
+
+  it('reuses a planned practice and advances the next unit exactly once', () => withRepositoryAsync(async (repository) => {
+    repository.ensureLearner('learner-progress')
+    const plan = repository.getOrCreateMysqlPerformancePlan('learner-progress')
+    const current = plan.units[0]!
+    const labRun = { runId: 'planned-lab-1', caseId: 'mysql-order-list-index-001' as const, revision: 1, status: 'active' as const, fixtureVersion: 'fixture-1', expiresAt: new Date(Date.now() + 60_000).toISOString(), idleExpiresAt: new Date(Date.now() + 60_000).toISOString(), sessions: [] }
+    const scheduler = {
+      createRun: vi.fn(async () => ({ kind: 'started' as const, run: labRun, accessToken: 'planned-token' })),
+      getAccess: vi.fn(() => ({ run: labRun, accessToken: 'planned-token' })),
+      release: vi.fn(async () => undefined),
+    } as unknown as LabScheduler
+    const service = new PracticeService(repository, scheduler, new TutorEngine({} as LabConfig))
+
+    const [first, second] = await Promise.all([
+      service.startPlannedPractice({ learnerId: 'learner-progress', planId: plan.id, planUnitId: current.id }),
+      service.startPlannedPractice({ learnerId: 'learner-progress', planId: plan.id, planUnitId: current.id }),
+    ])
+    expect(first.practice.id).toBe(second.practice.id)
+    expect(scheduler.createRun).toHaveBeenCalledTimes(1)
+
+    repository.updatePracticeRun(first.practice.id, { status: 'resolved', stage: 'resolved' })
+    const advanced = repository.advancePlanForResolvedRun(repository.getPracticeRun(first.practice.id))
+    const repeated = repository.advancePlanForResolvedRun(repository.getPracticeRun(first.practice.id))
+    expect(advanced.revision).toBe(2)
+    expect(repeated.revision).toBe(2)
+    expect(advanced.units.map((unit) => unit.status)).toEqual(['completed', 'current', 'upcoming'])
+    expect(repository.db.prepare("SELECT COUNT(*) AS count FROM plan_events WHERE plan_id = ? AND type = 'plan_unit_completed'").get(plan.id)).toMatchObject({ count: 1 })
+  }))
+
+  it('does not create a second queue ticket when a planned unit is already waiting', () => withRepositoryAsync(async (repository) => {
+    repository.ensureLearner('learner-queue')
+    const plan = repository.getOrCreateMysqlPerformancePlan('learner-queue')
+    const current = plan.units[0]!
+    const ticket = { ticketId: 'ticket-1', caseId: 'mysql-order-list-index-001' as const, status: 'waiting' as const, position: 1, pollAfterMs: 2000, expiresAt: new Date(Date.now() + 60_000).toISOString() }
+    const scheduler = {
+      createRun: vi.fn(async () => ({ kind: 'queued' as const, ticket })),
+      getTicket: vi.fn(() => ticket),
+    } as unknown as LabScheduler
+    const service = new PracticeService(repository, scheduler, new TutorEngine({} as LabConfig))
+
+    const [first, second] = await Promise.all([
+      service.startPlannedPractice({ learnerId: 'learner-queue', planId: plan.id, planUnitId: current.id }),
+      service.startPlannedPractice({ learnerId: 'learner-queue', planId: plan.id, planUnitId: current.id }),
+    ])
+
+    expect(first.practice.id).toBe(second.practice.id)
+    expect(first.queue?.ticketId).toBe('ticket-1')
+    expect(second.queue?.ticketId).toBe('ticket-1')
+    expect(scheduler.createRun).toHaveBeenCalledTimes(1)
+  }))
+
   it('deduplicates events inside the transactional write', () => withRepository((repository) => {
     repository.ensureLearner('learner-1')
     const run = repository.createPracticeRun({ learnerId: 'learner-1', caseId: 'mysql-order-list-index-001' })

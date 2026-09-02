@@ -48,7 +48,7 @@ function json<T>(value: unknown, fallback: T): T {
 }
 
 function learnerFrom(row: Row): Learner {
-  return { id: text(row, 'id'), createdAt: text(row, 'created_at'), updatedAt: text(row, 'updated_at') }
+  return { id: text(row, 'id'), userId: nullableText(row, 'user_id'), createdAt: text(row, 'created_at'), updatedAt: text(row, 'updated_at') }
 }
 
 function intakeFrom(row: Row): Intake {
@@ -63,7 +63,7 @@ function unitFrom(row: Row): PlanUnit {
   return {
     id: text(row, 'id'), planId: text(row, 'plan_id'), position: number(row, 'position'), title: text(row, 'title'),
     objective: text(row, 'objective'), caseId: nullableText(row, 'case_id') as PlanUnit['caseId'],
-    status: text(row, 'status') as PlanUnit['status'], sourceRefs: json<string[]>(row.source_refs_json, []),
+    status: text(row, 'status') as PlanUnit['status'], availability: text(row, 'availability') as PlanUnit['availability'], completedAt: nullableText(row, 'completed_at'), sourceRefs: json<string[]>(row.source_refs_json, []),
   }
 }
 
@@ -71,7 +71,7 @@ function planFrom(row: Row, units: PlanUnit[]): LearningPlan {
   return {
     id: text(row, 'id'), learnerId: text(row, 'learner_id'), intakeId: text(row, 'intake_id'), title: text(row, 'title'),
     goal: text(row, 'goal'), sourceStatus: text(row, 'source_status') as LearningPlan['sourceStatus'],
-    status: text(row, 'status') as LearningPlan['status'], createdAt: text(row, 'created_at'), updatedAt: text(row, 'updated_at'), units,
+    status: text(row, 'status') as LearningPlan['status'], templateKey: text(row, 'template_key'), revision: number(row, 'revision'), createdAt: text(row, 'created_at'), updatedAt: text(row, 'updated_at'), units,
   }
 }
 
@@ -374,14 +374,20 @@ export class ProductRepository {
     return intakeFrom(row)
   }
 
-  createPlan(input: { learnerId: string; intakeId: string; title: string; goal: string; sourceStatus: LearningPlan['sourceStatus']; units: Array<Omit<PlanUnit, 'id' | 'planId'> > }): LearningPlan {
+  getIntakeForLearner(id: string, learnerId: string): Intake {
+    const row = this.db.prepare('SELECT * FROM intakes WHERE id = ? AND learner_id = ?').get(id, learnerId) as Row | undefined
+    if (!row) throw new Error(`Intake not found: ${id}`)
+    return intakeFrom(row)
+  }
+
+  createPlan(input: { learnerId: string; intakeId: string; title: string; goal: string; sourceStatus: LearningPlan['sourceStatus']; templateKey?: string; units: Array<Omit<PlanUnit, 'id' | 'planId' | 'availability' | 'completedAt'> & { availability?: PlanUnit['availability']; completedAt?: string | null }> }): LearningPlan {
     const planId = randomUUID(); const now = new Date().toISOString()
     const transaction = this.db.transaction(() => {
-      this.db.prepare(`INSERT INTO learning_plans(id, learner_id, intake_id, title, goal, source_status, status, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, 'draft', ?, ?)`).run(planId, input.learnerId, input.intakeId, input.title, input.goal, input.sourceStatus, now, now)
-      const insert = this.db.prepare(`INSERT INTO plan_units(id, plan_id, position, title, objective, case_id, status, source_refs_json)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
-      for (const unit of input.units) insert.run(randomUUID(), planId, unit.position, unit.title, unit.objective, unit.caseId, unit.status, JSON.stringify(unit.sourceRefs))
+      this.db.prepare(`INSERT INTO learning_plans(id, learner_id, intake_id, title, goal, source_status, status, template_key, revision, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`).run(planId, input.learnerId, input.intakeId, input.title, input.goal, input.sourceStatus, input.templateKey ? 'active' : 'draft', input.templateKey ?? 'legacy', now, now)
+      const insert = this.db.prepare(`INSERT INTO plan_units(id, plan_id, position, title, objective, case_id, status, availability, completed_at, source_refs_json)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      for (const unit of input.units) insert.run(randomUUID(), planId, unit.position, unit.title, unit.objective, unit.caseId, unit.status, unit.availability ?? 'available', unit.completedAt ?? null, JSON.stringify(unit.sourceRefs))
       this.db.prepare("UPDATE intakes SET status = 'planned', updated_at = ? WHERE id = ?").run(now, input.intakeId)
     })
     transaction()
@@ -399,6 +405,95 @@ export class ProductRepository {
     const now = new Date().toISOString()
     this.db.prepare("UPDATE learning_plans SET status = 'confirmed', updated_at = ? WHERE id = ?").run(now, id)
     return this.getPlan(id)
+  }
+
+  confirmPlanForLearner(id: string, learnerId: string): LearningPlan {
+    const now = new Date().toISOString()
+    const result = this.db.prepare("UPDATE learning_plans SET status = 'confirmed', updated_at = ? WHERE id = ? AND learner_id = ?").run(now, id, learnerId)
+    if (result.changes === 0) throw new Error(`Plan not found: ${id}`)
+    return this.getPlanForLearner(id, learnerId)
+  }
+
+  getOrCreateMysqlPerformancePlan(learnerId: string): LearningPlan {
+    const existing = this.getActivePlan(learnerId, 'mysql-performance-v1')
+    if (existing) return existing
+    const planId = randomUUID(); const intakeId = randomUUID(); const now = new Date().toISOString()
+    const transaction = this.db.transaction(() => {
+      this.db.prepare('INSERT INTO intakes(id, learner_id, goal, technology, outcome, weekly_minutes, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
+        .run(intakeId, learnerId, '通过真实实验掌握 MySQL 性能问题的分析与验证方法', 'MySQL 8', null, 240, 'planned', now, now)
+      this.db.prepare(`INSERT INTO learning_plans(id, learner_id, intake_id, title, goal, source_status, status, template_key, revision, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, 'local_catalog', 'active', 'mysql-performance-v1', 1, ?, ?)`).run(planId, learnerId, intakeId, 'MySQL 性能优化路线', '通过真实实验掌握 MySQL 性能问题的分析与验证方法', now, now)
+      const units = [
+        ['慢查询与联合索引', '从慢日志和表结构定位问题，用 EXPLAIN、索引和结果验证优化假设。', 'mysql-order-list-index-001', 'current', 'available'],
+        ['死锁与锁等待', '区分临时止损和根因修复，并用事务会话复测访问顺序。', 'mysql-deadlock-lock-order-001', 'upcoming', 'coming_soon'],
+        ['深分页与产品约束', '比较 OFFSET 和游标分页，说明性能与交互能力的取舍。', 'mysql-deep-pagination-001', 'upcoming', 'coming_soon'],
+      ] as const
+      const insert = this.db.prepare('INSERT INTO plan_units(id, plan_id, position, title, objective, case_id, status, availability, completed_at, source_refs_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)')
+      units.forEach(([title, objective, caseId, status, availability], index) => insert.run(randomUUID(), planId, index + 1, title, objective, caseId, status, availability, '[]'))
+      this.db.prepare('INSERT INTO plan_events(id, learner_id, plan_id, plan_unit_id, practice_run_id, type, payload_json, created_at) VALUES (?, ?, ?, NULL, NULL, ?, ?, ?)')
+        .run(randomUUID(), learnerId, planId, 'plan_created', JSON.stringify({ templateKey: 'mysql-performance-v1' }), now)
+    })
+    try { transaction() } catch (error) {
+      if (!(error instanceof Error) || !error.message.includes('UNIQUE')) throw error
+      const concurrent = this.getActivePlan(learnerId, 'mysql-performance-v1')
+      if (concurrent) return concurrent
+      throw error
+    }
+    return this.getPlanForLearner(planId, learnerId)
+  }
+
+  getPlanForLearner(id: string, learnerId: string): LearningPlan {
+    const row = this.db.prepare('SELECT * FROM learning_plans WHERE id = ? AND learner_id = ?').get(id, learnerId) as Row | undefined
+    if (!row) throw new Error(`Plan not found: ${id}`)
+    const units = (this.db.prepare('SELECT * FROM plan_units WHERE plan_id = ? ORDER BY position ASC').all(id) as Row[]).map(unitFrom)
+    return planFrom(row, units)
+  }
+
+  getActivePlan(learnerId: string, templateKey?: string): LearningPlan | null {
+    const row = this.db.prepare(`SELECT * FROM learning_plans WHERE learner_id = ? AND status IN ('confirmed', 'active') ${templateKey ? 'AND template_key = ?' : ''} ORDER BY updated_at DESC, id DESC LIMIT 1`).get(...(templateKey ? [learnerId, templateKey] : [learnerId])) as Row | undefined
+    if (!row) return null
+    const units = (this.db.prepare('SELECT * FROM plan_units WHERE plan_id = ? ORDER BY position ASC').all(text(row, 'id')) as Row[]).map(unitFrom)
+    return planFrom(row, units)
+  }
+
+  listPlanUnits(planId: string): PlanUnit[] {
+    return (this.db.prepare('SELECT * FROM plan_units WHERE plan_id = ? ORDER BY position ASC').all(planId) as Row[]).map(unitFrom)
+  }
+
+  findActivePracticeForUnit(learnerId: string, planUnitId: string): PracticeRun | null {
+    const row = this.db.prepare(`SELECT r.* FROM practice_runs r INNER JOIN plan_units u ON u.id = r.plan_unit_id INNER JOIN learning_plans p ON p.id = u.plan_id WHERE r.learner_id = ? AND r.plan_unit_id = ? AND p.learner_id = ? AND r.status IN ('active', 'ready_to_close', 'resolved') ORDER BY r.updated_at DESC, r.id DESC LIMIT 1`).get(learnerId, planUnitId, learnerId) as Row | undefined
+    return row ? runFrom(row) : null
+  }
+
+  startPlanUnitPractice(input: { learnerId: string; planId: string; planUnitId: string; caseId: PracticeRun['caseId']; labRunId?: string | null }): PracticeRun {
+    const existing = this.findActivePracticeForUnit(input.learnerId, input.planUnitId)
+    if (existing) return existing
+    const unit = this.db.prepare(`SELECT u.* FROM plan_units u INNER JOIN learning_plans p ON p.id = u.plan_id WHERE u.id = ? AND u.plan_id = ? AND p.learner_id = ? AND p.status IN ('confirmed', 'active')`).get(input.planUnitId, input.planId, input.learnerId) as Row | undefined
+    if (!unit) throw new Error('PLAN_UNIT_NOT_FOUND')
+    const id = randomUUID(); const now = new Date().toISOString()
+    this.db.prepare(`INSERT INTO practice_runs(id, learner_id, plan_unit_id, case_id, lab_run_id, stage, status, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, 'observe', 'active', ?, ?)`).run(id, input.learnerId, input.planUnitId, input.caseId, input.labRunId ?? null, now, now)
+    return this.getPracticeRun(id)
+  }
+
+  advancePlanForResolvedRun(run: PracticeRun): LearningPlan {
+    const transaction = this.db.transaction(() => {
+      const current = this.db.prepare(`SELECT p.*, u.id AS current_unit_id FROM learning_plans p INNER JOIN plan_units u ON u.plan_id = p.id WHERE p.id = (SELECT plan_id FROM plan_units WHERE id = ?) AND p.learner_id = ? AND u.id = ?`).get(run.planUnitId, run.learnerId, run.planUnitId) as Row | undefined
+      if (!current) throw new Error('PLAN_NOT_FOUND')
+      const planId = text(current, 'id'); const revision = number(current, 'revision')
+      const alreadyCompleted = this.db.prepare("SELECT 1 FROM plan_events WHERE plan_id = ? AND plan_unit_id = ? AND type = 'plan_unit_completed' LIMIT 1").get(planId, run.planUnitId)
+      if (alreadyCompleted) return
+      const now = new Date().toISOString()
+      this.db.prepare("UPDATE plan_units SET status = 'completed', completed_at = ?, availability = 'available' WHERE id = ? AND status = 'current'").run(now, run.planUnitId)
+      this.db.prepare("UPDATE plan_units SET status = 'current' WHERE id = (SELECT id FROM plan_units WHERE plan_id = ? AND status = 'upcoming' ORDER BY position ASC LIMIT 1)").run(planId)
+      const next = this.db.prepare("SELECT id FROM plan_units WHERE plan_id = ? AND status = 'current' ORDER BY position ASC LIMIT 1").get(planId) as Row | undefined
+      this.db.prepare("UPDATE learning_plans SET revision = ?, status = CASE WHEN ? IS NULL THEN 'completed' ELSE 'active' END, updated_at = ? WHERE id = ? AND revision = ?").run(revision + 1, next?.id ?? null, now, planId, revision)
+      const event = this.db.prepare('INSERT INTO plan_events(id, learner_id, plan_id, plan_unit_id, practice_run_id, type, payload_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
+      event.run(randomUUID(), run.learnerId, planId, run.planUnitId, run.id, 'plan_unit_completed', JSON.stringify({ revision: revision + 1 }), now)
+      if (next) event.run(randomUUID(), run.learnerId, planId, text(next, 'id'), run.id, 'plan_unit_advanced', JSON.stringify({ fromUnitId: run.planUnitId, revision: revision + 1 }), now)
+    })
+    transaction()
+    return this.getPlanForLearner(text(this.db.prepare('SELECT plan_id FROM plan_units WHERE id = ?').get(run.planUnitId) as Row, 'plan_id'), run.learnerId)
   }
 
   createPracticeRun(input: { learnerId: string; planUnitId?: string | null; caseId: PracticeRun['caseId']; labRunId?: string | null }): PracticeRun {

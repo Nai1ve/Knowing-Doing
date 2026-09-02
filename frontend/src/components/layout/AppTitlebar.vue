@@ -1,6 +1,6 @@
 <template>
   <header class="titlebar">
-    <div class="window-title">知行 · Kubernetes 系统学习</div>
+    <div class="window-title">知行 · 工程技术学习</div>
     <div class="window-tools"><span>知乎知识待连接</span><span>林</span></div>
   </header>
 </template>

@@ -13,7 +13,7 @@ const MYSQL_UNITS: Array<{ title: string; objective: string; caseId: CaseId | nu
 export function createPlan(repository: ProductRepository, intake: Intake): LearningPlan {
   const technology = /mysql|数据库|sql/i.test(`${intake.technology} ${intake.goal}`) ? 'MySQL 8' : intake.technology
   const units: Array<Omit<PlanUnit, 'id' | 'planId'>> = MYSQL_UNITS.map((unit, index) => ({
-    ...unit, position: index + 1, status: index === 0 ? 'current' : 'upcoming', sourceRefs: [],
+    ...unit, position: index + 1, status: index === 0 ? 'current' : 'upcoming', availability: unit.caseId && index === 1 ? 'available' : 'coming_soon', completedAt: null, sourceRefs: [],
   }))
   return repository.createPlan({ learnerId: intake.learnerId, intakeId: intake.id, title: `${technology} 工程实践路线`, goal: intake.goal, sourceStatus: 'local_catalog', units })
 }

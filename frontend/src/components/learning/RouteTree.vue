@@ -6,8 +6,8 @@ const emit = defineEmits<{ select: [nodeId: string] }>()
 </script>
 
 <template>
-  <section class="tree-wrap" aria-label="Kubernetes 学习知识树">
-    <button class="tree-root" type="button" @click="emit('select', 'goal')"><small>Target outcome · 总目标</small>独立部署并排查一个服务</button>
+  <section class="tree-wrap" aria-label="MySQL 学习路线">
+    <button class="tree-root" type="button" @click="emit('select', 'goal')"><small>Target outcome · 总目标</small>掌握 MySQL 性能问题的分析与验证</button>
     <div class="tree-branches">
       <section v-for="milestone in milestones" :key="milestone.id" class="tree-branch">
         <button class="tree-phase" :class="milestone.status" type="button" @click="emit('select', milestone.nodes[0]?.id ?? milestone.id)"><small>{{ milestone.index }} · {{ milestone.status === 'completed' ? '已完成' : milestone.status === 'current' ? '进行中' : '未开始' }}</small>{{ milestone.title }}</button>

@@ -1,7 +1,7 @@
 import { computed, ref } from 'vue'
 import { defineStore } from 'pinia'
 import { ApiError } from '@/api/client'
-import { createProductPin, deleteProductPin, executeProductLab, getProductLabAccess, getProductPracticeHistory, getProductSnapshot, reopenProductLab, retryProductTutor, startProductPractice, streamProductTutor, submitProductArtifact, verifyProductPractice } from '@/api/productService'
+import { createProductPin, deleteProductPin, executeProductLab, getProductLabAccess, getProductPracticeHistory, getProductSnapshot, reopenProductLab, retryProductTutor, startPlannedProductPractice, startProductPractice, streamProductTutor, submitProductArtifact, verifyProductPractice } from '@/api/productService'
 import type { LabCaseId, LabExecutionResult } from '@/types/lab'
 import type { ProductPracticeCompletion, ProductPracticeHistoryItem, ProductPracticePin, ProductPracticeRun, ProductPracticeStart, ProductSnapshot, ProductTutorMessage, ProductTutorResponse, ProductTutorSource, ProductTutorStreamEvent } from '@/types/product'
 import { useLabStore } from './lab'
@@ -103,11 +103,11 @@ export const usePracticeStore = defineStore('practice', () => {
     }
   }
 
-  async function start(caseId: LabCaseId, planUnitId?: string) {
+  async function start(planId: string, planUnitId: string) {
     if (starting.value) return
     starting.value = true; error.value = null
     try {
-      const result: ProductPracticeStart = await startProductPractice(caseId, planUnitId)
+      const result: ProductPracticeStart = await startProductPractice(planId, planUnitId)
       run.value = result.practice
       window.localStorage.setItem('zhixing.active.practice.id', result.practice.id)
       window.localStorage.setItem(lastPracticeKey, result.practice.id)
@@ -122,6 +122,22 @@ export const usePracticeStore = defineStore('practice', () => {
         error.value = `当前案例正在排队，第 ${result.queue.position ?? '—'} 位`
         pollLabAccess(result.practice.id)
       }
+    } catch (cause) { error.value = cause instanceof Error ? cause.message : '实践启动失败' } finally { starting.value = false }
+  }
+
+  async function startPlanned(planId: string, planUnitId: string) {
+    if (starting.value) return
+    starting.value = true; error.value = null
+    try {
+      const result: ProductPracticeStart = await startPlannedProductPractice(planId, planUnitId)
+      run.value = result.practice
+      window.localStorage.setItem(activePracticeKey, result.practice.id)
+      window.localStorage.setItem(lastPracticeKey, result.practice.id)
+      if (result.lab) await useLabStore().adoptRun(result.lab.run, result.lab.accessToken)
+      snapshot.value = await getProductSnapshot(result.practice.id)
+      hydrate(snapshot.value)
+      await loadHistory()
+      if (result.queue) { error.value = `当前实践正在排队，第 ${result.queue.position ?? '—'} 位`; void pollLabAccess(result.practice.id) }
     } catch (cause) { error.value = cause instanceof Error ? cause.message : '实践启动失败' } finally { starting.value = false }
   }
 
@@ -245,5 +261,5 @@ export const usePracticeStore = defineStore('practice', () => {
     if (snapshot.value) snapshot.value = { ...snapshot.value, pins: snapshot.value.pins.filter((item) => item.id !== pinId) }
   }
   function clear() { if (queueTimer !== null) window.clearTimeout(queueTimer); queueTimer = null; run.value = null; snapshot.value = null; completion.value = null; messages.value = []; lastTutor.value = null; sources.value = []; tutorFailure.value = null; invocationId.value = null; error.value = null; if (typeof window !== 'undefined') window.localStorage.removeItem(activePracticeKey) }
-  return { run, snapshot, completion, messages, history, historyLoading, sources, tutorFailure, invocationId, lastTutor, starting, restoring, tutorLoading, verifying, error, currentGap, nextQuestion, start, loadHistory, selectHistory, restoreActive, restoreRecord, ask, retryTutor, reopen, execute, verify, addExternal, pin, unpin, clear }
+  return { run, snapshot, completion, messages, history, historyLoading, sources, tutorFailure, invocationId, lastTutor, starting, restoring, tutorLoading, verifying, error, currentGap, nextQuestion, start, startPlanned, loadHistory, selectHistory, restoreActive, restoreRecord, ask, retryTutor, reopen, execute, verify, addExternal, pin, unpin, clear }
 })

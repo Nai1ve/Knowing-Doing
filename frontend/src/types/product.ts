@@ -3,8 +3,8 @@ import type { LabCaseId, LabExecutionResult, LabSessionName } from './lab'
 export type CaseStage = 'observe' | 'hypothesize' | 'inspect' | 'attempt' | 'verify' | 'resolved'
 
 export interface ProductIntake { id: string; learnerId: string; goal: string; technology: string; outcome: string | null; weeklyMinutes: number | null; status: string; createdAt: string; updatedAt: string }
-export interface ProductPlanUnit { id: string; planId: string; position: number; title: string; objective: string; caseId: LabCaseId | null; status: 'upcoming' | 'current' | 'completed'; sourceRefs: string[] }
-export interface ProductPlan { id: string; learnerId: string; intakeId: string; title: string; goal: string; sourceStatus: string; status: string; createdAt: string; updatedAt: string; units: ProductPlanUnit[] }
+export interface ProductPlanUnit { id: string; planId: string; position: number; title: string; objective: string; caseId: LabCaseId | null; status: 'upcoming' | 'current' | 'completed'; availability: 'available' | 'coming_soon'; completedAt: string | null; sourceRefs: string[] }
+export interface ProductPlan { id: string; learnerId: string; intakeId: string; title: string; goal: string; sourceStatus: string; status: string; templateKey: string; revision: number; createdAt: string; updatedAt: string; units: ProductPlanUnit[] }
 export interface ProductPracticeRun { id: string; learnerId: string; planUnitId: string | null; caseId: LabCaseId; labRunId: string | null; stage: CaseStage; hintLevel: number; noProgressCount: number; status: 'active' | 'ready_to_close' | 'resolved' | 'ended'; createdAt: string; updatedAt: string }
 export interface ProductArtifact { id: string; learnerId: string; practiceRunId: string | null; kind: string; sourceKind: string; verificationStatus: string; content: string; metadata: Record<string, unknown>; checksum: string; createdAt: string }
 export interface ProductEvent { id: string; sequence: number; actor: string; type: string; stage: CaseStage; payload: Record<string, unknown>; artifactRefs: string[]; createdAt: string }

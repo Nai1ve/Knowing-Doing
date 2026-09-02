@@ -168,20 +168,37 @@ function optionalString(body: Body, key: string): string | null | undefined {
 function productRunId(request: FastifyRequest): string { return String((request.params as { runId: string }).runId) }
 
 function registerProductRoutes(app: FastifyInstance, service: PracticeService, writingService?: WritingService): void {
+  app.post('/api/product/sample-plans/mysql-performance', async (request, reply) => {
+    reply.code(201).send(service.createMysqlPerformancePlan(learnerId(request)))
+  })
+
+  app.get('/api/product/plans/active', async (request, reply) => {
+    reply.send(service.getActivePlan(learnerId(request)))
+  })
+
+  app.get('/api/product/plans/:planId', async (request, reply) => {
+    reply.send(service.getPlan(learnerId(request), String((request.params as { planId: string }).planId)))
+  })
+
+  app.post('/api/product/plans/:planId/units/:unitId/practice', async (request, reply) => {
+    const params = request.params as { planId: string; unitId: string }
+    const result = await service.startPlannedPractice({ learnerId: learnerId(request), planId: params.planId, planUnitId: params.unitId })
+    reply.code(result.queue ? 202 : 201).send(result)
+  })
+
   app.post('/api/product/intakes', async (request, reply) => {
     const body = productBody(request); const goal = stringField(body, 'goal')
     const weeklyMinutes = body.weeklyMinutes == null ? null : numberField(body, 'weeklyMinutes')
     reply.code(201).send(service.createIntake({ learnerId: learnerId(request), goal, technology: optionalString(body, 'technology') ?? undefined, outcome: optionalString(body, 'outcome'), weeklyMinutes }))
   })
 
-  app.get('/api/product/intakes/:intakeId', async (request, reply) => reply.send(service.getIntake(String((request.params as { intakeId: string }).intakeId))))
-  app.post('/api/product/intakes/:intakeId/plan', async (request, reply) => reply.code(201).send(service.draftPlan(String((request.params as { intakeId: string }).intakeId))))
-  app.post('/api/product/plans/:planId/confirm', async (request, reply) => reply.send(service.confirmPlan(String((request.params as { planId: string }).planId))))
+  app.get('/api/product/intakes/:intakeId', async (request, reply) => reply.send(service.getIntake(learnerId(request), String((request.params as { intakeId: string }).intakeId))))
+  app.post('/api/product/intakes/:intakeId/plan', async (request, reply) => reply.code(201).send(service.draftPlan(learnerId(request), String((request.params as { intakeId: string }).intakeId))))
+  app.post('/api/product/plans/:planId/confirm', async (request, reply) => reply.send(service.confirmPlan(learnerId(request), String((request.params as { planId: string }).planId))))
 
   app.post('/api/product/practice-runs', async (request, reply) => {
-    const body = productBody(request); const caseId = stringField(body, 'caseId')
-    if (!isCaseId(caseId)) throw new LabError('case_not_found', '案例不存在', 404)
-    const result = await service.startPractice({ learnerId: learnerId(request), planUnitId: optionalString(body, 'planUnitId'), caseId })
+    const body = productBody(request); const planId = stringField(body, 'planId'); const planUnitId = stringField(body, 'planUnitId')
+    const result = await service.startPlannedPractice({ learnerId: learnerId(request), planId, planUnitId })
     if (result.queue) return reply.code(202).send(result)
     return reply.code(201).send(result)
   })
