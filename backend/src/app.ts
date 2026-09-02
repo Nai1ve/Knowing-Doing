@@ -300,6 +300,8 @@ function registerProductRoutes(app: FastifyInstance, service: PracticeService, w
 function registerWritingRoutes(app: FastifyInstance, service: WritingService, practiceService: PracticeService): void {
   app.post('/api/product/practice-runs/:runId/writing', async (request, reply) => { practiceService.assertOwnership(productRunId(request), learnerId(request)); reply.code(201).send(service.initialize(productRunId(request))) })
   app.get('/api/product/practice-runs/:runId/writing', async (request, reply) => { practiceService.assertOwnership(productRunId(request), learnerId(request)); reply.send(service.getExisting(productRunId(request))) })
+  app.get('/api/product/practice-runs/:runId/writing/workspace', async (request, reply) => { const runId = productRunId(request); practiceService.assertOwnership(runId, learnerId(request)); reply.send(service.workspace(runId)) })
+  app.post('/api/product/practice-runs/:runId/writing/regenerate', async (request, reply) => { const runId = productRunId(request); practiceService.assertOwnership(runId, learnerId(request)); reply.code(202).send(service.regenerate(runId, optionalString(productBody(request), 'clientRequestId') ?? randomUUID())) })
   app.get('/api/product/practice-runs/:runId/writing/overview', async (request, reply) => {
     const runId = productRunId(request); practiceService.assertOwnership(runId, learnerId(request)); reply.send(service.curationOverview(runId))
   })
@@ -346,6 +348,8 @@ function registerWritingRoutes(app: FastifyInstance, service: WritingService, pr
     const runId = productRunId(request); practiceService.assertOwnership(runId, learnerId(request)); const job = service.getGenerationJob(runId, String((request.params as { jobId: string }).jobId))
     reply.code(202).send(service.startGeneration(runId, job.kind as 'outline' | 'article', job.clientRequestId ?? randomUUID(), true))
   })
+  app.get('/api/product/practice-runs/:runId/writing/draft-runs/:draftId', async (request, reply) => { const runId = productRunId(request); practiceService.assertOwnership(runId, learnerId(request)); reply.send(service.getDraft(runId, String((request.params as { draftId: string }).draftId))) })
+  app.post('/api/product/practice-runs/:runId/writing/draft-runs/:draftId/retry', async (request, reply) => { const runId = productRunId(request); practiceService.assertOwnership(runId, learnerId(request)); reply.code(202).send(service.retryDraft(runId, String((request.params as { draftId: string }).draftId))) })
   app.post('/api/product/practice-runs/:runId/writing/documents/:documentId/confirm', async (request, reply) => {
     const runId = productRunId(request); practiceService.assertOwnership(runId, learnerId(request)); reply.send(service.confirmOutline(runId, String((request.params as { documentId: string }).documentId)))
   })
@@ -356,5 +360,13 @@ function registerWritingRoutes(app: FastifyInstance, service: WritingService, pr
     if (typeof body.content !== 'string') throw new LabError('invalid_request', 'content 必须是字符串', 400)
     const revision = numberField(body, 'revision')
     reply.send(service.editSection(productRunId(request), String((request.params as { documentId: string }).documentId), String((request.params as { sectionId: string }).sectionId), revision, body.content))
+  })
+  app.patch('/api/product/practice-runs/:runId/writing/documents/:documentId/blocks/:blockId', async (request, reply) => {
+    const runId = productRunId(request); practiceService.assertOwnership(runId, learnerId(request)); const body = productBody(request)
+    if (typeof body.content !== 'string') throw new LabError('invalid_request', 'content 必须是字符串', 400)
+    reply.send(service.editBlock(runId, String((request.params as { documentId: string }).documentId), String((request.params as { blockId: string }).blockId), numberField(body, 'revision'), body.content))
+  })
+  app.get('/api/product/practice-runs/:runId/writing/documents/:documentId/blocks/:blockId/evidence', async (request, reply) => {
+    const runId = productRunId(request); practiceService.assertOwnership(runId, learnerId(request)); reply.send(service.blockEvidence(runId, String((request.params as { documentId: string }).documentId), String((request.params as { blockId: string }).blockId)))
   })
 }

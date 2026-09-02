@@ -8,7 +8,7 @@ import { usePlanStore } from '@/stores/plan'
 const route = useRoute()
 const planStore = usePlanStore()
 const currentPage = computed(() => String(route.name ?? 'overview'))
-const isWorkspacePage = computed(() => currentPage.value === 'lesson' || currentPage.value.startsWith('writing-'))
+const isWorkspacePage = computed(() => currentPage.value === 'lesson' || currentPage.value === 'writing' || currentPage.value.startsWith('writing-'))
 const tocItems = computed(() => ({
   overview: [{ label: '总目标', href: '#goal' }, { label: '当前状况', href: '#status' }, { label: '整体路线', href: '#overview-route' }, { label: '当前节点', href: '#current-node' }],
   route: [{ label: '知识树', href: '#route-tree' }, { label: '当前节点', href: '#route-selected' }],

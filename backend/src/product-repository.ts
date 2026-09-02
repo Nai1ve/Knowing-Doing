@@ -5,7 +5,7 @@ import { evaluatePracticeCompletion } from './coach.js'
 import type {
   Artifact, ArtifactKind, ArtifactSourceKind, CaseStage, EventActor, EventType, Intake, LearningPlan,
   LabSegment, Learner, MemoryItem, PathNode, PlanUnit, PracticeEvent, PracticePin, PracticeRun, PracticeSnapshot, SourceItem,
-  StageMemory, TutorInvocation, TutorInvocationStatus, VerificationStatus, WritingCapsuleMember, WritingClusterCapsule, WritingClaim, WritingCluster, WritingClusterDetail, WritingClusterKey, WritingClusterMember, WritingClusterMemberRole, WritingClusterOverview, WritingClusterStatus, WritingClusterSummaryStatus, WritingDocument, WritingEvidencePack, WritingGenerationJob, WritingGenerationKind, WritingGenerationStatus, WritingMaterial, WritingProject, WritingReviewItem, WritingSection,
+  StageMemory, TutorInvocation, TutorInvocationStatus, VerificationStatus, WritingBlockEvidence, WritingCapsuleMember, WritingClusterCapsule, WritingClaim, WritingCluster, WritingClusterDetail, WritingClusterKey, WritingClusterMember, WritingClusterMemberRole, WritingClusterOverview, WritingClusterStatus, WritingClusterSummaryStatus, WritingDocument, WritingEvidencePack, WritingGenerationJob, WritingGenerationKind, WritingGenerationStatus, WritingMaterial, WritingProject, WritingReviewItem, WritingSection, WritingSectionBlock, WritingDraftRun, WritingDraftPhase, WritingDraftStatus,
 } from './product-types.js'
 
 type Row = Record<string, unknown>
@@ -171,11 +171,22 @@ function writingMaterialFrom(row: Row): WritingMaterial {
   }
 }
 
-function writingSectionFrom(row: Row): WritingSection {
+function writingBlockFrom(row: Row): WritingSectionBlock {
+  return {
+    id: text(row, 'id'), documentId: text(row, 'document_id'), sectionId: text(row, 'section_id'), position: number(row, 'position'),
+    content: text(row, 'content'), blockType: text(row, 'block_type') as WritingSectionBlock['blockType'],
+    evidenceRefs: json<string[]>(row.evidence_refs_json, []), sourceRefs: json<string[]>(row.source_refs_json, []),
+    referenceRoles: json<Record<string, WritingSectionBlock['referenceRoles'][string]>>(row.reference_roles_json, {}),
+    revision: number(row, 'revision'), createdAt: text(row, 'created_at'), updatedAt: text(row, 'updated_at'),
+  }
+}
+
+function writingSectionFrom(row: Row, blocks: WritingSectionBlock[] = []): WritingSection {
   return {
     id: text(row, 'id'), documentId: text(row, 'document_id'), sectionKey: text(row, 'section_key'), position: number(row, 'position'),
     title: text(row, 'title'), content: text(row, 'content'), required: Number(row.required) === 1,
     status: text(row, 'status') as WritingSection['status'], evidenceRefs: json<string[]>(row.evidence_refs_json, []), sourceRefs: json<string[]>(row.source_refs_json, []), updatedAt: text(row, 'updated_at'),
+    blocks,
   }
 }
 
@@ -246,6 +257,16 @@ function writingGenerationJobFrom(row: Row): WritingGenerationJob {
   }
 }
 
+function writingDraftRunFrom(row: Row): WritingDraftRun {
+  return {
+    id: text(row, 'id'), projectId: text(row, 'project_id'), inputFingerprint: text(row, 'input_fingerprint'),
+    status: text(row, 'status') as WritingDraftStatus, phase: text(row, 'phase') as WritingDraftPhase,
+    evidencePackId: nullableText(row, 'evidence_pack_id'), outlineJobId: nullableText(row, 'outline_job_id'), articleJobId: nullableText(row, 'article_job_id'),
+    outlineDocumentId: nullableText(row, 'outline_document_id'), articleDocumentId: nullableText(row, 'article_document_id'), attemptCount: number(row, 'attempt_count'),
+    failureCode: nullableText(row, 'failure_code'), failureMessage: nullableText(row, 'failure_message'), createdAt: text(row, 'created_at'), updatedAt: text(row, 'updated_at'), completedAt: nullableText(row, 'completed_at'),
+  }
+}
+
 export interface CreateArtifactInput {
   learnerId: string
   practiceRunId?: string | null
@@ -266,6 +287,20 @@ export interface AppendEventInput {
   payload: Record<string, unknown>
   artifactRefs?: string[]
   clientRequestId?: string | null
+}
+
+interface WritingBlockDraft {
+  content: string
+  position: number
+  blockType?: WritingSectionBlock['blockType']
+  evidenceRefs: string[]
+  sourceRefs: string[]
+  referenceRoles?: WritingSectionBlock['referenceRoles']
+}
+
+function fallbackBlocks(section: { content: string; evidenceRefs: string[]; sourceRefs: string[] }): WritingBlockDraft[] {
+  const lines = section.content.split(/\n{2,}|\n/).map((item) => item.trim()).filter(Boolean)
+  return (lines.length > 0 ? lines : ['']).map((content, position) => ({ content, position, evidenceRefs: section.evidenceRefs, sourceRefs: section.sourceRefs, referenceRoles: Object.fromEntries([...section.evidenceRefs.map((id) => [id, 'inherited']), ...section.sourceRefs.map((id) => [id, 'inherited'])]) as WritingSectionBlock['referenceRoles'] }))
 }
 
 export interface PracticeHistoryRecord {
@@ -849,6 +884,16 @@ export class ProductRepository {
     return (this.db.prepare("SELECT * FROM writing_generation_jobs WHERE status IN ('queued', 'running') ORDER BY created_at ASC").all() as Row[]).map(writingGenerationJobFrom)
   }
 
+  claimWritingDraftRun(id: string): boolean {
+    const result = this.db.prepare("UPDATE writing_draft_runs SET status = 'running', attempt_count = attempt_count + 1, updated_at = ? WHERE id = ? AND status = 'queued'").run(new Date().toISOString(), id)
+    return result.changes > 0
+  }
+
+  recoverWritingDraftRuns(leaseMs: number): void {
+    const threshold = new Date(Date.now() - leaseMs).toISOString()
+    this.db.prepare("UPDATE writing_draft_runs SET status = 'queued', phase = 'indexing', failure_code = 'worker_recovered', failure_message = NULL, updated_at = ? WHERE status = 'running' AND updated_at < ?").run(new Date().toISOString(), threshold)
+  }
+
   recoverWritingGenerationJobs(leaseMs: number): void {
     const threshold = new Date(Date.now() - leaseMs).toISOString()
     this.db.prepare("UPDATE writing_generation_jobs SET status = 'queued', updated_at = ?, failure_code = 'worker_recovered' WHERE status = 'running' AND updated_at < ?").run(new Date().toISOString(), threshold)
@@ -994,6 +1039,18 @@ export class ProductRepository {
     }
   }
 
+  getWritingWorkspaceProject(projectId: string): WritingProject {
+    const row = this.db.prepare('SELECT * FROM writing_projects WHERE id = ?').get(projectId) as Row | undefined
+    if (!row) throw new Error(`Writing project not found: ${projectId}`)
+    const documents = this.listWritingDocuments(projectId).filter((document) => document.kind === 'article')
+    const reviewItems = (this.db.prepare('SELECT * FROM writing_review_items WHERE project_id = ? ORDER BY severity DESC, created_at ASC').all(projectId) as Row[]).map(writingReviewItemFrom)
+    return {
+      id: text(row, 'id'), learnerId: text(row, 'learner_id'), practiceRunId: text(row, 'practice_run_id'), articleType: 'engineering_practice_review',
+      status: text(row, 'status') as WritingProject['status'], evidenceSnapshot: json<WritingProject['evidenceSnapshot']>(row.evidence_snapshot_json, { capturedAt: null, materialIds: [] }), currentEvidencePackId: nullableText(row, 'current_evidence_pack_id'),
+      materials: [], documents, reviewItems, createdAt: text(row, 'created_at'), updatedAt: text(row, 'updated_at'),
+    }
+  }
+
   upsertWritingMaterial(input: Omit<WritingMaterial, 'id' | 'createdAt' | 'projectId'> & { projectId: string }): WritingMaterial {
     const id = randomUUID(); const now = new Date().toISOString()
     this.db.prepare(`INSERT INTO writing_materials(id, project_id, category, ref_type, ref_id, title, excerpt, selected, verification_status, metadata_json, created_at)
@@ -1030,7 +1087,7 @@ export class ProductRepository {
     title: string
     summary: string
     evidencePackId?: string | null
-    sections: Array<Pick<WritingSection, 'sectionKey' | 'position' | 'title' | 'content' | 'required' | 'status' | 'evidenceRefs' | 'sourceRefs'>>
+    sections: Array<Pick<WritingSection, 'sectionKey' | 'position' | 'title' | 'content' | 'required' | 'status' | 'evidenceRefs' | 'sourceRefs'> & { blocks?: WritingBlockDraft[] }>
     claims: Array<{ sectionKey: string; text: string; kind: WritingClaim['kind']; status: WritingClaim['status']; evidenceRefs: string[]; sourceRefs: string[] }>
   }): WritingDocument {
     const documentId = randomUUID(); const now = new Date().toISOString()
@@ -1045,6 +1102,9 @@ export class ProductRepository {
       for (const section of input.sections) {
         const sectionId = randomUUID(); sectionIds.set(section.sectionKey, sectionId)
         insertSection.run(sectionId, documentId, section.sectionKey, section.position, section.title, section.content, section.required ? 1 : 0, section.status, JSON.stringify(section.evidenceRefs), JSON.stringify(section.sourceRefs), now)
+        const blocks = section.blocks?.length ? section.blocks : fallbackBlocks(section)
+        const insertBlock = this.db.prepare(`INSERT INTO writing_section_blocks(id, document_id, section_id, position, content, block_type, evidence_refs_json, source_refs_json, reference_roles_json, revision, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`)
+        for (const block of blocks) insertBlock.run(randomUUID(), documentId, sectionId, block.position, block.content, block.blockType ?? 'paragraph', JSON.stringify(block.evidenceRefs), JSON.stringify(block.sourceRefs), JSON.stringify(block.referenceRoles ?? {}), now, now)
       }
       const insertClaim = this.db.prepare(`INSERT INTO writing_claims(id, document_id, section_id, text, kind, status, evidence_refs_json, source_refs_json, created_at)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
@@ -1068,7 +1128,7 @@ export class ProductRepository {
     evidencePackId: string
     title: string
     summary: string
-    sections: Array<Pick<WritingSection, 'sectionKey' | 'position' | 'title' | 'content' | 'required' | 'status' | 'evidenceRefs' | 'sourceRefs'>>
+    sections: Array<Pick<WritingSection, 'sectionKey' | 'position' | 'title' | 'content' | 'required' | 'status' | 'evidenceRefs' | 'sourceRefs'> & { blocks?: WritingBlockDraft[] }>
     claims: Array<{ sectionKey: string; text: string; kind: WritingClaim['kind']; status: WritingClaim['status']; evidenceRefs: string[]; sourceRefs: string[] }>
     artifactKind: ArtifactKind
     eventType: EventType
@@ -1085,7 +1145,12 @@ export class ProductRepository {
       this.db.prepare(`INSERT INTO writing_documents(id, project_id, kind, revision, status, title, summary, evidence_pack_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
         .run(documentId, input.projectId, input.kind, revision, input.kind === 'outline' ? 'generated' : 'needs_review', input.title, input.summary, input.evidencePackId, now, now)
       const sectionIds = new Map<string, string>(); const insertSection = this.db.prepare(`INSERT INTO writing_sections(id, document_id, section_key, position, title, content, required, status, evidence_refs_json, source_refs_json, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-      for (const section of input.sections) { const sectionId = randomUUID(); sectionIds.set(section.sectionKey, sectionId); insertSection.run(sectionId, documentId, section.sectionKey, section.position, section.title, section.content, section.required ? 1 : 0, section.status, JSON.stringify(section.evidenceRefs), JSON.stringify(section.sourceRefs), now) }
+      for (const section of input.sections) {
+        const sectionId = randomUUID(); sectionIds.set(section.sectionKey, sectionId); insertSection.run(sectionId, documentId, section.sectionKey, section.position, section.title, section.content, section.required ? 1 : 0, section.status, JSON.stringify(section.evidenceRefs), JSON.stringify(section.sourceRefs), now)
+        const blocks = section.blocks?.length ? section.blocks : fallbackBlocks(section)
+        const insertBlock = this.db.prepare(`INSERT INTO writing_section_blocks(id, document_id, section_id, position, content, block_type, evidence_refs_json, source_refs_json, reference_roles_json, revision, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`)
+        for (const block of blocks) insertBlock.run(randomUUID(), documentId, sectionId, block.position, block.content, block.blockType ?? 'paragraph', JSON.stringify(block.evidenceRefs), JSON.stringify(block.sourceRefs), JSON.stringify(block.referenceRoles ?? {}), now, now)
+      }
       const insertClaim = this.db.prepare(`INSERT INTO writing_claims(id, document_id, section_id, text, kind, status, evidence_refs_json, source_refs_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
       for (const claim of input.claims) { const sectionId = sectionIds.get(claim.sectionKey); if (sectionId) insertClaim.run(randomUUID(), documentId, sectionId, claim.text, claim.kind, claim.status, JSON.stringify(claim.evidenceRefs), JSON.stringify(claim.sourceRefs), now) }
       this.db.prepare(`INSERT INTO artifacts(id, learner_id, practice_run_id, kind, source_kind, verification_status, content, metadata_json, checksum, created_at) VALUES (?, ?, ?, ?, 'system', 'model_generated', ?, ?, ?, ?)`)
@@ -1104,9 +1169,10 @@ export class ProductRepository {
   getWritingDocument(documentId: string): WritingDocument {
     const row = this.db.prepare('SELECT * FROM writing_documents WHERE id = ?').get(documentId) as Row | undefined
     if (!row) throw new Error(`Writing document not found: ${documentId}`)
-    const sections = (this.db.prepare('SELECT * FROM writing_sections WHERE document_id = ? ORDER BY position ASC').all(documentId) as Row[]).map(writingSectionFrom)
+    const sections = (this.db.prepare('SELECT * FROM writing_sections WHERE document_id = ? ORDER BY position ASC').all(documentId) as Row[]).map((section) => writingSectionFrom(section))
     const claims = (this.db.prepare('SELECT * FROM writing_claims WHERE document_id = ? ORDER BY created_at ASC').all(documentId) as Row[]).map(writingClaimFrom)
-    return writingDocumentFrom(row, sections, claims)
+    const blocks = (this.db.prepare('SELECT * FROM writing_section_blocks WHERE document_id = ? ORDER BY section_id ASC, position ASC').all(documentId) as Row[]).map(writingBlockFrom)
+    return writingDocumentFrom(row, sections.map((section) => ({ ...section, blocks: blocks.filter((block) => block.sectionId === section.id) })), claims)
   }
 
   listWritingDocuments(projectId: string): WritingDocument[] {
@@ -1118,9 +1184,13 @@ export class ProductRepository {
     const ids = rows.map((row) => text(row, 'id')); const placeholders = ids.map(() => '?').join(', ')
     const sectionRows = this.db.prepare(`SELECT * FROM writing_sections WHERE document_id IN (${placeholders}) ORDER BY position ASC`).all(...ids) as Row[]
     const claimRows = this.db.prepare(`SELECT * FROM writing_claims WHERE document_id IN (${placeholders}) ORDER BY created_at ASC`).all(...ids) as Row[]
+    const blockRows = this.db.prepare(`SELECT * FROM writing_section_blocks WHERE document_id IN (${placeholders}) ORDER BY document_id ASC, section_id ASC, position ASC`).all(...ids) as Row[]
     return rows.map((row) => {
       const documentId = text(row, 'id')
-      const sections = sectionRows.filter((section) => text(section, 'document_id') === documentId).map(writingSectionFrom)
+      const sections = sectionRows.filter((section) => text(section, 'document_id') === documentId).map((section) => {
+        const parsed = writingSectionFrom(section)
+        return { ...parsed, blocks: blockRows.filter((block) => text(block, 'document_id') === documentId && text(block, 'section_id') === parsed.id).map(writingBlockFrom) }
+      })
       const claims = claimRows.filter((claim) => text(claim, 'document_id') === documentId).map(writingClaimFrom)
       return writingDocumentFrom(row, sections, claims)
     })
@@ -1134,10 +1204,95 @@ export class ProductRepository {
       if (updated.changes === 0) throw new Error('WRITING_REVISION_CONFLICT')
       const section = this.db.prepare('UPDATE writing_sections SET content = ?, status = \'confirmed\', updated_at = ? WHERE id = ? AND document_id = ?').run(content, new Date().toISOString(), sectionId, documentId)
       if (section.changes === 0) throw new Error('WRITING_SECTION_NOT_FOUND')
+      this.db.prepare('DELETE FROM writing_section_blocks WHERE document_id = ? AND section_id = ?').run(documentId, sectionId)
+      const source = this.db.prepare('SELECT evidence_refs_json, source_refs_json FROM writing_sections WHERE id = ? AND document_id = ?').get(sectionId, documentId) as Row
+      const blocks = fallbackBlocks({ content, evidenceRefs: json<string[]>(source.evidence_refs_json, []), sourceRefs: json<string[]>(source.source_refs_json, []) })
+      const insertBlock = this.db.prepare(`INSERT INTO writing_section_blocks(id, document_id, section_id, position, content, block_type, evidence_refs_json, source_refs_json, reference_roles_json, revision, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`)
+      for (const block of blocks) insertBlock.run(randomUUID(), documentId, sectionId, block.position, block.content, block.blockType ?? 'paragraph', JSON.stringify(block.evidenceRefs), JSON.stringify(block.sourceRefs), JSON.stringify(block.referenceRoles ?? {}), new Date().toISOString(), new Date().toISOString())
       this.db.prepare("UPDATE writing_claims SET status = 'needs_review' WHERE document_id = ? AND section_id = ?").run(documentId, sectionId)
     })
     result()
     return this.getWritingDocument(documentId)
+  }
+
+  updateWritingBlock(projectId: string, documentId: string, blockId: string, expectedRevision: number, content: string): WritingDocument {
+    const now = new Date().toISOString()
+    const update = this.db.transaction(() => {
+      const block = this.db.prepare(`SELECT b.id, b.section_id FROM writing_section_blocks b INNER JOIN writing_documents d ON d.id = b.document_id WHERE b.id = ? AND b.document_id = ? AND d.project_id = ?`).get(blockId, documentId, projectId) as Row | undefined
+      if (!block) throw new Error('WRITING_BLOCK_NOT_FOUND')
+      const changed = this.db.prepare('UPDATE writing_section_blocks SET content = ?, revision = revision + 1, updated_at = ? WHERE id = ? AND revision = ?').run(content, now, blockId, expectedRevision)
+      if (changed.changes === 0) throw new Error('WRITING_BLOCK_REVISION_CONFLICT')
+      const rows = this.db.prepare('SELECT content FROM writing_section_blocks WHERE section_id = ? ORDER BY position ASC').all(text(block, 'section_id')) as Row[]
+      this.db.prepare('UPDATE writing_sections SET content = ?, status = \'confirmed\', updated_at = ? WHERE id = ? AND document_id = ?').run(rows.map((row) => text(row, 'content')).join('\n\n'), now, text(block, 'section_id'), documentId)
+      const document = this.db.prepare('SELECT kind FROM writing_documents WHERE id = ? AND project_id = ?').get(documentId, projectId) as Row | undefined
+      if (!document) throw new Error('WRITING_DOCUMENT_NOT_FOUND')
+      this.db.prepare('UPDATE writing_documents SET revision = revision + 1, status = CASE WHEN kind = \'article\' THEN \'needs_review\' ELSE status END, updated_at = ? WHERE id = ? AND project_id = ?').run(now, documentId, projectId)
+      this.db.prepare("UPDATE writing_claims SET status = 'needs_review' WHERE document_id = ? AND section_id = ?").run(documentId, text(block, 'section_id'))
+    })
+    update()
+    return this.getWritingDocument(documentId)
+  }
+
+  createWritingDraftRun(projectId: string, inputFingerprint: string): WritingDraftRun {
+    const id = randomUUID(); const now = new Date().toISOString()
+    this.db.prepare(`INSERT INTO writing_draft_runs(id, project_id, input_fingerprint, status, phase, created_at, updated_at) VALUES (?, ?, ?, 'queued', 'indexing', ?, ?) ON CONFLICT(project_id, input_fingerprint) DO NOTHING`).run(id, projectId, inputFingerprint, now, now)
+    return this.getWritingDraftRunByFingerprint(projectId, inputFingerprint)
+  }
+
+  getWritingDraftRunByFingerprint(projectId: string, inputFingerprint: string): WritingDraftRun {
+    const row = this.db.prepare('SELECT * FROM writing_draft_runs WHERE project_id = ? AND input_fingerprint = ?').get(projectId, inputFingerprint) as Row | undefined
+    if (!row) throw new Error('WRITING_DRAFT_RUN_NOT_FOUND')
+    return writingDraftRunFrom(row)
+  }
+
+  getWritingDraftRun(id: string, projectId?: string): WritingDraftRun {
+    const row = this.db.prepare(projectId ? 'SELECT * FROM writing_draft_runs WHERE id = ? AND project_id = ?' : 'SELECT * FROM writing_draft_runs WHERE id = ?').get(...(projectId ? [id, projectId] : [id])) as Row | undefined
+    if (!row) throw new Error('WRITING_DRAFT_RUN_NOT_FOUND')
+    return writingDraftRunFrom(row)
+  }
+
+  getLatestWritingDraftRun(projectId: string): WritingDraftRun | null {
+    const row = this.db.prepare('SELECT * FROM writing_draft_runs WHERE project_id = ? ORDER BY created_at DESC LIMIT 1').get(projectId) as Row | undefined
+    return row ? writingDraftRunFrom(row) : null
+  }
+
+  updateWritingDraftRun(id: string, update: Partial<Pick<WritingDraftRun, 'status' | 'phase' | 'evidencePackId' | 'outlineJobId' | 'articleJobId' | 'outlineDocumentId' | 'articleDocumentId' | 'attemptCount' | 'failureCode' | 'failureMessage' | 'completedAt'>>): WritingDraftRun {
+    const fields: string[] = []; const values: unknown[] = []
+    const map: Record<string, string> = { status: 'status', phase: 'phase', evidencePackId: 'evidence_pack_id', outlineJobId: 'outline_job_id', articleJobId: 'article_job_id', outlineDocumentId: 'outline_document_id', articleDocumentId: 'article_document_id', attemptCount: 'attempt_count', failureCode: 'failure_code', failureMessage: 'failure_message', completedAt: 'completed_at' }
+    for (const [key, column] of Object.entries(map)) if (key in update) { fields.push(`${column} = ?`); values.push(update[key as keyof typeof update] ?? null) }
+    if (fields.length === 0) return this.getWritingDraftRun(id)
+    fields.push('updated_at = ?'); values.push(new Date().toISOString()); values.push(id)
+    this.db.prepare(`UPDATE writing_draft_runs SET ${fields.join(', ')} WHERE id = ?`).run(...values)
+    return this.getWritingDraftRun(id)
+  }
+
+  listPendingWritingDraftRuns(): WritingDraftRun[] {
+    return (this.db.prepare("SELECT * FROM writing_draft_runs WHERE status IN ('queued', 'running') ORDER BY created_at ASC").all() as Row[]).map(writingDraftRunFrom)
+  }
+
+  getWritingBlockEvidence(projectId: string, documentId: string, blockId: string): WritingBlockEvidence {
+    const row = this.db.prepare(`SELECT b.* FROM writing_section_blocks b INNER JOIN writing_documents d ON d.id = b.document_id WHERE b.id = ? AND b.document_id = ? AND d.project_id = ?`).get(blockId, documentId, projectId) as Row | undefined
+    if (!row) throw new Error('WRITING_BLOCK_NOT_FOUND')
+    const block = writingBlockFrom(row); const refs: WritingBlockEvidence['references'] = []
+    const artifactIds = block.evidenceRefs; const sourceIds = block.sourceRefs
+    if (artifactIds.length > 0) {
+      const artifactRefs = artifactIds
+      const placeholders = artifactRefs.map(() => '?').join(', ')
+      const artifacts = artifactRefs.length > 0 ? this.db.prepare(`SELECT id, kind, verification_status, content FROM artifacts WHERE id IN (${placeholders}) AND practice_run_id = (SELECT practice_run_id FROM writing_projects WHERE id = ?)`).all(...artifactRefs, projectId) as Row[] : []
+      for (const artifact of artifacts) refs.push({ refType: 'artifact', refId: text(artifact, 'id'), title: text(artifact, 'kind'), content: text(artifact, 'content'), kind: text(artifact, 'kind'), verificationStatus: text(artifact, 'verification_status'), role: block.referenceRoles[text(artifact, 'id')] ?? 'lab', url: null, author: null })
+    }
+    const pathIds = block.evidenceRefs
+    if (pathIds.length > 0) {
+      const placeholders = pathIds.map(() => '?').join(', ')
+      const paths = this.db.prepare(`SELECT id, title, judgment, outcome FROM path_nodes WHERE id IN (${placeholders}) AND practice_run_id = (SELECT practice_run_id FROM writing_projects WHERE id = ?)`).all(...pathIds, projectId) as Row[]
+      for (const path of paths) refs.push({ refType: 'path_node', refId: text(path, 'id'), title: text(path, 'title'), content: `${text(path, 'judgment')}\n结果：${text(path, 'outcome')}`, kind: 'path_node', verificationStatus: 'path_record', role: block.referenceRoles[text(path, 'id')] ?? 'inherited', url: null, author: null })
+    }
+    if (sourceIds.length > 0) {
+      const placeholders = sourceIds.map(() => '?').join(', ')
+      const sources = this.db.prepare(`SELECT id, title, author, url, excerpt, provider FROM source_items WHERE id IN (${placeholders})`).all(...sourceIds) as Row[]
+      for (const source of sources) refs.push({ refType: 'source', refId: text(source, 'id'), title: text(source, 'title'), content: text(source, 'excerpt'), kind: text(source, 'provider'), verificationStatus: 'source_verified', role: 'source', url: text(source, 'url'), author: nullableText(source, 'author') })
+    }
+    return { block, references: refs }
   }
 
   replaceWritingReviewItems(projectId: string, items: Array<Omit<WritingReviewItem, 'id' | 'projectId' | 'createdAt'>>): WritingReviewItem[] {

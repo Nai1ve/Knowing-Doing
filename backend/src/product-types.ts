@@ -33,6 +33,8 @@ export type WritingClusterSummaryStatus = 'rule_ready' | 'queued' | 'running' | 
 export type WritingCapsuleStatus = 'rule_ready' | 'queued' | 'running' | 'model_ready' | 'model_failed'
 export type WritingGenerationKind = 'capsule' | 'outline' | 'article'
 export type WritingGenerationStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'interrupted'
+export type WritingDraftPhase = 'indexing' | 'outlining' | 'drafting' | 'checking' | 'ready' | 'failed'
+export type WritingDraftStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'interrupted'
 
 export type ArtifactKind = 'user_message' | 'sql' | 'explain' | 'benchmark' | 'result_set' | 'error' | 'external_text' | 'tutor_reply' | 'source_excerpt' | 'note_outline' | 'article_draft'
 export type ArtifactSourceKind = 'user' | 'lab' | 'tutor' | 'zhihu' | 'global_search' | 'system'
@@ -318,6 +320,39 @@ export interface WritingSection {
   evidenceRefs: string[]
   sourceRefs: string[]
   updatedAt: string
+  blocks: WritingSectionBlock[]
+}
+
+export interface WritingSectionBlock {
+  id: string
+  documentId: string
+  sectionId: string
+  position: number
+  content: string
+  blockType: 'paragraph' | 'code' | 'quote'
+  evidenceRefs: string[]
+  sourceRefs: string[]
+  referenceRoles: Record<string, 'lab' | 'source' | 'inherited'>
+  revision: number
+  createdAt: string
+  updatedAt: string
+}
+
+export interface WritingEvidenceReference {
+  refType: 'artifact' | 'source' | 'path_node'
+  refId: string
+  title: string
+  content: string
+  kind: string
+  verificationStatus: string
+  role: 'lab' | 'source' | 'inherited'
+  url: string | null
+  author: string | null
+}
+
+export interface WritingBlockEvidence {
+  block: WritingSectionBlock
+  references: WritingEvidenceReference[]
 }
 
 export interface WritingClaim {
@@ -489,4 +524,29 @@ export interface WritingGenerationJob {
   createdAt: string
   updatedAt: string
   completedAt: string | null
+}
+
+export interface WritingDraftRun {
+  id: string
+  projectId: string
+  inputFingerprint: string
+  status: WritingDraftStatus
+  phase: WritingDraftPhase
+  evidencePackId: string | null
+  outlineJobId: string | null
+  articleJobId: string | null
+  outlineDocumentId: string | null
+  articleDocumentId: string | null
+  attemptCount: number
+  failureCode: string | null
+  failureMessage: string | null
+  createdAt: string
+  updatedAt: string
+  completedAt: string | null
+}
+
+export interface WritingWorkspace {
+  practiceRunId: string
+  draftRun: WritingDraftRun | null
+  project: WritingProject | null
 }

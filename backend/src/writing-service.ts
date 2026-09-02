@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import type { Artifact, PracticeRun, PracticeSnapshot, SourceItem, WritingClaim, WritingDocument, WritingMaterial, WritingProject, WritingReviewItem, WritingSection, WritingGenerationJob, WritingGenerationKind, WritingEvidencePack } from './product-types.js'
+import type { Artifact, PracticeRun, PracticeSnapshot, SourceItem, WritingClaim, WritingDocument, WritingMaterial, WritingProject, WritingReviewItem, WritingSection, WritingGenerationJob, WritingGenerationKind, WritingEvidencePack, WritingDraftRun, WritingDraftPhase, WritingDraftStatus, WritingBlockEvidence } from './product-types.js'
 import { ProductRepository } from './product-repository.js'
 import { CurationService } from './curation-service.js'
 import { WritingAgentError, type WritingAgentDraft, type WritingAgentProvider } from './writing-agent.js'
@@ -136,17 +136,25 @@ function validateAgentDraft(value: WritingAgentDraft, pack: WritingEvidencePack)
       if (section.content.trim() && section.evidenceRefs.length === 0 && section.sourceRefs.length === 0) throw new WritingAgentError('agent_unsupported_section', '写作 Agent 返回了没有依据的章节内容', false)
     if (section.evidenceRefs.some((ref) => typeof ref !== 'string' || !allowed.has(`artifact:${ref}`) && !allowed.has(`path_node:${ref}`))) throw new WritingAgentError('agent_unknown_evidence_ref', '写作 Agent 引用了不存在的实验证据', false)
     if (section.sourceRefs.some((ref) => typeof ref !== 'string' || !allowedSources.has(ref))) throw new WritingAgentError('agent_unknown_source_ref', '写作 Agent 引用了不在证据包中的来源', false)
+    const blocks = Array.isArray(section.blocks) ? section.blocks : [{ content: section.content, evidenceRefs: section.evidenceRefs, sourceRefs: section.sourceRefs }]
+    if (blocks.length > 12) throw new WritingAgentError('agent_too_many_blocks', '写作 Agent 返回的段落数量超出限制', false)
+    for (const block of blocks) {
+      if (!block || typeof block !== 'object' || typeof block.content !== 'string' || block.content.length > 3000 || !Array.isArray(block.evidenceRefs) || !Array.isArray(block.sourceRefs)) throw new WritingAgentError('agent_invalid_block', '写作 Agent 返回了无效段落', false)
+      if (block.content.trim() && block.evidenceRefs.length === 0 && block.sourceRefs.length === 0) throw new WritingAgentError('agent_unsupported_block', '写作 Agent 返回了没有依据的事实段落', false)
+      if (block.evidenceRefs.some((ref) => typeof ref !== 'string' || !allowed.has(`artifact:${ref}`) && !allowed.has(`path_node:${ref}`)) || block.sourceRefs.some((ref) => typeof ref !== 'string' || !allowedSources.has(ref))) throw new WritingAgentError('agent_invalid_block_ref', '写作 Agent 的段落引用不在证据包中', false)
+    }
   }
   for (const claim of value.claims) {
     if (!claim || typeof claim !== 'object' || typeof claim.sectionKey !== 'string' || !expected.has(claim.sectionKey) || typeof claim.text !== 'string' || !Array.isArray(claim.evidenceRefs) || !Array.isArray(claim.sourceRefs)) throw new WritingAgentError('agent_invalid_claim', '写作 Agent 返回了无效断言', false)
     if (claim.evidenceRefs.length === 0 && claim.sourceRefs.length === 0) throw new WritingAgentError('agent_unsupported_claim', '写作 Agent 返回了没有依据的事实断言', false)
     if (claim.evidenceRefs.some((ref) => typeof ref !== 'string' || !allowed.has(`artifact:${ref}`) && !allowed.has(`path_node:${ref}`)) || claim.sourceRefs.some((ref) => typeof ref !== 'string' || !allowedSources.has(ref))) throw new WritingAgentError('agent_invalid_claim_ref', '写作 Agent 的断言引用不在证据包中', false)
   }
-  return { title: typeof value.title === 'string' ? value.title.trim().slice(0, 120) : '工程实践复盘', summary: typeof value.summary === 'string' ? value.summary.trim().slice(0, 300) : '', sections: sections.map((section) => ({ ...section, required: expected.get(section.sectionKey)!.required, evidenceRefs: [...new Set(section.evidenceRefs)], sourceRefs: [...new Set(section.sourceRefs)], status: 'generated' as const })), claims: value.claims.map((claim) => ({ ...claim, evidenceRefs: [...new Set(claim.evidenceRefs)], sourceRefs: [...new Set(claim.sourceRefs)] })) }
+  return { title: typeof value.title === 'string' ? value.title.trim().slice(0, 120) : '工程实践复盘', summary: typeof value.summary === 'string' ? value.summary.trim().slice(0, 300) : '', sections: sections.map((section) => ({ ...section, required: expected.get(section.sectionKey)!.required, evidenceRefs: [...new Set(section.evidenceRefs)], sourceRefs: [...new Set(section.sourceRefs)], blocks: (Array.isArray(section.blocks) ? section.blocks : [{ content: section.content, evidenceRefs: section.evidenceRefs, sourceRefs: section.sourceRefs }]).map((block, index) => ({ position: index, content: block.content, blockType: block.blockType ?? 'paragraph', evidenceRefs: [...new Set(block.evidenceRefs)], sourceRefs: [...new Set(block.sourceRefs)], referenceRoles: block.referenceRoles ?? Object.fromEntries([...block.evidenceRefs.map((id) => [id, 'lab']), ...block.sourceRefs.map((id) => [id, 'source'])]) })) as WritingAgentDraft['sections'][number]['blocks'], status: 'generated' as const })), claims: value.claims.map((claim) => ({ ...claim, evidenceRefs: [...new Set(claim.evidenceRefs)], sourceRefs: [...new Set(claim.sourceRefs)] })) }
 }
 
 export class WritingService {
   private readonly processing = new Set<string>()
+  private readonly draftProcessing = new Set<string>()
 
   constructor(private readonly repository: ProductRepository, private readonly curation = new CurationService(repository), private readonly agent?: WritingAgentProvider) {}
 
@@ -235,10 +243,10 @@ export class WritingService {
     return this.repository.getWritingProject(project.id)
   }
 
-  private createEvidencePack(project: WritingProject): WritingEvidencePack {
+  private createEvidencePack(project: WritingProject, automatic = false): WritingEvidencePack {
     const overview = this.curation.overview(project.id, project.practiceRunId)
-    if (!overview.canGenerateOutline) throw new WritingConflictError('请先确认“问题与目标”“关键证据”和“候选方案与验证”三个聚类')
-    const accepted = overview.clusters.filter((cluster) => cluster.status === 'accepted')
+    if (!automatic && !overview.canGenerateOutline) throw new WritingConflictError('请先确认“问题与目标”“关键证据”和“候选方案与验证”三个聚类')
+    const accepted = automatic ? overview.clusters : overview.clusters.filter((cluster) => cluster.status === 'accepted')
       const capsules = this.repository.listCurrentWritingCapsules(project.id)
       const capsuleById = new Map(capsules.map((capsule) => [capsule.id, capsule]))
     const keys = new Map(overview.clusters.map((cluster) => [cluster.id, cluster.clusterKey]))
@@ -262,12 +270,12 @@ export class WritingService {
     return this.repository.createWritingEvidencePack(project.id, inputFingerprint, snapshot, nodes.length, JSON.stringify(snapshot).length)
   }
 
-  startGeneration(runId: string, kind: WritingGenerationKind, clientRequestId: string, retryFailed = false): WritingGenerationJob {
+  startGeneration(runId: string, kind: WritingGenerationKind, clientRequestId: string, retryFailed = false, automatic = false): WritingGenerationJob {
     const run = this.run(runId); const project = this.ensureProject(runId); let pack: WritingEvidencePack; let outline: WritingDocument | undefined; let outlineDocumentId: string | null = null
-    if (kind === 'outline') pack = this.createEvidencePack(project)
+    if (kind === 'outline') pack = this.createEvidencePack(project, automatic)
     else {
       outline = project.documents.find((document) => document.kind === 'outline')
-      if (!outline || outline.status !== 'confirmed') throw new WritingConflictError('请先确认大纲后再生成文章')
+      if (!outline || (!automatic && outline.status !== 'confirmed')) throw new WritingConflictError('请先确认大纲后再生成文章')
       if (!outline.evidencePackId) throw new WritingConflictError('当前大纲没有绑定证据包，请重新生成大纲')
       pack = this.repository.getWritingEvidencePack(outline.evidencePackId, project.id); outlineDocumentId = outline.id
     }
@@ -291,7 +299,118 @@ export class WritingService {
 
   resumeGenerations(leaseMs = 10 * 60 * 1000): void {
     this.repository.recoverWritingGenerationJobs(leaseMs)
+    this.repository.recoverWritingDraftRuns(leaseMs)
     for (const job of this.repository.listPendingWritingGenerationJobs()) void this.processGeneration(job.id)
+    for (const draft of this.repository.listPendingWritingDraftRuns()) void this.processDraftRun(draft.id)
+  }
+
+  enqueueAutoDraft(runId: string): WritingDraftRun | null {
+    const run = this.run(runId)
+    if (run.status !== 'resolved') return null
+    const project = this.ensureProject(runId)
+    this.curation.prepareRun(runId)
+    const snapshot = this.repository.snapshot(runId)
+    const inputFingerprint = createHash('sha256').update(JSON.stringify({ runId, events: snapshot.events.map((event) => [event.id, event.sequence]), artifacts: snapshot.artifacts.map((artifact) => [artifact.id, artifact.checksum]), pathNodes: snapshot.pathNodes.map((node) => node.id) })).digest('hex')
+    const existing = this.repository.getLatestWritingDraftRun(project.id)
+    if (existing?.inputFingerprint === inputFingerprint) { if (existing.status === 'queued') void this.processDraftRun(existing.id); return existing }
+    const draft = this.repository.createWritingDraftRun(project.id, inputFingerprint)
+    void this.processDraftRun(draft.id)
+    return draft
+  }
+
+  regenerate(runId: string, clientRequestId: string): WritingDraftRun {
+    const run = this.run(runId); if (run.status !== 'resolved') throw new WritingConflictError('实践尚未完成，暂不能生成文章')
+    const project = this.ensureProject(runId); this.curation.prepareRun(runId); const snapshot = this.repository.snapshot(runId)
+    const inputFingerprint = createHash('sha256').update(JSON.stringify({ request: clientRequestId, events: snapshot.events.map((event) => event.id), artifacts: snapshot.artifacts.map((artifact) => [artifact.id, artifact.checksum]), pathNodes: snapshot.pathNodes.map((node) => node.id) })).digest('hex')
+    const draft = this.repository.createWritingDraftRun(project.id, inputFingerprint)
+    void this.processDraftRun(draft.id)
+    return draft
+  }
+
+  workspace(runId: string) {
+    const run = this.run(runId)
+    const projectId = this.repository.getWritingProjectIdByRun(runId) ?? this.repository.createWritingProject({ learnerId: run.learnerId, practiceRunId: runId }).id
+    const project = this.repository.getWritingWorkspaceProject(projectId)
+    let draft = this.repository.getLatestWritingDraftRun(project.id)
+    const article = project.documents.find((document) => document.kind === 'article')
+    if (!draft && article) {
+      draft = this.repository.createWritingDraftRun(project.id, `legacy:${article.id}`)
+      this.repository.updateWritingDraftRun(draft.id, { status: 'succeeded', phase: 'ready', articleDocumentId: article.id, completedAt: article.updatedAt })
+      draft = this.repository.getWritingDraftRun(draft.id)
+    } else if (run.status === 'resolved' && !draft) draft = this.enqueueAutoDraft(runId)
+    return { practiceRunId: runId, draftRun: draft, project: draft && (draft.status === 'succeeded' || draft.phase === 'ready' || article) ? this.repository.getWritingWorkspaceProject(project.id) : null }
+  }
+
+  retryDraft(runId: string, draftId: string): WritingDraftRun {
+    const project = this.getExisting(runId); const draft = this.repository.getWritingDraftRun(draftId, project.id)
+    if (draft.status !== 'failed' && draft.status !== 'interrupted') throw new WritingConflictError('当前写作任务不需要重试')
+    this.repository.updateWritingDraftRun(draft.id, { status: 'queued', phase: 'indexing', failureCode: null, failureMessage: null, completedAt: null })
+    void this.processDraftRun(draft.id)
+    return this.repository.getWritingDraftRun(draft.id)
+  }
+
+  getDraft(runId: string, draftId: string): WritingDraftRun {
+    const project = this.getExisting(runId)
+    try { return this.repository.getWritingDraftRun(draftId, project.id) } catch { throw new WritingNotFoundError('自动写作任务不存在') }
+  }
+
+  blockEvidence(runId: string, documentId: string, blockId: string): WritingBlockEvidence {
+    const project = this.getExisting(runId)
+    try { return this.repository.getWritingBlockEvidence(project.id, documentId, blockId) } catch { throw new WritingNotFoundError('文章段落或证据不存在') }
+  }
+
+  editBlock(runId: string, documentId: string, blockId: string, revision: number, content: string): WritingDocument {
+    const project = this.getExisting(runId)
+    try { return this.repository.updateWritingBlock(project.id, documentId, blockId, revision, content) } catch (error) {
+      if (error instanceof Error && error.message === 'WRITING_BLOCK_REVISION_CONFLICT') throw new WritingConflictError('文章段落已在其他标签页更新，请刷新后对比')
+      if (error instanceof Error && ['WRITING_BLOCK_NOT_FOUND', 'WRITING_DOCUMENT_NOT_FOUND'].includes(error.message)) throw new WritingNotFoundError('文章段落不存在')
+      throw error
+    }
+  }
+
+  private async waitGeneration(jobId: string): Promise<WritingGenerationJob> {
+    for (let attempt = 0; attempt < 240; attempt += 1) {
+      const job = this.repository.getWritingGenerationJob(jobId)
+      if (job.status === 'succeeded') return job
+      if (job.status === 'failed' || job.status === 'interrupted') throw new WritingAgentError(job.failureCode ?? 'generation_failed', job.failureMessage ?? '写作生成失败')
+      await new Promise((resolve) => setTimeout(resolve, 250))
+    }
+    throw new WritingAgentError('generation_timeout', '自动写作超过等待时间')
+  }
+
+  private async processDraftRun(draftId: string): Promise<void> {
+    if (this.draftProcessing.has(draftId)) return
+    this.draftProcessing.add(draftId)
+    try {
+      if (!this.agent) {
+        const draft = this.repository.getWritingDraftRun(draftId)
+        if (draft.status === 'queued' || draft.status === 'running') {
+          this.repository.updateWritingDraftRun(draftId, { status: 'failed', phase: 'failed', failureCode: 'model_not_configured', failureMessage: '模型服务尚未配置' })
+          console.warn('[zhixing-writing] draft_failed', { draftId, code: 'model_not_configured', attemptCount: draft.attemptCount })
+        }
+        return
+      }
+      if (!this.repository.claimWritingDraftRun(draftId)) return
+      let draft = this.repository.getWritingDraftRun(draftId); const project = this.repository.getWritingProject(draft.projectId)
+      const pack = this.createEvidencePack(project, true)
+      draft = this.repository.updateWritingDraftRun(draftId, { phase: 'outlining', evidencePackId: pack.id })
+      const outlineJob = this.startGeneration(project.practiceRunId, 'outline', `draft:${draft.id}:outline`, true, true)
+      this.repository.updateWritingDraftRun(draftId, { outlineJobId: outlineJob.id })
+      const finishedOutline = await this.waitGeneration(outlineJob.id)
+      if (!finishedOutline.resultDocumentId) throw new WritingAgentError('outline_missing_document', '大纲生成没有产生文档', false)
+      draft = this.repository.updateWritingDraftRun(draftId, { phase: 'drafting', outlineDocumentId: finishedOutline.resultDocumentId })
+      const articleJob = this.startGeneration(project.practiceRunId, 'article', `draft:${draft.id}:article`, true, true)
+      this.repository.updateWritingDraftRun(draftId, { articleJobId: articleJob.id })
+      const finishedArticle = await this.waitGeneration(articleJob.id)
+      if (!finishedArticle.resultDocumentId) throw new WritingAgentError('article_missing_document', '文章生成没有产生文档', false)
+      this.repository.updateWritingDraftRun(draftId, { phase: 'checking', articleDocumentId: finishedArticle.resultDocumentId })
+      this.review(project.practiceRunId)
+      this.repository.updateWritingDraftRun(draftId, { status: 'succeeded', phase: 'ready', articleDocumentId: finishedArticle.resultDocumentId, completedAt: new Date().toISOString(), failureCode: null, failureMessage: null })
+    } catch (error) {
+      const draft = this.repository.getWritingDraftRun(draftId)
+      this.repository.updateWritingDraftRun(draftId, { status: 'failed', phase: 'failed', failureCode: error instanceof WritingAgentError ? error.code : 'draft_generation_failed', failureMessage: error instanceof Error ? error.message : '自动写作失败' })
+      console.warn('[zhixing-writing] draft_failed', { draftId, code: error instanceof WritingAgentError ? error.code : 'draft_generation_failed', attemptCount: draft.attemptCount })
+    } finally { this.draftProcessing.delete(draftId) }
   }
 
   private async processGeneration(jobId: string): Promise<void> {
@@ -305,7 +424,7 @@ export class WritingService {
       const outline = outlineDocument ? { title: outlineDocument.title, summary: outlineDocument.summary, sections: outlineDocument.sections.map((section) => ({ sectionKey: section.sectionKey, title: section.title, content: section.content, required: section.required, evidenceRefs: section.evidenceRefs, sourceRefs: section.sourceRefs })), claims: outlineDocument.claims.map((claim) => ({ sectionKey: outlineDocument.sections.find((section) => section.id === claim.sectionId)?.sectionKey ?? 'evidence', text: claim.text, kind: claim.kind, evidenceRefs: claim.evidenceRefs, sourceRefs: claim.sourceRefs })) } satisfies WritingAgentDraft : undefined
       if (job.kind === 'capsule') throw new WritingAgentError('unsupported_generation_kind', '不支持直接生成胶囊文档', false)
       const draft = validateAgentDraft(await this.agent.generate({ kind: job.kind, evidencePack: pack, outline }), pack); const content = draft.sections.map((section) => `## ${section.title}\n${section.content}`).join('\n\n')
-      const sections = draft.sections.map((section) => ({ ...section, position: sectionTemplate.findIndex((item) => item.key === section.sectionKey) + 1, status: 'generated' as const }))
+      const sections = draft.sections.map((section) => ({ ...section, position: sectionTemplate.findIndex((item) => item.key === section.sectionKey) + 1, status: 'generated' as const, blocks: section.blocks?.map((block, position) => ({ ...block, position })) }))
       const claims = draft.claims.map((claim) => ({ ...claim, status: 'supported' as const }))
       const document = this.repository.persistWritingGeneration({ jobId: job.id, attemptCount: job.attemptCount, projectId: job.projectId, learnerId: project.learnerId, practiceRunId: project.practiceRunId, kind: job.kind, evidencePackId: pack.id, title: draft.title, summary: draft.summary, sections, claims, artifactKind: job.kind === 'outline' ? 'note_outline' : 'article_draft', eventType: job.kind === 'outline' ? 'note_outline_generated' : 'article_draft_generated', stage: this.run(project.practiceRunId).stage, artifactContent: content, projectStatus: job.kind === 'outline' ? 'outline_review' : 'article_review' })
       if (job.kind === 'article') this.review(project.practiceRunId)

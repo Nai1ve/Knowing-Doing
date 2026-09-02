@@ -345,4 +345,63 @@ describe('product repository', () => {
     expect(repository.getWritingEvidencePack(firstPackId, repository.getWritingProjectByRun(run.id)!.id).status).toBe('superseded')
     expect(documents[0]!.evidencePackId).not.toBe(firstPackId)
   }))
+
+  it('automatically chains indexing, outline, article, and checking after resolution', async () => withRepositoryAsync(async (repository) => {
+    repository.ensureLearner('learner-1')
+    const run = repository.createPracticeRun({ learnerId: 'learner-1', caseId: 'mysql-order-list-index-001' })
+    const artifact = repository.createArtifact({ learnerId: run.learnerId, practiceRunId: run.id, kind: 'explain', sourceKind: 'lab', verificationStatus: 'verified_lab', content: 'type=ALL key=NULL rows=100000', metadata: {} })
+    repository.updatePracticeRun(run.id, { stage: 'resolved', status: 'resolved' })
+    const agent: WritingAgentProvider = { providerName: 'test', modelName: 'test-model', generate: vi.fn(async () => agentDraft(artifact.id)) }
+    const service = new WritingService(repository, new CurationService(repository), agent)
+    const first = service.enqueueAutoDraft(run.id)
+    const second = service.enqueueAutoDraft(run.id)
+    expect(first?.id).toBe(second?.id)
+    await vi.waitFor(() => expect(service.workspace(run.id).draftRun?.phase).toBe('ready'))
+    const workspace = service.workspace(run.id)
+    expect(workspace.project?.documents.some((document) => document.kind === 'article')).toBe(true)
+    expect(agent.generate).toHaveBeenCalledTimes(2)
+    const article = workspace.project!.documents.find((document) => document.kind === 'article')!
+    const block = article.sections[0]!.blocks[0]!
+    expect(service.blockEvidence(run.id, article.id, block.id).references[0]?.refId).toBe(artifact.id)
+
+    const edited = service.editBlock(run.id, article.id, block.id, block.revision, '用户保留的手工修改。')
+    const editedBlock = edited.sections[0]!.blocks[0]!
+    expect(editedBlock.content).toBe('用户保留的手工修改。')
+    expect(() => service.editBlock(run.id, article.id, block.id, block.revision, '过期版本不应覆盖。')).toThrow(WritingConflictError)
+
+    const regenerated = service.regenerate(run.id, 'regenerate-request')
+    await vi.waitFor(() => expect(service.workspace(run.id).draftRun?.id).toBe(regenerated.id))
+    await vi.waitFor(() => expect(repository.getWritingDraftRun(regenerated.id).phase).toBe('ready'))
+    expect(repository.getWritingDocument(article.id).sections[0]!.blocks[0]!.content).toBe('用户保留的手工修改。')
+    const articleCount = repository.db.prepare("SELECT COUNT(*) AS count FROM writing_documents WHERE project_id = ? AND kind = 'article'").get(workspace.project!.id) as { count: number }
+    expect(articleCount.count).toBe(2)
+    const draftPlan = repository.db.prepare('EXPLAIN QUERY PLAN SELECT * FROM writing_draft_runs WHERE project_id = ? ORDER BY created_at DESC LIMIT 1').all(workspace.project!.id) as Array<{ detail: string }>
+    expect(draftPlan.some((row) => row.detail.includes('idx_writing_draft_runs_project_created'))).toBe(true)
+  }))
+
+  it('starts automatic writing from verify and fails transparently without a model', async () => withRepositoryAsync(async (repository) => {
+    repository.ensureLearner('learner-1')
+    const run = repository.createPracticeRun({ learnerId: 'learner-1', caseId: 'mysql-order-list-index-001' })
+    const startedAt = (offset: number) => new Date(Date.UTC(2026, 0, 1, 0, 0, offset)).toISOString()
+    const executions = [
+      { kind: 'explain' as const, statement: 'EXPLAIN SELECT * FROM orders', result: { kind: 'result_set' as const, columns: ['type', 'key', 'rows', 'Extra'], rows: [['ALL', null, 100000, 'Using where']], truncated: false, rawOutput: 'type=ALL key=NULL rows=100000 Extra=Using where' } },
+      { kind: 'result_set' as const, statement: 'SELECT * FROM orders', result: { kind: 'result_set' as const, columns: ['id'], rows: [[1]], truncated: false, rawOutput: '1' } },
+      { kind: 'sql' as const, statement: 'CREATE INDEX idx_orders_user ON orders(user_id)', result: { kind: 'command' as const, affectedRows: 0, truncated: false, rawOutput: 'Query OK' } },
+      { kind: 'explain' as const, statement: 'EXPLAIN SELECT * FROM orders', result: { kind: 'result_set' as const, columns: ['type', 'key', 'rows', 'Extra'], rows: [['ref', 'idx_orders_user', 1, 'Using index']], truncated: false, rawOutput: 'type=ref key=idx_orders_user rows=1 Extra=Using index' } },
+      { kind: 'result_set' as const, statement: 'SELECT * FROM orders', result: { kind: 'result_set' as const, columns: ['id'], rows: [[1]], truncated: false, rawOutput: '1' } },
+    ]
+    for (const [index, execution] of executions.entries()) {
+      const artifact = repository.createArtifact({ learnerId: run.learnerId, practiceRunId: run.id, kind: execution.kind, sourceKind: 'lab', verificationStatus: 'verified_lab', content: execution.result.rawOutput, metadata: { execution: { executionId: `execution-${index}`, runId: 'lab-1', caseId: run.caseId, revision: 1, clientRequestId: `request-${index}`, session: 'default', statement: execution.statement, status: 'succeeded', startedAt: startedAt(index), durationMs: 1, result: execution.result } } })
+      repository.appendEvent({ learnerId: run.learnerId, practiceRunId: run.id, actor: 'lab', type: 'evidence_captured', stage: 'verify', payload: { artifactKind: execution.kind }, artifactRefs: [artifact.id] })
+    }
+    const writing = new WritingService(repository)
+    const onResolved = vi.fn((runId: string) => writing.enqueueAutoDraft(runId))
+    const practice = new PracticeService(repository, {} as LabScheduler, new TutorEngine({} as LabConfig), undefined, undefined, onResolved)
+
+    const result = practice.verify(run.id)
+    expect(result.run.status).toBe('resolved')
+    expect(onResolved).toHaveBeenCalledOnce()
+    await vi.waitFor(() => expect(writing.workspace(run.id).draftRun?.phase).toBe('failed'))
+    expect(writing.workspace(run.id).draftRun?.failureCode).toBe('model_not_configured')
+  }))
 })

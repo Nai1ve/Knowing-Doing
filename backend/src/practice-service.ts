@@ -48,7 +48,7 @@ export class PracticeService {
   private readonly pendingQueues = new Map<string, string>()
   private readonly runLocks = new Map<string, Promise<void>>()
 
-  constructor(private readonly repository: ProductRepository, private readonly scheduler: LabScheduler, private readonly tutor: TutorEngine, private readonly retrieval?: RetrievalService, private readonly curation?: CurationService) {}
+  constructor(private readonly repository: ProductRepository, private readonly scheduler: LabScheduler, private readonly tutor: TutorEngine, private readonly retrieval?: RetrievalService, private readonly curation?: CurationService, private readonly onPracticeResolved?: (runId: string) => void) {}
 
   private async withRunLock<T>(runId: string, action: () => Promise<T>): Promise<T> {
     const previous = this.runLocks.get(runId) ?? Promise.resolve()
@@ -373,6 +373,7 @@ export class PracticeService {
     if (decision.outcome === 'resolved') {
       this.repository.upsertMemory({ learnerId: run.learnerId, category: 'capability', topic: 'mysql-query-optimization', status: 'active', statement: '能够基于执行计划、SQL 尝试和结果集证据验证一次 MySQL 查询优化。', scope: run.caseId, confidence: 0.7, evidenceRefs: snapshot.artifacts.filter((artifact) => artifact.verificationStatus === 'verified_lab').map((artifact) => artifact.id), userNote: null })
       this.curation?.prepareRun(runId)
+      this.onPracticeResolved?.(runId)
     }
     const finalSnapshot = this.repository.snapshot(runId)
     return { run: updated, decision, snapshot: finalSnapshot, completion: evaluatePracticeCompletion(updated, finalSnapshot) }

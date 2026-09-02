@@ -8,6 +8,15 @@ export interface WritingAgentSection {
   required: boolean
   evidenceRefs: string[]
   sourceRefs: string[]
+  blocks?: WritingAgentBlock[]
+}
+
+export interface WritingAgentBlock {
+  content: string
+  blockType?: 'paragraph' | 'code' | 'quote'
+  evidenceRefs: string[]
+  sourceRefs: string[]
+  referenceRoles?: Record<string, 'lab' | 'source' | 'inherited'>
 }
 
 export interface WritingAgentClaim {
@@ -74,7 +83,7 @@ export class DeepSeekWritingAgent implements WritingAgentProvider {
       const response = await fetch(`${this.config.modelBaseUrl.replace(/\/$/, '')}/chat/completions`, {
         method: 'POST', signal: controller.signal, headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${this.config.modelApiKey}` },
         body: JSON.stringify({ model: this.config.modelName, temperature: 0.15, stream: false, thinking: { type: 'disabled' }, response_format: { type: 'json_object' }, messages: [
-            { role: 'system', content: `${system} 返回对象格式：{title,summary,sections:[{sectionKey,title,content,required,evidenceRefs,sourceRefs}],claims:[{sectionKey,text,kind,evidenceRefs,sourceRefs}]}。sections 必须包含以下 10 个必需章节，sectionKey 必须逐字使用英文键名且不可合并、改名或省略：context（问题背景）、symptom（现象与线索）、hypothesis（我的初始判断）、evidence（证据与排查）、attempts（尝试与判断转折）、solution（最终方案）、verification（结果验证）、principles（原理与可迁移方法）、boundaries（适用边界与代价）、reproduction（可复现步骤）。sources（来源与证据索引）是可选章节，可以省略。每个章节都必须有 title、content、required、evidenceRefs、sourceRefs 字段；没有依据的内容请留空或明确写成待验证项并附可用引用。不要返回 Markdown 代码围栏、思维过程或其他字段。` },
+            { role: 'system', content: `${system} 返回对象格式：{title,summary,sections:[{sectionKey,title,content,required,evidenceRefs,sourceRefs,blocks:[{content,blockType,evidenceRefs,sourceRefs,referenceRoles}]}],claims:[{sectionKey,text,kind,evidenceRefs,sourceRefs}]}。sections 必须包含以下 10 个必需章节，sectionKey 必须逐字使用英文键名且不可合并、改名或省略：context（问题背景）、symptom（现象与线索）、hypothesis（我的初始判断）、evidence（证据与排查）、attempts（尝试与判断转折）、solution（最终方案）、verification（结果验证）、principles（原理与可迁移方法）、boundaries（适用边界与代价）、reproduction（可复现步骤）。sources（来源与证据索引）是可选章节，可以省略。每个章节都必须有 title、content、required、evidenceRefs、sourceRefs、blocks 字段；blocks 必须按文章阅读顺序拆分段落，每个事实性 block 至少有一条引用。evidenceRefs 只能引用证据包节点，sourceRefs 只能引用证据包来源，referenceRoles 中 lab/source/inherited 只能描述引用类型，不得新增引用。没有依据的内容请明确写成待验证项并附可用引用。不要返回 Markdown 代码围栏、思维过程或其他字段。` },
           { role: 'user', content: JSON.stringify({ kind: input.kind, evidencePack: input.evidencePack.snapshot, outline: input.outline ?? null }) },
         ] }),
       })

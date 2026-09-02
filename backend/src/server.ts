@@ -19,7 +19,7 @@ const writingService = new WritingService(productRepository, curation, new DeepS
 writingService.resumeGenerations()
 const { app, scheduler } = buildApp({
   config,
-  practiceServiceFactory: (labScheduler) => new PracticeService(productRepository, labScheduler, new TutorEngine(config), retrieval, curation),
+  practiceServiceFactory: (labScheduler) => new PracticeService(productRepository, labScheduler, new TutorEngine(config), retrieval, curation, (runId) => { writingService.enqueueAutoDraft(runId) }),
   writingServiceFactory: () => writingService,
   runtimeStatus: async () => ({ model: { configured: Boolean(config.modelBaseUrl && config.modelApiKey), name: config.modelName }, zhihu: { configured: Boolean(config.zhihuCliPath), executable: await new ZhihuCliProvider(config).isAvailable(), lastRetrieval: null } }),
 })
