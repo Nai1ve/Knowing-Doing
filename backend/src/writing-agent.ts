@@ -67,6 +67,15 @@ export interface NarrativeWritingAgentProvider extends WritingAgentProvider {
   humanize(markdown: string): Promise<string>
 }
 
+const NARRATIVE_WRITING_SYSTEM_PROMPT = `你正在以第一人称写一篇真实实践复盘。
+根据当前实践写一篇约 3000 到 4000 字的中文文章。重点写清：用户原本要解决的问题，过程怎样推进，哪些信息改变了判断，做过什么尝试，最后得出了什么结论，以及其中值得理解的知识。
+
+文章不是过程记录的简单罗列。写作时要根据实践中出现的概念、命令、输出和决策，主动补充读者理解当前问题所必需的背景知识：第一次出现重要术语时，用简洁的语言解释它是什么；出现工具输出或指标时，解释关键字段代表什么、应该怎样阅读以及它如何影响判断，例如遇到执行计划时说明关键字段和分析路径；出现方案选择时，解释为什么选择它、还有哪些常见选择、适用条件、失效方式和代价，例如索引、缓存、队列或并发方案。背景知识要紧贴当前叙事，用来解释当前的现象和决策，不要扩写成脱离实践的教科书，也不要为了凑篇幅堆砌概念。上述规则适用于任何技术领域，不要把文章写成某一种数据库、语言或固定案例的模板。
+
+可以使用你已有的通用技术知识补充这些解释，并结合当前实践资料中的具体内容。区分“这次实践实际观察到的结果”和“可以迁移到其他场景的一般原理”：不要把没有发生的操作、没有出现的结果写成这次实践已经验证的事实；必要时用“通常”“一般来说”“可以进一步验证”等自然表达。不要因此省略对读者有帮助的背景解释。
+
+文章结构完全由你决定。不要套固定目录，不要输出写作说明，不要提及 Agent、证据包、工具或内部流程。你可以主动检索当前实践的完整记录。需要保留回查关系时，在对应文字后使用 [[ref:<type>:<id>]]。输出完整 Markdown 正文。`
+
 function normalizeJson(value: string): string {
   return value.replace(/<think(?:ing)?>([\s\S]*?)<\/(?:think|thinking)>/gi, '').replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim()
 }
@@ -167,7 +176,7 @@ export class DeepSeekWritingAgent implements WritingAgentProvider {
       { type: 'function', function: { name: 'get_related_evidence', description: '读取与一个证据条目相关的记录', parameters: { type: 'object', properties: { ref: { type: 'string' } }, required: ['ref'] } } },
     ] as Array<Record<string, unknown>>
     const messages: Array<Record<string, unknown>> = [
-      { role: 'system', content: '你正在以第一人称写一篇真实实践复盘。根据当前实践写一篇约 3000 到 4000 字的中文文章。重点写清：用户原本要解决的问题，过程怎样推进，哪些信息改变了判断，做过什么尝试，最后得出了什么结论，以及其中值得理解的知识。文章结构完全由你决定。不要套固定目录，不要输出写作说明，不要提及 Agent、证据包、工具或内部流程。你可以主动检索当前实践的完整记录。需要保留回查关系时，在对应文字后使用 [[ref:<type>:<id>]]。输出完整 Markdown 正文。' },
+      { role: 'system', content: NARRATIVE_WRITING_SYSTEM_PROMPT },
       { role: 'user', content: JSON.stringify({ practice: input.evidencePack.snapshot && { practiceRunId: (input.evidencePack.snapshot as { practiceRunId?: unknown }).practiceRunId, itemCount: input.items.length }, evidenceIndex: input.items.map((item) => ({ ref: `${item.refType}:${item.refId}`, kind: item.kind, title: item.title, excerpt: item.body.slice(0, 360), createdAt: item.createdAt })), instruction: '先按需反查，再直接输出完整 Markdown。证据索引只用于定位，细节可用工具读取。' }) },
     ]
     for (let round = 0; round < 12; round += 1) {

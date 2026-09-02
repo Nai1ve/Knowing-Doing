@@ -40,4 +40,20 @@ describe('DeepSeekWritingAgent', () => {
       expect(fetchMock).toHaveBeenCalledTimes(3)
     } finally { vi.unstubAllGlobals() }
   })
+
+  it('asks the narrative agent to explain relevant background knowledge in context', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ choices: [{ message: { content: '文章正文' } }] }), { status: 200 }))
+    vi.stubGlobal('fetch', fetchMock)
+    try {
+      await new DeepSeekWritingAgent(config).generateNarrative({ evidencePack: pack, items: [] })
+      const request = JSON.parse(fetchMock.mock.calls[0][1].body as string) as { messages: Array<{ role: string; content: string }> }
+      const systemPrompt = request.messages.find((message) => message.role === 'system')?.content ?? ''
+      expect(systemPrompt).toContain('主动补充读者理解当前问题所必需的背景知识')
+      expect(systemPrompt).toContain('关键字段代表什么、应该怎样阅读以及它如何影响判断')
+      expect(systemPrompt).toContain('遇到执行计划时说明关键字段和分析路径')
+      expect(systemPrompt).toContain('索引、缓存、队列或并发方案')
+      expect(systemPrompt).toContain('适用于任何技术领域')
+      expect(systemPrompt).toContain('不要扩写成脱离实践的教科书')
+    } finally { vi.unstubAllGlobals() }
+  })
 })
