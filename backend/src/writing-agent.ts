@@ -1,5 +1,8 @@
 import type { LabConfig } from './config.js'
-import type { WritingEvidencePack, WritingGenerationKind } from './product-types.js'
+import fs from 'node:fs'
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
+import type { WritingEvidenceItem, WritingEvidencePack, WritingGenerationKind } from './product-types.js'
 
 export interface WritingAgentSection {
   sectionKey: string
@@ -53,6 +56,17 @@ export interface WritingAgentProvider {
   generate(input: WritingAgentInput): Promise<WritingAgentDraft>
 }
 
+export interface NarrativeWritingAgentInput {
+  evidencePack: WritingEvidencePack
+  items: WritingEvidenceItem[]
+  searchEvidence?: (query: string, limit: number) => WritingEvidenceItem[]
+}
+
+export interface NarrativeWritingAgentProvider extends WritingAgentProvider {
+  generateNarrative(input: NarrativeWritingAgentInput): Promise<string>
+  humanize(markdown: string): Promise<string>
+}
+
 function normalizeJson(value: string): string {
   return value.replace(/<think(?:ing)?>([\s\S]*?)<\/(?:think|thinking)>/gi, '').replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim()
 }
@@ -63,6 +77,31 @@ function contentFrom(payload: unknown): string {
   if (typeof content === 'string') return content
   if (Array.isArray(content)) return content.filter((part): part is { type?: unknown; text?: unknown } => Boolean(part) && typeof part === 'object').map((part) => typeof part.text === 'string' ? part.text : '').join('')
   throw new WritingAgentError('model_empty_output', '写作 Agent 没有返回内容')
+}
+
+function responseMessage(payload: unknown): { content?: unknown; tool_calls?: Array<{ id?: unknown; function?: { name?: unknown; arguments?: unknown } }> } {
+  const choice = (payload as { choices?: Array<{ message?: { content?: unknown; tool_calls?: unknown } }> }).choices?.[0]
+  const message = choice?.message
+  if (!message || typeof message !== 'object') throw new WritingAgentError('model_empty_output', '写作 Agent 没有返回消息')
+  return message as { content?: unknown; tool_calls?: Array<{ id?: unknown; function?: { name?: unknown; arguments?: unknown } }> }
+}
+
+function narrativeContent(value: unknown): string {
+  const content = typeof value === 'string' ? value : Array.isArray(value) ? value.filter((part): part is { text?: unknown } => Boolean(part) && typeof part === 'object').map((part) => typeof part.text === 'string' ? part.text : '').join('') : ''
+  const cleaned = content.replace(/<think(?:ing)?>([\s\S]*?)<\/(?:think|thinking)>/gi, '').replace(/<\|(?:thinking|reasoning)[\s\S]*?<\|end(?:thinking|reasoning)\|>/gi, '').trim()
+  if (!cleaned) throw new WritingAgentError('model_empty_output', '写作 Agent 没有返回文章内容')
+  return cleaned.replace(/^```(?:markdown|md)?\s*/i, '').replace(/\s*```$/, '').trim()
+}
+
+function skillPrompt(): string {
+  const candidates = [
+    path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../vendor/skills/humanizer-zh/SKILL.md'),
+    path.resolve(process.cwd(), 'vendor/skills/humanizer-zh/SKILL.md'),
+  ]
+  for (const candidate of candidates) {
+    try { return fs.readFileSync(candidate, 'utf8') } catch { /* build output may use the cwd fallback */ }
+  }
+  throw new WritingAgentError('humanizer_skill_missing', 'Humanizer-zh skill 未安装', false)
 }
 
 export class DeepSeekWritingAgent implements WritingAgentProvider {
@@ -100,5 +139,73 @@ export class DeepSeekWritingAgent implements WritingAgentProvider {
       clearTimeout(timeout)
       console.info('[zhixing-writing]', { kind: input.kind, model: this.config.modelName, elapsedMs: Date.now() - startedAt })
     }
+  }
+
+  private async complete(messages: Array<Record<string, unknown>>, tools?: Array<Record<string, unknown>>): Promise<unknown> {
+    if (!this.config.modelBaseUrl || !this.config.modelApiKey) throw new WritingAgentError('model_not_configured', '模型服务尚未配置', false)
+    const controller = new AbortController(); const timeout = setTimeout(() => controller.abort(), this.config.modelTimeoutMs)
+    try {
+      const response = await fetch(`${this.config.modelBaseUrl.replace(/\/$/, '')}/chat/completions`, {
+        method: 'POST', signal: controller.signal, headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${this.config.modelApiKey}` },
+        body: JSON.stringify({ model: this.config.modelName, temperature: 0.35, stream: false, thinking: { type: 'disabled' }, messages, ...(tools ? { tools, tool_choice: 'auto' } : {}) }),
+      })
+      if (!response.ok) throw new WritingAgentError(`model_http_${response.status}`, `模型服务返回 HTTP ${response.status}`, response.status >= 500 || response.status === 429)
+      return response.json()
+    } catch (error) {
+      if (error instanceof WritingAgentError) throw error
+      if (error instanceof Error && error.name === 'AbortError') throw new WritingAgentError('model_timeout', '写作 Agent 请求超时')
+      throw new WritingAgentError('model_request_failed', error instanceof Error ? error.message : '写作 Agent 请求失败')
+    } finally { clearTimeout(timeout) }
+  }
+
+  async generateNarrative(input: NarrativeWritingAgentInput): Promise<string> {
+    const itemsByRef = new Map(input.items.map((item) => [`${item.refType}:${item.refId}`, item]))
+    const tools = [
+      { type: 'function', function: { name: 'search_evidence', description: '在当前实践的证据中检索相关记录', parameters: { type: 'object', properties: { query: { type: 'string' }, limit: { type: 'integer' } }, required: ['query'] } } },
+      { type: 'function', function: { name: 'read_evidence', description: '读取指定证据条目的完整内容', parameters: { type: 'object', properties: { refs: { type: 'array', items: { type: 'string' } } }, required: ['refs'] } } },
+      { type: 'function', function: { name: 'get_practice_timeline', description: '按时间查看当前实践的过程记录', parameters: { type: 'object', properties: { limit: { type: 'integer' } } } } },
+      { type: 'function', function: { name: 'get_related_evidence', description: '读取与一个证据条目相关的记录', parameters: { type: 'object', properties: { ref: { type: 'string' } }, required: ['ref'] } } },
+    ] as Array<Record<string, unknown>>
+    const messages: Array<Record<string, unknown>> = [
+      { role: 'system', content: '你正在以第一人称写一篇真实实践复盘。根据当前实践写一篇约 3000 到 4000 字的中文文章。重点写清：用户原本要解决的问题，过程怎样推进，哪些信息改变了判断，做过什么尝试，最后得出了什么结论，以及其中值得理解的知识。文章结构完全由你决定。不要套固定目录，不要输出写作说明，不要提及 Agent、证据包、工具或内部流程。你可以主动检索当前实践的完整记录。需要保留回查关系时，在对应文字后使用 [[ref:<type>:<id>]]。输出完整 Markdown 正文。' },
+      { role: 'user', content: JSON.stringify({ practice: input.evidencePack.snapshot && { practiceRunId: (input.evidencePack.snapshot as { practiceRunId?: unknown }).practiceRunId, itemCount: input.items.length }, evidenceIndex: input.items.map((item) => ({ ref: `${item.refType}:${item.refId}`, kind: item.kind, title: item.title, excerpt: item.body.slice(0, 360), createdAt: item.createdAt })), instruction: '先按需反查，再直接输出完整 Markdown。证据索引只用于定位，细节可用工具读取。' }) },
+    ]
+    for (let round = 0; round < 12; round += 1) {
+      const payload = await this.complete(messages, tools); const message = responseMessage(payload); const calls = Array.isArray(message.tool_calls) ? message.tool_calls : []
+      if (calls.length === 0) return narrativeContent(message.content)
+      console.info('[zhixing-writing] narrative_tools', { round: round + 1, names: calls.map((call) => typeof call.function?.name === 'string' ? call.function.name : 'unknown') })
+      messages.push({ role: 'assistant', content: typeof message.content === 'string' ? message.content : null, tool_calls: calls })
+      for (const call of calls) {
+        const name = typeof call.function?.name === 'string' ? call.function.name : ''
+        let args: Record<string, unknown> = {}
+        try { args = typeof call.function?.arguments === 'string' ? JSON.parse(call.function.arguments) as Record<string, unknown> : {} } catch { args = {} }
+        let result: unknown
+        if (name === 'search_evidence') {
+          const query = typeof args.query === 'string' ? args.query.toLowerCase() : ''
+          const limit = Math.min(Math.max(Number(args.limit) || 8, 1), 12)
+          const matches = input.searchEvidence ? input.searchEvidence(query, limit) : input.items.filter((item) => `${item.title}\n${item.body}`.toLowerCase().includes(query)).slice(0, limit)
+          result = matches.map((item) => ({ ref: `${item.refType}:${item.refId}`, kind: item.kind, title: item.title, excerpt: item.body.slice(0, 600) }))
+        } else if (name === 'read_evidence') {
+          const refs = Array.isArray(args.refs) ? args.refs.filter((ref): ref is string => typeof ref === 'string') : []
+          result = refs.map((ref) => { const item = itemsByRef.get(ref); return item ? { ref, kind: item.kind, title: item.title, body: item.body, metadata: item.metadata } : { ref, missing: true } })
+        } else if (name === 'get_practice_timeline') {
+          const limit = Math.min(Math.max(Number(args.limit) || 30, 1), 60)
+          result = input.items.slice().sort((a, b) => a.createdAt.localeCompare(b.createdAt)).slice(0, limit).map((item) => ({ ref: `${item.refType}:${item.refId}`, kind: item.kind, title: item.title, body: item.body.slice(0, 500), createdAt: item.createdAt }))
+        } else if (name === 'get_related_evidence') {
+          const ref = typeof args.ref === 'string' ? args.ref : ''
+          const item = itemsByRef.get(ref)
+          const refs = new Set([ref, ...((item?.metadata.relatedRefs as string[] | undefined) ?? [])])
+          result = input.items.filter((candidate) => refs.has(`${candidate.refType}:${candidate.refId}`) || candidate.metadata.relatedRef === ref).slice(0, 20).map((candidate) => ({ ref: `${candidate.refType}:${candidate.refId}`, kind: candidate.kind, title: candidate.title, excerpt: candidate.body.slice(0, 600) }))
+        } else result = { error: 'unknown_tool' }
+        messages.push({ role: 'tool', tool_call_id: typeof call.id === 'string' ? call.id : `tool-${round}`, name, content: JSON.stringify(result) })
+      }
+    }
+    throw new WritingAgentError('draft_tool_limit', '写作 Agent 的反查次数已达到上限')
+  }
+
+  async humanize(markdown: string): Promise<string> {
+    const system = `${skillPrompt()}\n\n你现在处理一篇知行生成的中文工程实践复盘。只输出润色后的完整 Markdown，保留 Markdown 结构、代码块和 [[ref:...]] 标记，不要解释改了什么。`
+    const payload = await this.complete([{ role: 'system', content: system }, { role: 'user', content: markdown }])
+    return narrativeContent(responseMessage(payload).content)
   }
 }

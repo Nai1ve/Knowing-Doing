@@ -31,9 +31,9 @@ export type WritingClusterStatus = 'pending' | 'accepted' | 'rejected'
 export type WritingClusterMemberRole = 'primary' | 'supporting' | 'duplicate' | 'context'
 export type WritingClusterSummaryStatus = 'rule_ready' | 'queued' | 'running' | 'model_ready' | 'model_failed'
 export type WritingCapsuleStatus = 'rule_ready' | 'queued' | 'running' | 'model_ready' | 'model_failed'
-export type WritingGenerationKind = 'capsule' | 'outline' | 'article'
+export type WritingGenerationKind = 'capsule' | 'outline' | 'article' | 'draft' | 'humanize'
 export type WritingGenerationStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'interrupted'
-export type WritingDraftPhase = 'indexing' | 'outlining' | 'drafting' | 'checking' | 'ready' | 'failed'
+export type WritingDraftPhase = 'indexing' | 'outlining' | 'drafting' | 'humanizing' | 'checking' | 'ready' | 'failed'
 export type WritingDraftStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'interrupted'
 
 export type ArtifactKind = 'user_message' | 'sql' | 'explain' | 'benchmark' | 'result_set' | 'error' | 'external_text' | 'tutor_reply' | 'source_excerpt' | 'note_outline' | 'article_draft'
@@ -329,7 +329,7 @@ export interface WritingSectionBlock {
   sectionId: string
   position: number
   content: string
-  blockType: 'paragraph' | 'code' | 'quote'
+  blockType: 'heading' | 'paragraph' | 'code' | 'quote' | 'list'
   evidenceRefs: string[]
   sourceRefs: string[]
   referenceRoles: Record<string, 'lab' | 'source' | 'inherited'>
@@ -338,8 +338,23 @@ export interface WritingSectionBlock {
   updatedAt: string
 }
 
+export interface WritingDocumentBlock {
+  id: string
+  documentId: string
+  position: number
+  content: string
+  blockType: 'heading' | 'paragraph' | 'code' | 'quote' | 'list'
+  evidenceRefs: string[]
+  sourceRefs: string[]
+  referenceRoles: Record<string, 'lab' | 'source' | 'inherited'>
+  referenceMarkers: string[]
+  revision: number
+  createdAt: string
+  updatedAt: string
+}
+
 export interface WritingEvidenceReference {
-  refType: 'artifact' | 'source' | 'path_node'
+  refType: 'artifact' | 'event' | 'source' | 'path_node'
   refId: string
   title: string
   content: string
@@ -351,7 +366,7 @@ export interface WritingEvidenceReference {
 }
 
 export interface WritingBlockEvidence {
-  block: WritingSectionBlock
+  block: WritingSectionBlock | (WritingDocumentBlock & { sectionId: null })
   references: WritingEvidenceReference[]
 }
 
@@ -387,8 +402,11 @@ export interface WritingDocument {
   title: string
   summary: string
   evidencePackId: string | null
+  format: 'sectioned' | 'narrative'
+  contentMarkdown: string
   sections: WritingSection[]
   claims: WritingClaim[]
+  blocks: WritingDocumentBlock[]
   createdAt: string
   updatedAt: string
 }
@@ -506,6 +524,19 @@ export interface WritingEvidencePack {
   createdAt: string
 }
 
+export interface WritingEvidenceItem {
+  id: string
+  projectId: string
+  evidencePackId: string
+  refType: 'artifact' | 'event' | 'path_node' | 'source'
+  refId: string
+  kind: string
+  title: string
+  body: string
+  createdAt: string
+  metadata: Record<string, unknown>
+}
+
 export interface WritingGenerationJob {
   id: string
   projectId: string
@@ -521,6 +552,7 @@ export interface WritingGenerationJob {
   failureCode: string | null
   failureMessage: string | null
   resultDocumentId: string | null
+  outputContent: string | null
   createdAt: string
   updatedAt: string
   completedAt: string | null
@@ -535,6 +567,8 @@ export interface WritingDraftRun {
   evidencePackId: string | null
   outlineJobId: string | null
   articleJobId: string | null
+  draftJobId: string | null
+  humanizeJobId: string | null
   outlineDocumentId: string | null
   articleDocumentId: string | null
   attemptCount: number

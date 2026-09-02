@@ -88,7 +88,7 @@ export const useWritingStore = defineStore('writing', () => {
   }
 
   function currentBlock(blockId: string): ProductWritingBlock | null {
-    return article.value?.sections.flatMap((section) => section.blocks).find((block) => block.id === blockId) ?? null
+    return article.value?.blocks.find((block) => block.id === blockId) ?? article.value?.sections.flatMap((section) => section.blocks).find((block) => block.id === blockId) ?? null
   }
 
   async function persistBlock(block: ProductWritingBlock, content: string) {

@@ -22,7 +22,7 @@ onBeforeUnmount(() => writingStore.dispose())
 
 function copyMarkdown() {
   const document = writingStore.article; if (!document) return
-  const markdown = [`# ${document.title}`, '', document.summary, '', ...document.sections.flatMap((section) => [`## ${section.title}`, ...section.blocks.map((block) => block.content), ''])].join('\n')
+  const markdown = document.contentMarkdown || [`# ${document.title}`, '', document.summary, '', ...document.sections.flatMap((section) => [`## ${section.title}`, ...section.blocks.map((block) => block.content), ''])].join('\n')
   void navigator.clipboard.writeText(markdown)
 }
 function editBlock(block: ProductWritingBlock, content: string, immediate = false) { writingStore.queueBlockSave(block, content, immediate) }

@@ -5,7 +5,7 @@ import { evaluatePracticeCompletion } from './coach.js'
 import type {
   Artifact, ArtifactKind, ArtifactSourceKind, CaseStage, EventActor, EventType, Intake, LearningPlan,
   LabSegment, Learner, MemoryItem, PathNode, PlanUnit, PracticeEvent, PracticePin, PracticeRun, PracticeSnapshot, SourceItem,
-  StageMemory, TutorInvocation, TutorInvocationStatus, VerificationStatus, WritingBlockEvidence, WritingCapsuleMember, WritingClusterCapsule, WritingClaim, WritingCluster, WritingClusterDetail, WritingClusterKey, WritingClusterMember, WritingClusterMemberRole, WritingClusterOverview, WritingClusterStatus, WritingClusterSummaryStatus, WritingDocument, WritingEvidencePack, WritingGenerationJob, WritingGenerationKind, WritingGenerationStatus, WritingMaterial, WritingProject, WritingReviewItem, WritingSection, WritingSectionBlock, WritingDraftRun, WritingDraftPhase, WritingDraftStatus,
+  StageMemory, TutorInvocation, TutorInvocationStatus, VerificationStatus, WritingBlockEvidence, WritingEvidenceReference, WritingCapsuleMember, WritingClusterCapsule, WritingClaim, WritingCluster, WritingClusterDetail, WritingClusterKey, WritingClusterMember, WritingClusterMemberRole, WritingClusterOverview, WritingClusterStatus, WritingClusterSummaryStatus, WritingDocument, WritingDocumentBlock, WritingEvidenceItem, WritingEvidencePack, WritingGenerationJob, WritingGenerationKind, WritingGenerationStatus, WritingMaterial, WritingProject, WritingReviewItem, WritingSection, WritingSectionBlock, WritingDraftRun, WritingDraftPhase, WritingDraftStatus,
 } from './product-types.js'
 
 type Row = Record<string, unknown>
@@ -181,6 +181,23 @@ function writingBlockFrom(row: Row): WritingSectionBlock {
   }
 }
 
+function writingDocumentBlockFrom(row: Row): WritingDocumentBlock {
+  return {
+    id: text(row, 'id'), documentId: text(row, 'document_id'), position: number(row, 'position'), content: text(row, 'content'),
+    blockType: text(row, 'block_type') as WritingDocumentBlock['blockType'], evidenceRefs: json<string[]>(row.evidence_refs_json, []),
+    sourceRefs: json<string[]>(row.source_refs_json, []), referenceRoles: json<WritingDocumentBlock['referenceRoles']>(row.reference_roles_json, {}), referenceMarkers: json<string[]>(row.reference_markers_json, []),
+    revision: number(row, 'revision'), createdAt: text(row, 'created_at'), updatedAt: text(row, 'updated_at'),
+  }
+}
+
+function writingEvidenceItemFrom(row: Row): WritingEvidenceItem {
+  return {
+    id: text(row, 'id'), projectId: text(row, 'project_id'), evidencePackId: text(row, 'evidence_pack_id'),
+    refType: text(row, 'ref_type') as WritingEvidenceItem['refType'], refId: text(row, 'ref_id'), kind: text(row, 'kind'),
+    title: text(row, 'title'), body: text(row, 'body'), createdAt: text(row, 'created_at'), metadata: json<Record<string, unknown>>(row.metadata_json, {}),
+  }
+}
+
 function writingSectionFrom(row: Row, blocks: WritingSectionBlock[] = []): WritingSection {
   return {
     id: text(row, 'id'), documentId: text(row, 'document_id'), sectionKey: text(row, 'section_key'), position: number(row, 'position'),
@@ -198,8 +215,8 @@ function writingClaimFrom(row: Row): WritingClaim {
   }
 }
 
-function writingDocumentFrom(row: Row, sections: WritingSection[], claims: WritingClaim[]): WritingDocument {
-  return { id: text(row, 'id'), projectId: text(row, 'project_id'), kind: text(row, 'kind') as WritingDocument['kind'], revision: number(row, 'revision'), status: text(row, 'status') as WritingDocument['status'], title: text(row, 'title'), summary: text(row, 'summary'), evidencePackId: nullableText(row, 'evidence_pack_id'), sections, claims, createdAt: text(row, 'created_at'), updatedAt: text(row, 'updated_at') }
+function writingDocumentFrom(row: Row, sections: WritingSection[], claims: WritingClaim[], blocks: WritingDocumentBlock[] = []): WritingDocument {
+  return { id: text(row, 'id'), projectId: text(row, 'project_id'), kind: text(row, 'kind') as WritingDocument['kind'], revision: number(row, 'revision'), status: text(row, 'status') as WritingDocument['status'], title: text(row, 'title'), summary: text(row, 'summary'), evidencePackId: nullableText(row, 'evidence_pack_id'), format: (nullableText(row, 'format') ?? 'sectioned') as WritingDocument['format'], contentMarkdown: nullableText(row, 'content_markdown') ?? '', sections, claims, blocks, createdAt: text(row, 'created_at'), updatedAt: text(row, 'updated_at') }
 }
 
 function writingReviewItemFrom(row: Row): WritingReviewItem {
@@ -253,7 +270,7 @@ function writingEvidencePackFrom(row: Row): WritingEvidencePack {
 function writingGenerationJobFrom(row: Row): WritingGenerationJob {
   return {
     id: text(row, 'id'), projectId: text(row, 'project_id'), kind: text(row, 'kind') as WritingGenerationKind, inputFingerprint: text(row, 'input_fingerprint'), clientRequestId: nullableText(row, 'client_request_id'), evidencePackId: nullableText(row, 'evidence_pack_id'), outlineDocumentId: nullableText(row, 'outline_document_id'),
-    status: text(row, 'status') as WritingGenerationStatus, attemptCount: number(row, 'attempt_count'), provider: nullableText(row, 'provider'), model: nullableText(row, 'model'), failureCode: nullableText(row, 'failure_code'), failureMessage: nullableText(row, 'failure_message'), resultDocumentId: nullableText(row, 'result_document_id'), createdAt: text(row, 'created_at'), updatedAt: text(row, 'updated_at'), completedAt: nullableText(row, 'completed_at'),
+    status: text(row, 'status') as WritingGenerationStatus, attemptCount: number(row, 'attempt_count'), provider: nullableText(row, 'provider'), model: nullableText(row, 'model'), failureCode: nullableText(row, 'failure_code'), failureMessage: nullableText(row, 'failure_message'), resultDocumentId: nullableText(row, 'result_document_id'), outputContent: nullableText(row, 'output_content'), createdAt: text(row, 'created_at'), updatedAt: text(row, 'updated_at'), completedAt: nullableText(row, 'completed_at'),
   }
 }
 
@@ -261,7 +278,7 @@ function writingDraftRunFrom(row: Row): WritingDraftRun {
   return {
     id: text(row, 'id'), projectId: text(row, 'project_id'), inputFingerprint: text(row, 'input_fingerprint'),
     status: text(row, 'status') as WritingDraftStatus, phase: text(row, 'phase') as WritingDraftPhase,
-    evidencePackId: nullableText(row, 'evidence_pack_id'), outlineJobId: nullableText(row, 'outline_job_id'), articleJobId: nullableText(row, 'article_job_id'),
+    evidencePackId: nullableText(row, 'evidence_pack_id'), outlineJobId: nullableText(row, 'outline_job_id'), articleJobId: nullableText(row, 'article_job_id'), draftJobId: nullableText(row, 'draft_job_id'), humanizeJobId: nullableText(row, 'humanize_job_id'),
     outlineDocumentId: nullableText(row, 'outline_document_id'), articleDocumentId: nullableText(row, 'article_document_id'), attemptCount: number(row, 'attempt_count'),
     failureCode: nullableText(row, 'failure_code'), failureMessage: nullableText(row, 'failure_message'), createdAt: text(row, 'created_at'), updatedAt: text(row, 'updated_at'), completedAt: nullableText(row, 'completed_at'),
   }
@@ -296,6 +313,23 @@ interface WritingBlockDraft {
   evidenceRefs: string[]
   sourceRefs: string[]
   referenceRoles?: WritingSectionBlock['referenceRoles']
+}
+
+interface NarrativeBlockDraft {
+  content: string
+  position: number
+  blockType: WritingDocumentBlock['blockType']
+  evidenceRefs: string[]
+  sourceRefs: string[]
+  referenceRoles?: WritingDocumentBlock['referenceRoles']
+  referenceMarkers?: string[]
+}
+
+function markdownFromNarrativeBlocks(blocks: WritingDocumentBlock[]): string {
+  return blocks.map((block) => {
+    const refs = block.referenceMarkers.length > 0 ? block.referenceMarkers : [...block.evidenceRefs.map((id) => `[[ref:artifact:${id}]]`), ...block.sourceRefs.map((id) => `[[ref:source:${id}]]`)]
+    return `${block.content}${refs.join('')}`
+  }).join('\n\n')
 }
 
 function fallbackBlocks(section: { content: string; evidenceRefs: string[]; sourceRefs: string[] }): WritingBlockDraft[] {
@@ -853,6 +887,31 @@ export class ProductRepository {
     return this.getWritingEvidencePack(packId, projectId)
   }
 
+  replaceWritingEvidenceItems(packId: string, projectId: string, items: Array<Omit<WritingEvidenceItem, 'id' | 'projectId' | 'evidencePackId'>>): WritingEvidenceItem[] {
+    const write = this.db.transaction(() => {
+      const insert = this.db.prepare(`INSERT OR IGNORE INTO writing_evidence_items(id, project_id, evidence_pack_id, ref_type, ref_id, kind, title, body, created_at, metadata_json)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      const fts = this.db.prepare('INSERT INTO writing_evidence_items_fts(item_id, project_id, evidence_pack_id, title, body) VALUES (?, ?, ?, ?, ?)')
+      for (const item of items) {
+        const id = randomUUID()
+        const result = insert.run(id, projectId, packId, item.refType, item.refId, item.kind, item.title, item.body, item.createdAt, JSON.stringify(item.metadata))
+        if (result.changes > 0) {
+          fts.run(id, projectId, packId, item.title, item.body)
+        }
+      }
+    })
+    write.immediate()
+    return this.listWritingEvidenceItems(packId)
+  }
+
+  listWritingEvidenceItems(packId: string, query?: string, limit = 100): WritingEvidenceItem[] {
+    const normalized = query?.trim()
+    if (!normalized) return (this.db.prepare('SELECT * FROM writing_evidence_items WHERE evidence_pack_id = ? ORDER BY created_at ASC, id ASC LIMIT ?').all(packId, limit) as Row[]).map(writingEvidenceItemFrom)
+    const terms = normalized.split(/\s+/).filter(Boolean).map((term) => `"${term.replace(/"/g, ' ')}"`).join(' OR ')
+    return (this.db.prepare(`SELECT item.* FROM writing_evidence_items_fts fts INNER JOIN writing_evidence_items item ON item.id = fts.item_id
+      WHERE fts.evidence_pack_id = ? AND writing_evidence_items_fts MATCH ? ORDER BY fts.rank LIMIT ?`).all(packId, terms, limit) as Row[]).map(writingEvidenceItemFrom)
+  }
+
   getWritingEvidencePack(packId: string, projectId: string): WritingEvidencePack {
     const row = this.db.prepare('SELECT * FROM writing_evidence_packs WHERE id = ? AND project_id = ?').get(packId, projectId) as Row | undefined
     if (!row) throw new Error('WRITING_EVIDENCE_PACK_NOT_FOUND')
@@ -904,11 +963,16 @@ export class ProductRepository {
     return result.changes > 0
   }
 
-  finishWritingGenerationJob(jobId: string, status: 'succeeded' | 'failed' | 'interrupted', resultDocumentId?: string | null, failureCode?: string | null, failureMessage?: string | null, expectedAttemptCount?: number): void {
+  requeueWritingGenerationJob(jobId: string): boolean {
+    const result = this.db.prepare("UPDATE writing_generation_jobs SET status = 'queued', failure_code = NULL, failure_message = NULL, completed_at = NULL, updated_at = ? WHERE id = ? AND status IN ('running', 'failed', 'interrupted')").run(new Date().toISOString(), jobId)
+    return result.changes > 0
+  }
+
+  finishWritingGenerationJob(jobId: string, status: 'succeeded' | 'failed' | 'interrupted', resultDocumentId?: string | null, failureCode?: string | null, failureMessage?: string | null, expectedAttemptCount?: number, outputContent?: string | null): void {
     const now = new Date().toISOString()
     const where = expectedAttemptCount === undefined ? 'id = ?' : 'id = ? AND status = \'running\' AND attempt_count = ?'
-    const values = expectedAttemptCount === undefined ? [status, resultDocumentId ?? null, failureCode ?? null, failureMessage ?? null, now, now, jobId] : [status, resultDocumentId ?? null, failureCode ?? null, failureMessage ?? null, now, now, jobId, expectedAttemptCount]
-    this.db.prepare(`UPDATE writing_generation_jobs SET status = ?, result_document_id = ?, failure_code = ?, failure_message = ?, updated_at = ?, completed_at = ? WHERE ${where}`).run(...values)
+    const values = expectedAttemptCount === undefined ? [status, resultDocumentId ?? null, outputContent ?? null, failureCode ?? null, failureMessage ?? null, now, now, jobId] : [status, resultDocumentId ?? null, outputContent ?? null, failureCode ?? null, failureMessage ?? null, now, now, jobId, expectedAttemptCount]
+    this.db.prepare(`UPDATE writing_generation_jobs SET status = ?, result_document_id = ?, output_content = ?, failure_code = ?, failure_message = ?, updated_at = ?, completed_at = ? WHERE ${where}`).run(...values)
   }
 
   getWritingClusterOverview(projectId: string, practiceRunId: string): WritingClusterOverview {
@@ -1172,7 +1236,8 @@ export class ProductRepository {
     const sections = (this.db.prepare('SELECT * FROM writing_sections WHERE document_id = ? ORDER BY position ASC').all(documentId) as Row[]).map((section) => writingSectionFrom(section))
     const claims = (this.db.prepare('SELECT * FROM writing_claims WHERE document_id = ? ORDER BY created_at ASC').all(documentId) as Row[]).map(writingClaimFrom)
     const blocks = (this.db.prepare('SELECT * FROM writing_section_blocks WHERE document_id = ? ORDER BY section_id ASC, position ASC').all(documentId) as Row[]).map(writingBlockFrom)
-    return writingDocumentFrom(row, sections.map((section) => ({ ...section, blocks: blocks.filter((block) => block.sectionId === section.id) })), claims)
+    const narrativeBlocks = (this.db.prepare('SELECT * FROM writing_document_blocks WHERE document_id = ? ORDER BY position ASC').all(documentId) as Row[]).map(writingDocumentBlockFrom)
+    return writingDocumentFrom(row, sections.map((section) => ({ ...section, blocks: blocks.filter((block) => block.sectionId === section.id) })), claims, narrativeBlocks)
   }
 
   listWritingDocuments(projectId: string): WritingDocument[] {
@@ -1185,6 +1250,7 @@ export class ProductRepository {
     const sectionRows = this.db.prepare(`SELECT * FROM writing_sections WHERE document_id IN (${placeholders}) ORDER BY position ASC`).all(...ids) as Row[]
     const claimRows = this.db.prepare(`SELECT * FROM writing_claims WHERE document_id IN (${placeholders}) ORDER BY created_at ASC`).all(...ids) as Row[]
     const blockRows = this.db.prepare(`SELECT * FROM writing_section_blocks WHERE document_id IN (${placeholders}) ORDER BY document_id ASC, section_id ASC, position ASC`).all(...ids) as Row[]
+    const narrativeBlockRows = this.db.prepare(`SELECT * FROM writing_document_blocks WHERE document_id IN (${placeholders}) ORDER BY document_id ASC, position ASC`).all(...ids) as Row[]
     return rows.map((row) => {
       const documentId = text(row, 'id')
       const sections = sectionRows.filter((section) => text(section, 'document_id') === documentId).map((section) => {
@@ -1192,7 +1258,8 @@ export class ProductRepository {
         return { ...parsed, blocks: blockRows.filter((block) => text(block, 'document_id') === documentId && text(block, 'section_id') === parsed.id).map(writingBlockFrom) }
       })
       const claims = claimRows.filter((claim) => text(claim, 'document_id') === documentId).map(writingClaimFrom)
-      return writingDocumentFrom(row, sections, claims)
+      const narrativeBlocks = narrativeBlockRows.filter((block) => text(block, 'document_id') === documentId).map(writingDocumentBlockFrom)
+      return writingDocumentFrom(row, sections, claims, narrativeBlocks)
     })
   }
 
@@ -1218,18 +1285,65 @@ export class ProductRepository {
   updateWritingBlock(projectId: string, documentId: string, blockId: string, expectedRevision: number, content: string): WritingDocument {
     const now = new Date().toISOString()
     const update = this.db.transaction(() => {
+      const document = this.db.prepare('SELECT id, format FROM writing_documents WHERE id = ? AND project_id = ?').get(documentId, projectId) as Row | undefined
+      if (!document) throw new Error('WRITING_DOCUMENT_NOT_FOUND')
+      if (text(document, 'format') === 'narrative') {
+        const block = this.db.prepare('SELECT * FROM writing_document_blocks WHERE id = ? AND document_id = ?').get(blockId, documentId) as Row | undefined
+        if (!block) throw new Error('WRITING_BLOCK_NOT_FOUND')
+        const changed = this.db.prepare('UPDATE writing_document_blocks SET content = ?, revision = revision + 1, updated_at = ? WHERE id = ? AND revision = ?').run(content, now, blockId, expectedRevision)
+        if (changed.changes === 0) throw new Error('WRITING_BLOCK_REVISION_CONFLICT')
+        const rows = (this.db.prepare('SELECT * FROM writing_document_blocks WHERE document_id = ? ORDER BY position ASC').all(documentId) as Row[]).map(writingDocumentBlockFrom)
+        this.db.prepare("UPDATE writing_documents SET content_markdown = ?, revision = revision + 1, status = 'needs_review', updated_at = ? WHERE id = ? AND project_id = ?").run(markdownFromNarrativeBlocks(rows), now, documentId, projectId)
+        return
+      }
       const block = this.db.prepare(`SELECT b.id, b.section_id FROM writing_section_blocks b INNER JOIN writing_documents d ON d.id = b.document_id WHERE b.id = ? AND b.document_id = ? AND d.project_id = ?`).get(blockId, documentId, projectId) as Row | undefined
       if (!block) throw new Error('WRITING_BLOCK_NOT_FOUND')
       const changed = this.db.prepare('UPDATE writing_section_blocks SET content = ?, revision = revision + 1, updated_at = ? WHERE id = ? AND revision = ?').run(content, now, blockId, expectedRevision)
       if (changed.changes === 0) throw new Error('WRITING_BLOCK_REVISION_CONFLICT')
       const rows = this.db.prepare('SELECT content FROM writing_section_blocks WHERE section_id = ? ORDER BY position ASC').all(text(block, 'section_id')) as Row[]
       this.db.prepare('UPDATE writing_sections SET content = ?, status = \'confirmed\', updated_at = ? WHERE id = ? AND document_id = ?').run(rows.map((row) => text(row, 'content')).join('\n\n'), now, text(block, 'section_id'), documentId)
-      const document = this.db.prepare('SELECT kind FROM writing_documents WHERE id = ? AND project_id = ?').get(documentId, projectId) as Row | undefined
-      if (!document) throw new Error('WRITING_DOCUMENT_NOT_FOUND')
+      const sectionDocument = this.db.prepare('SELECT kind FROM writing_documents WHERE id = ? AND project_id = ?').get(documentId, projectId) as Row | undefined
+      if (!sectionDocument) throw new Error('WRITING_DOCUMENT_NOT_FOUND')
       this.db.prepare('UPDATE writing_documents SET revision = revision + 1, status = CASE WHEN kind = \'article\' THEN \'needs_review\' ELSE status END, updated_at = ? WHERE id = ? AND project_id = ?').run(now, documentId, projectId)
       this.db.prepare("UPDATE writing_claims SET status = 'needs_review' WHERE document_id = ? AND section_id = ?").run(documentId, text(block, 'section_id'))
     })
     update()
+    return this.getWritingDocument(documentId)
+  }
+
+  persistNarrativeWritingGeneration(input: {
+    jobId: string
+    attemptCount: number
+    projectId: string
+    learnerId: string
+    practiceRunId: string
+    evidencePackId: string
+    title: string
+    summary: string
+    markdown: string
+    blocks: NarrativeBlockDraft[]
+  }): WritingDocument {
+    const documentId = randomUUID(); const artifactId = randomUUID(); const eventId = randomUUID(); const now = new Date().toISOString(); const checksum = createHash('sha256').update(input.markdown).digest('hex')
+    const persist = this.db.transaction(() => {
+      const running = this.db.prepare("SELECT id FROM writing_generation_jobs WHERE id = ? AND status = 'running' AND attempt_count = ?").get(input.jobId, input.attemptCount) as Row | undefined
+      if (!running) throw new Error('WRITING_GENERATION_JOB_NOT_RUNNING')
+      const current = this.db.prepare("SELECT COALESCE(MAX(revision), 0) AS revision FROM writing_documents WHERE project_id = ? AND kind = 'article'").get(input.projectId) as Row
+      const revision = number(current, 'revision') + 1
+      this.db.prepare(`INSERT INTO writing_documents(id, project_id, kind, revision, status, title, summary, evidence_pack_id, format, content_markdown, created_at, updated_at)
+        VALUES (?, ?, 'article', ?, 'needs_review', ?, ?, ?, 'narrative', ?, ?, ?)`).run(documentId, input.projectId, revision, input.title, input.summary, input.evidencePackId, input.markdown, now, now)
+      const insertBlock = this.db.prepare(`INSERT INTO writing_document_blocks(id, document_id, position, content, block_type, evidence_refs_json, source_refs_json, reference_roles_json, reference_markers_json, revision, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`)
+      for (const block of input.blocks) insertBlock.run(randomUUID(), documentId, block.position, block.content, block.blockType, JSON.stringify(block.evidenceRefs), JSON.stringify(block.sourceRefs), JSON.stringify(block.referenceRoles ?? {}), JSON.stringify(block.referenceMarkers ?? []), now, now)
+      this.db.prepare(`INSERT INTO artifacts(id, learner_id, practice_run_id, kind, source_kind, verification_status, content, metadata_json, checksum, created_at)
+        VALUES (?, ?, ?, 'article_draft', 'system', 'model_generated', ?, ?, ?, ?)`).run(artifactId, input.learnerId, input.practiceRunId, input.markdown, JSON.stringify({ documentId, evidencePackId: input.evidencePackId, generationJobId: input.jobId, format: 'narrative' }), checksum, now)
+      const next = this.db.prepare('SELECT COALESCE(MAX(sequence), 0) + 1 AS sequence FROM practice_events WHERE practice_run_id = ?').get(input.practiceRunId) as Row
+      this.db.prepare(`INSERT INTO practice_events(id, learner_id, practice_run_id, sequence, actor, type, stage, payload_json, artifact_refs_json, client_request_id, created_at)
+        VALUES (?, ?, ?, ?, 'system', 'article_draft_generated', ?, ?, ?, NULL, ?)`).run(eventId, input.learnerId, input.practiceRunId, number(next, 'sequence'), 'resolved', JSON.stringify({ documentId, artifactId, evidencePackId: input.evidencePackId, generationJobId: input.jobId, format: 'narrative' }), JSON.stringify([artifactId]), now)
+      this.db.prepare("UPDATE writing_projects SET status = 'ready_for_preview', evidence_snapshot_json = ?, current_evidence_pack_id = ?, updated_at = ? WHERE id = ?").run(JSON.stringify({ capturedAt: now, materialIds: [], evidencePackId: input.evidencePackId }), input.evidencePackId, now, input.projectId)
+      const claimed = this.db.prepare("UPDATE writing_generation_jobs SET status = 'succeeded', result_document_id = ?, updated_at = ?, completed_at = ? WHERE id = ? AND status = 'running' AND attempt_count = ?").run(documentId, now, now, input.jobId, input.attemptCount)
+      if (claimed.changes === 0) throw new Error('WRITING_GENERATION_JOB_NOT_RUNNING')
+    })
+    persist.immediate()
     return this.getWritingDocument(documentId)
   }
 
@@ -1256,9 +1370,9 @@ export class ProductRepository {
     return row ? writingDraftRunFrom(row) : null
   }
 
-  updateWritingDraftRun(id: string, update: Partial<Pick<WritingDraftRun, 'status' | 'phase' | 'evidencePackId' | 'outlineJobId' | 'articleJobId' | 'outlineDocumentId' | 'articleDocumentId' | 'attemptCount' | 'failureCode' | 'failureMessage' | 'completedAt'>>): WritingDraftRun {
+  updateWritingDraftRun(id: string, update: Partial<Pick<WritingDraftRun, 'status' | 'phase' | 'evidencePackId' | 'outlineJobId' | 'articleJobId' | 'draftJobId' | 'humanizeJobId' | 'outlineDocumentId' | 'articleDocumentId' | 'attemptCount' | 'failureCode' | 'failureMessage' | 'completedAt'>>): WritingDraftRun {
     const fields: string[] = []; const values: unknown[] = []
-    const map: Record<string, string> = { status: 'status', phase: 'phase', evidencePackId: 'evidence_pack_id', outlineJobId: 'outline_job_id', articleJobId: 'article_job_id', outlineDocumentId: 'outline_document_id', articleDocumentId: 'article_document_id', attemptCount: 'attempt_count', failureCode: 'failure_code', failureMessage: 'failure_message', completedAt: 'completed_at' }
+    const map: Record<string, string> = { status: 'status', phase: 'phase', evidencePackId: 'evidence_pack_id', outlineJobId: 'outline_job_id', articleJobId: 'article_job_id', draftJobId: 'draft_job_id', humanizeJobId: 'humanize_job_id', outlineDocumentId: 'outline_document_id', articleDocumentId: 'article_document_id', attemptCount: 'attempt_count', failureCode: 'failure_code', failureMessage: 'failure_message', completedAt: 'completed_at' }
     for (const [key, column] of Object.entries(map)) if (key in update) { fields.push(`${column} = ?`); values.push(update[key as keyof typeof update] ?? null) }
     if (fields.length === 0) return this.getWritingDraftRun(id)
     fields.push('updated_at = ?'); values.push(new Date().toISOString()); values.push(id)
@@ -1271,22 +1385,39 @@ export class ProductRepository {
   }
 
   getWritingBlockEvidence(projectId: string, documentId: string, blockId: string): WritingBlockEvidence {
-    const row = this.db.prepare(`SELECT b.* FROM writing_section_blocks b INNER JOIN writing_documents d ON d.id = b.document_id WHERE b.id = ? AND b.document_id = ? AND d.project_id = ?`).get(blockId, documentId, projectId) as Row | undefined
-    if (!row) throw new Error('WRITING_BLOCK_NOT_FOUND')
-    const block = writingBlockFrom(row); const refs: WritingBlockEvidence['references'] = []
-    const artifactIds = block.evidenceRefs; const sourceIds = block.sourceRefs
+    const narrativeRow = this.db.prepare(`SELECT b.* FROM writing_document_blocks b INNER JOIN writing_documents d ON d.id = b.document_id WHERE b.id = ? AND b.document_id = ? AND d.project_id = ?`).get(blockId, documentId, projectId) as Row | undefined
+    const sectionRow = narrativeRow ? undefined : this.db.prepare(`SELECT b.* FROM writing_section_blocks b INNER JOIN writing_documents d ON d.id = b.document_id WHERE b.id = ? AND b.document_id = ? AND d.project_id = ?`).get(blockId, documentId, projectId) as Row | undefined
+    if (!narrativeRow && !sectionRow) throw new Error('WRITING_BLOCK_NOT_FOUND')
+    const block = narrativeRow ? { ...writingDocumentBlockFrom(narrativeRow), sectionId: null as null } : writingBlockFrom(sectionRow!)
+    const refs: WritingEvidenceReference[] = []
+    const typedRefs = new Map<string, Set<string>>()
+    const addRef = (type: string, id: string) => { if (!['artifact', 'event', 'path_node', 'source'].includes(type) || !id) return; const ids = typedRefs.get(type) ?? new Set<string>(); ids.add(id); typedRefs.set(type, ids) }
+    for (const id of block.evidenceRefs) addRef('artifact', id)
+    for (const id of block.sourceRefs) addRef('source', id)
+    for (const marker of 'referenceMarkers' in block ? block.referenceMarkers : []) {
+      const match = /^\[\[ref:([^:\]]+):([^\]]+)\]\]$/.exec(marker)
+      if (match) addRef(match[1]!, match[2]!)
+    }
+    const practiceRunId = text(this.db.prepare('SELECT practice_run_id FROM writing_projects WHERE id = ?').get(projectId) as Row, 'practice_run_id')
+    const artifactIds = [...(typedRefs.get('artifact') ?? [])]
     if (artifactIds.length > 0) {
-      const artifactRefs = artifactIds
-      const placeholders = artifactRefs.map(() => '?').join(', ')
-      const artifacts = artifactRefs.length > 0 ? this.db.prepare(`SELECT id, kind, verification_status, content FROM artifacts WHERE id IN (${placeholders}) AND practice_run_id = (SELECT practice_run_id FROM writing_projects WHERE id = ?)`).all(...artifactRefs, projectId) as Row[] : []
+      const placeholders = artifactIds.map(() => '?').join(', ')
+      const artifacts = this.db.prepare(`SELECT id, kind, verification_status, content FROM artifacts WHERE id IN (${placeholders}) AND practice_run_id = ?`).all(...artifactIds, practiceRunId) as Row[]
       for (const artifact of artifacts) refs.push({ refType: 'artifact', refId: text(artifact, 'id'), title: text(artifact, 'kind'), content: text(artifact, 'content'), kind: text(artifact, 'kind'), verificationStatus: text(artifact, 'verification_status'), role: block.referenceRoles[text(artifact, 'id')] ?? 'lab', url: null, author: null })
     }
-    const pathIds = block.evidenceRefs
+    const pathIds = [...(typedRefs.get('path_node') ?? [])]
     if (pathIds.length > 0) {
       const placeholders = pathIds.map(() => '?').join(', ')
-      const paths = this.db.prepare(`SELECT id, title, judgment, outcome FROM path_nodes WHERE id IN (${placeholders}) AND practice_run_id = (SELECT practice_run_id FROM writing_projects WHERE id = ?)`).all(...pathIds, projectId) as Row[]
+      const paths = this.db.prepare(`SELECT id, title, judgment, outcome FROM path_nodes WHERE id IN (${placeholders}) AND practice_run_id = ?`).all(...pathIds, practiceRunId) as Row[]
       for (const path of paths) refs.push({ refType: 'path_node', refId: text(path, 'id'), title: text(path, 'title'), content: `${text(path, 'judgment')}\n结果：${text(path, 'outcome')}`, kind: 'path_node', verificationStatus: 'path_record', role: block.referenceRoles[text(path, 'id')] ?? 'inherited', url: null, author: null })
     }
+    const eventIds = [...(typedRefs.get('event') ?? [])]
+    if (eventIds.length > 0) {
+      const placeholders = eventIds.map(() => '?').join(', ')
+      const events = this.db.prepare(`SELECT id, type, payload_json FROM practice_events WHERE id IN (${placeholders}) AND practice_run_id = ?`).all(...eventIds, practiceRunId) as Row[]
+      for (const event of events) refs.push({ refType: 'event', refId: text(event, 'id'), title: `实践事件 · ${text(event, 'type')}`, content: text(event, 'payload_json'), kind: text(event, 'type'), verificationStatus: 'event_record', role: block.referenceRoles[text(event, 'id')] ?? 'inherited', url: null, author: null })
+    }
+    const sourceIds = [...(typedRefs.get('source') ?? [])]
     if (sourceIds.length > 0) {
       const placeholders = sourceIds.map(() => '?').join(', ')
       const sources = this.db.prepare(`SELECT id, title, author, url, excerpt, provider FROM source_items WHERE id IN (${placeholders})`).all(...sourceIds) as Row[]
