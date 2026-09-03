@@ -35,6 +35,7 @@ export const usePlanStore = defineStore('plan', () => {
   }
 
   function syncLegacyPlan(source: ProductPlan) {
+    if (!Array.isArray(source.units)) throw new Error('计划响应缺少学习单元，请刷新后重试')
     const completedUnits = source.units.filter((unit) => unit.status === 'completed').length
     const current = source.units.find((unit) => unit.status === 'current') ?? source.units.at(-1)
     plan.value = {

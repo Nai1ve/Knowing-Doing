@@ -66,9 +66,9 @@ npm run build
 npm start
 ```
 
-开发模式使用 `npm run dev`。如果默认的 `LAB_API_PORT=3000` 已被其他服务占用，
-可以临时使用 `LAB_API_PORT=3001 npm run dev`；同时启动前端时设置
-`VITE_API_PROXY_TARGET=http://127.0.0.1:3001 npm run dev`，让 Vite 代理到同一个 API。
+开发模式使用 `npm run dev`，本地默认监听 `127.0.0.1:3001`；前端 Vite
+默认也代理到这个端口。若 API 使用其他端口，可通过 `LAB_API_PORT` 和
+`VITE_API_PROXY_TARGET` 分别覆盖。
 构建会把 TypeScript 输出到 `dist`；reset 脚本
 运行时优先读取构建目录外的 `fixtures`，因此不会依赖应用启动时生成文件。
 
@@ -77,7 +77,7 @@ npm start
 创建 run：
 
 ```bash
-curl -X POST http://127.0.0.1:3000/api/lab/runs \
+curl -X POST http://127.0.0.1:3001/api/lab/runs \
   -H 'content-type: application/json' \
   -d '{"caseId":"mysql-order-list-index-001"}'
 ```

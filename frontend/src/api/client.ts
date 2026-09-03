@@ -10,6 +10,10 @@ export class ApiError extends Error {
   }
 }
 
+function isJsonResponse(response: Response): boolean {
+  return response.headers.get('content-type')?.toLowerCase().includes('application/json') ?? false
+}
+
 export function createApiClient(options: ApiClientOptions) {
   async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
     const headers = new Headers(init.headers)
@@ -21,7 +25,10 @@ export function createApiClient(options: ApiClientOptions) {
     const text = await response.text()
     let payload: unknown
     if (text) {
-      try { payload = JSON.parse(text) } catch { payload = text }
+      if (!isJsonResponse(response)) {
+        throw new ApiError(response.status, '接口返回了非 JSON 响应，请检查 API 代理地址', text.slice(0, 200))
+      }
+      try { payload = JSON.parse(text) } catch { throw new ApiError(response.status, '接口返回了无效 JSON，请检查 API 服务状态', text.slice(0, 200)) }
     }
     if (!response.ok) {
       const message = payload && typeof payload === 'object' && 'error' in payload && typeof (payload as { error?: { message?: unknown } }).error?.message === 'string'
