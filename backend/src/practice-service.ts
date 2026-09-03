@@ -133,6 +133,23 @@ export class PracticeService {
     return this.repository.createDiagnosticSession({ ...input, goal })
   }
 
+  regeneratePlan(learnerId: string, clientRequestId?: string | null): DiagnosticSession {
+    this.repository.ensureLearner(learnerId)
+    if (clientRequestId) {
+      const existing = this.repository.getDiagnosticSessionByRequestForLearner(learnerId, clientRequestId)
+      if (existing) return existing
+    }
+    const currentPlan = this.repository.getActivePlan(learnerId)
+    if (!currentPlan) throw new LabError('plan_not_found', '当前没有可重新生成的学习计划', 409)
+    const targetKey: DiagnosticTargetKey = currentPlan.templateKey === 'mysql-performance-v1' ? 'mysql_performance' : 'general'
+    try {
+      return this.repository.regenerateDiagnosticSession({ learnerId, targetKey, goal: currentPlan.goal, clientRequestId })
+    } catch (error) {
+      if (error instanceof Error && error.message === 'PLAN_NOT_FOUND') throw new LabError('plan_not_found', '当前没有可重新生成的学习计划', 409)
+      throw error
+    }
+  }
+
   getDiagnosticSession(learnerId: string, sessionId: string): DiagnosticSession {
     try { return this.repository.getDiagnosticSessionForLearner(sessionId, learnerId) } catch { throw new ProductNotFoundError(`Diagnostic session not found: ${sessionId}`) }
   }

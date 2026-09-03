@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
-import { createDiagnosticSession, getOnboardingState } from '@/api/onboardingService'
+import { createDiagnosticSession, getOnboardingState, regeneratePlan } from '@/api/onboardingService'
 import type { DiagnosticTargetKey, ProductOnboardingState } from '@/types/product'
 
 export const useOnboardingStore = defineStore('onboarding', () => {
@@ -26,5 +26,15 @@ export const useOnboardingStore = defineStore('onboarding', () => {
     finally { loading.value = false }
   }
 
-  return { state, loading, error, load, start }
+  async function regenerate() {
+    loading.value = true; error.value = null
+    try {
+      const session = await regeneratePlan(crypto.randomUUID())
+      state.value = { status: 'diagnostic_in_progress', currentPlan: null, diagnosticSession: { id: session.id, status: session.status, revision: session.revision, updatedAt: session.updatedAt }, proposal: null }
+      return session
+    } catch (cause) { error.value = cause instanceof Error ? cause.message : '重新生成计划失败'; throw cause }
+    finally { loading.value = false }
+  }
+
+  return { state, loading, error, load, start, regenerate }
 })

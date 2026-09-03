@@ -164,7 +164,7 @@ export interface LearningPlan {
   title: string
   goal: string
   sourceStatus: 'local_catalog' | 'retrieved' | 'general_model_knowledge'
-  status: 'draft' | 'confirmed' | 'active' | 'completed'
+  status: 'draft' | 'confirmed' | 'active' | 'completed' | 'superseded'
   templateKey: string
   revision: number
   weeklyMinutes: number | null

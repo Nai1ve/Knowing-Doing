@@ -15,6 +15,7 @@ function request<T>(path: string, init: RequestInit = {}): Promise<T> {
 }
 
 export function getOnboardingState(): Promise<ProductOnboardingState> { return request<ProductOnboardingState>('/product/onboarding/state') }
+export function regeneratePlan(clientRequestId: string): Promise<ProductDiagnosticSession> { return request<ProductDiagnosticSession>('/product/plans/regenerate', { method: 'POST', body: JSON.stringify({ clientRequestId }) }) }
 export function createDiagnosticSession(input: { targetKey: DiagnosticTargetKey; goal: string; clientRequestId?: string }): Promise<ProductDiagnosticSession> { return request<ProductDiagnosticSession>('/product/diagnostic-sessions', { method: 'POST', body: JSON.stringify(input) }) }
 export function getDiagnosticSession(sessionId: string): Promise<ProductDiagnosticSession> { return request<ProductDiagnosticSession>(`/product/diagnostic-sessions/${sessionId}`) }
 export function saveDiagnosticSession(sessionId: string, input: { revision: number; goal: string; experience: string; selfAssessment: string; weeklyMinutes: number; outcome: string; contextNote: string }): Promise<ProductDiagnosticSession> { return request<ProductDiagnosticSession>(`/product/diagnostic-sessions/${sessionId}`, { method: 'PATCH', body: JSON.stringify(input) }) }

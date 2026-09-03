@@ -507,6 +507,22 @@ describe('product repository', () => {
     expect(repository.getActivePlan('confirm-learner')?.id).toBe(first.id)
   }))
 
+  it('regenerates a plan without changing its historical records', () => withRepository((repository) => {
+    const service = new PracticeService(repository, {} as LabScheduler, new TutorEngine({} as LabConfig))
+    const session = service.createDiagnosticSession({ learnerId: 'regenerate-learner', targetKey: 'mysql_performance', goal: '系统学习 MySQL 性能优化' })
+    const ready = service.saveDiagnosticAnswers({ learnerId: 'regenerate-learner', sessionId: session.id, revision: session.revision, targetKey: session.targetKey, goal: session.goal, experience: '做过后端项目', selfAssessment: '能写 SQL', weeklyMinutes: 180, outcome: '完成一次排查', contextNote: '' })
+    const proposal = service.createDiagnosticProposal('regenerate-learner', ready.id)
+    const oldPlan = service.confirmDiagnosticProposal('regenerate-learner', proposal.id, proposal.revision)
+    const practice = repository.createPracticeRun({ learnerId: 'regenerate-learner', planUnitId: oldPlan.units[0]!.id, caseId: 'mysql-order-list-index-001' })
+    const nextSession = service.regeneratePlan('regenerate-learner', 'regenerate-request-1')
+    expect(nextSession.targetKey).toBe('mysql_performance')
+    expect(repository.getPlanForLearner(oldPlan.id, 'regenerate-learner').status).toBe('superseded')
+    expect(repository.getPracticeRun(practice.id).id).toBe(practice.id)
+    expect(repository.getActivePlan('regenerate-learner')).toBeNull()
+    expect(service.regeneratePlan('regenerate-learner', 'regenerate-request-1').id).toBe(nextSession.id)
+    expect(() => service.regeneratePlan('regenerate-learner', 'regenerate-request-2')).toThrow('当前没有可重新生成的学习计划')
+  }))
+
   it('protects diagnostic ownership and proposal revisions', () => withRepository((repository) => {
     const service = new PracticeService(repository, {} as LabScheduler, new TutorEngine({} as LabConfig))
     const session = service.createDiagnosticSession({ learnerId: 'owner-learner', targetKey: 'mysql_performance', goal: '学习 MySQL' })

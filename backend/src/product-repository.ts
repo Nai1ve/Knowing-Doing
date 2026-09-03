@@ -508,6 +508,37 @@ export class ProductRepository {
     return this.getDiagnosticSessionForLearner(sessionId, input.learnerId)
   }
 
+  regenerateDiagnosticSession(input: { learnerId: string; targetKey: DiagnosticTargetKey; goal: string; clientRequestId?: string | null }): DiagnosticSession {
+    const existing = input.clientRequestId ? this.db.prepare('SELECT id FROM diagnostic_sessions WHERE learner_id = ? AND client_request_id = ?').get(input.learnerId, input.clientRequestId) as Row | undefined : undefined
+    if (existing) return this.getDiagnosticSessionForLearner(text(existing, 'id'), input.learnerId)
+    const sessionId = randomUUID(); const intakeId = randomUUID(); const now = new Date().toISOString()
+    const technology = input.targetKey === 'mysql_performance' ? 'MySQL 8' : '其他技术'
+    const transaction = this.db.transaction(() => {
+      const currentPlan = this.db.prepare("SELECT id FROM learning_plans WHERE learner_id = ? AND status IN ('confirmed', 'active', 'pending_content') ORDER BY updated_at DESC, id DESC LIMIT 1").get(input.learnerId) as Row | undefined
+      if (!currentPlan) throw new Error('PLAN_NOT_FOUND')
+      if (currentPlan) {
+        this.db.prepare("UPDATE learning_plans SET status = 'superseded', updated_at = ? WHERE id = ?").run(now, text(currentPlan, 'id'))
+        this.db.prepare('INSERT INTO plan_events(id, learner_id, plan_id, plan_unit_id, practice_run_id, type, payload_json, created_at) VALUES (?, ?, ?, NULL, NULL, \'plan_superseded\', ?, ?)').run(randomUUID(), input.learnerId, text(currentPlan, 'id'), JSON.stringify({ reason: 'plan_regenerated' }), now)
+      }
+      this.db.prepare("UPDATE diagnostic_sessions SET status = 'superseded', updated_at = ? WHERE learner_id = ? AND status IN ('draft', 'ready', 'proposed')").run(now, input.learnerId)
+      this.db.prepare('INSERT INTO intakes(id, learner_id, goal, technology, outcome, weekly_minutes, status, created_at, updated_at) VALUES (?, ?, ?, ?, NULL, NULL, \'draft\', ?, ?)').run(intakeId, input.learnerId, input.goal, technology, now, now)
+      this.db.prepare('INSERT INTO diagnostic_sessions(id, learner_id, intake_id, target_key, status, rules_version, revision, client_request_id, created_at, updated_at) VALUES (?, ?, ?, ?, \'draft\', \'diagnostic-v1\', 1, ?, ?, ?)').run(sessionId, input.learnerId, intakeId, input.targetKey, input.clientRequestId ?? null, now, now)
+      this.db.prepare('INSERT INTO profile_evidence(id, learner_id, diagnostic_session_id, evidence_key, source_kind, content, status, created_at, updated_at) VALUES (?, ?, ?, \'goal\', \'user_input\', ?, \'active\', ?, ?)').run(randomUUID(), input.learnerId, sessionId, input.goal, now, now)
+    })
+    try { transaction() } catch (error) {
+      if (!(error instanceof Error) || !error.message.includes('UNIQUE')) throw error
+      const concurrent = input.clientRequestId ? this.db.prepare('SELECT id FROM diagnostic_sessions WHERE learner_id = ? AND client_request_id = ?').get(input.learnerId, input.clientRequestId) as Row | undefined : undefined
+      if (concurrent) return this.getDiagnosticSessionForLearner(text(concurrent, 'id'), input.learnerId)
+      throw error
+    }
+    return this.getDiagnosticSessionForLearner(sessionId, input.learnerId)
+  }
+
+  getDiagnosticSessionByRequestForLearner(learnerId: string, clientRequestId: string): DiagnosticSession | null {
+    const row = this.db.prepare('SELECT id FROM diagnostic_sessions WHERE learner_id = ? AND client_request_id = ?').get(learnerId, clientRequestId) as Row | undefined
+    return row ? this.getDiagnosticSessionForLearner(text(row, 'id'), learnerId) : null
+  }
+
   getDiagnosticSessionForLearner(id: string, learnerId: string): DiagnosticSession {
     const row = this.db.prepare('SELECT d.*, i.goal FROM diagnostic_sessions d INNER JOIN intakes i ON i.id = d.intake_id WHERE d.id = ? AND d.learner_id = ?').get(id, learnerId) as Row | undefined
     if (!row) throw new Error(`Diagnostic session not found: ${id}`)

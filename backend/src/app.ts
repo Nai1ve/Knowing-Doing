@@ -194,6 +194,11 @@ function registerProductRoutes(app: FastifyInstance, service: PracticeService, w
     reply.send(service.onboardingState(learnerId(request)))
   })
 
+  app.post('/api/product/plans/regenerate', async (request, reply) => {
+    const body = productBody(request)
+    reply.code(201).send(service.regeneratePlan(learnerId(request), optionalString(body, 'clientRequestId')))
+  })
+
   app.get('/api/product/profile/evidence', async (request, reply) => {
     reply.send(service.profileEvidence(learnerId(request)))
   })
