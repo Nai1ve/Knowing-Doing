@@ -67,6 +67,80 @@ export interface Intake {
   updatedAt: string
 }
 
+export type DiagnosticTargetKey = 'mysql_performance' | 'general'
+export type DiagnosticSessionStatus = 'draft' | 'ready' | 'proposed' | 'confirmed' | 'superseded'
+export type PlanProposalStatus = 'ready' | 'confirmed' | 'superseded'
+export type LearningMode = 'lab' | 'unavailable'
+
+export interface DiagnosticTurn {
+  id: string
+  sessionId: string
+  position: number
+  questionKey: string
+  question: string
+  answer: string
+  createdAt: string
+  updatedAt: string
+}
+
+export interface ProfileEvidence {
+  id: string
+  learnerId: string
+  diagnosticSessionId: string
+  evidenceKey: string
+  sourceKind: 'user_input'
+  content: string
+  status: 'active' | 'superseded'
+  createdAt: string
+  updatedAt: string
+}
+
+export interface DiagnosticSession {
+  id: string
+  learnerId: string
+  intakeId: string
+  goal: string
+  targetKey: DiagnosticTargetKey
+  status: DiagnosticSessionStatus
+  rulesVersion: string
+  revision: number
+  createdAt: string
+  updatedAt: string
+  turns: DiagnosticTurn[]
+  evidence: ProfileEvidence[]
+}
+
+export interface PlanProposalUnit {
+  position: number
+  title: string
+  objective: string
+  caseId: CaseId | null
+  status: PlanUnit['status']
+  availability: PlanUnit['availability']
+  learningMode: LearningMode
+  estimatedMinutes: number
+  rationale: string
+  sourceRefs: string[]
+}
+
+export interface PlanProposal {
+  id: string
+  learnerId: string
+  diagnosticSessionId: string
+  inputFingerprint: string
+  templateKey: string
+  targetKey: DiagnosticTargetKey
+  status: PlanProposalStatus
+  rulesVersion: string
+  revision: number
+  inputSnapshot: Record<string, unknown>
+  planSnapshot: { title: string; goal: string; planState: 'active' | 'pending_content'; units: PlanProposalUnit[] }
+  rationale: Array<{ key: string; label: string; effect: string }>
+  confirmedPlanId: string | null
+  createdAt: string
+  updatedAt: string
+}
+
 export interface PlanUnit {
   id: string
   planId: string
@@ -78,6 +152,9 @@ export interface PlanUnit {
   availability: 'available' | 'coming_soon'
   completedAt: string | null
   sourceRefs: string[]
+  learningMode: LearningMode
+  estimatedMinutes: number
+  rationale: string
 }
 
 export interface LearningPlan {
@@ -90,9 +167,11 @@ export interface LearningPlan {
   status: 'draft' | 'confirmed' | 'active' | 'completed'
   templateKey: string
   revision: number
+  weeklyMinutes: number | null
   createdAt: string
   updatedAt: string
   units: PlanUnit[]
+  planState: 'active' | 'pending_content'
 }
 
 export interface PracticeRun {

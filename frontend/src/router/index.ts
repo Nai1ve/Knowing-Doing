@@ -4,6 +4,9 @@ export const router = createRouter({
   history: createWebHistory(),
   routes: [
     { path: '/', redirect: '/overview' },
+    { path: '/start', name: 'start', component: () => import('@/views/StartView.vue') },
+    { path: '/diagnostic/:sessionId', name: 'diagnostic', component: () => import('@/views/DiagnosticView.vue') },
+    { path: '/plan-preview/:proposalId', name: 'plan-preview', component: () => import('@/views/PlanPreviewView.vue') },
     { path: '/overview', name: 'overview', component: () => import('@/views/OverviewView.vue') },
     { path: '/route', name: 'route', component: () => import('@/views/RouteView.vue') },
     { path: '/lesson', name: 'lesson', component: () => import('@/views/LessonView.vue') },

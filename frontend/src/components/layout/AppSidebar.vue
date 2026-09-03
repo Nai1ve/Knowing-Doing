@@ -1,12 +1,13 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import { BookOpen, CircleUserRound, FileText, Flag, Gauge, GitBranch, Settings2 } from 'lucide-vue-next'
+import { BookOpen, CircleUserRound, FileText, Flag, Gauge, GitBranch, Plus, Settings2 } from 'lucide-vue-next'
 import { RouterLink, useRoute } from 'vue-router'
 import { usePlanStore } from '@/stores/plan'
 
 const route = useRoute()
 const planStore = usePlanStore()
 const navItems = [
+  { name: 'start', label: '新建计划', icon: Plus },
   { name: 'overview', label: '总览', icon: Gauge },
   { name: 'route', label: '整体路线', icon: GitBranch },
   { name: 'lesson', label: 'MySQL 实验', icon: BookOpen },

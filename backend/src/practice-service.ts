@@ -5,13 +5,14 @@ import { decideAfterLab, decideAfterMessage, decideAfterVerification, evaluatePr
 import { buildTutorContext } from './context.js'
 import { createPlan } from './planner.js'
 import type { ProductRepository } from './product-repository.js'
-import type { Artifact, CaseStage, Intake, LabSegment, MemoryItem, PlanUnit, PracticeEvent, PracticeHistoryPage, PracticePin, PracticeRun, PracticeSnapshot, SourceItem, TutorInvocation, TutorResponse, TutorSource } from './product-types.js'
+import type { Artifact, CaseStage, DiagnosticSession, DiagnosticTargetKey, Intake, LabSegment, MemoryItem, PlanProposal, PlanUnit, PracticeEvent, PracticeHistoryPage, PracticePin, PracticeRun, PracticeSnapshot, SourceItem, TutorInvocation, TutorResponse, TutorSource } from './product-types.js'
 import { RetrievalService } from './retrieval.js'
 import { TutorEngine, TutorProviderError, tutorResponseFromGenerated } from './tutor.js'
 import { getManifest } from './fixtures.js'
 import { validateStatement } from './sql-policy.js'
 import { LabError } from './errors.js'
 import type { CurationService } from './curation-service.js'
+import { buildPlanProposal, DIAGNOSTIC_RULES_VERSION, inputFingerprint, type DiagnosticInput } from './onboarding.js'
 
 export class ProductNotFoundError extends Error {}
 
@@ -111,6 +112,76 @@ export class PracticeService {
 
   getIntake(learnerId: string, id: string): Intake { try { return this.repository.getIntakeForLearner(id, learnerId) } catch { throw new ProductNotFoundError(`Intake not found: ${id}`) } }
 
+  onboardingState(learnerId: string) {
+    this.repository.ensureLearner(learnerId)
+    const state = this.repository.getOnboardingState(learnerId)
+    return {
+      status: state.currentPlan ? 'has_plan' as const : state.proposal ? 'proposal_ready' as const : state.session ? 'diagnostic_in_progress' as const : 'new' as const,
+      currentPlan: state.currentPlan,
+      diagnosticSession: state.session ? { id: state.session.id, status: state.session.status, revision: state.session.revision, updatedAt: state.session.updatedAt } : null,
+      proposal: state.proposal ? { id: state.proposal.id, title: state.proposal.planSnapshot.title, revision: state.proposal.revision, updatedAt: state.proposal.updatedAt } : null,
+    }
+  }
+
+  createDiagnosticSession(input: { learnerId: string; targetKey: DiagnosticTargetKey; goal: string; clientRequestId?: string | null }): DiagnosticSession {
+    this.repository.ensureLearner(input.learnerId)
+    if (!['mysql_performance', 'general'].includes(input.targetKey)) throw new LabError('invalid_request', '不支持的学习方向', 400)
+    const goal = input.goal.trim()
+    if (!goal) throw new LabError('invalid_request', '学习目标不能为空', 400)
+    if (goal.length > 240) throw new LabError('invalid_request', '学习目标不能超过 240 个字符', 400)
+    if (this.repository.getActivePlan(input.learnerId)) throw new LabError('plan_exists', '当前已经有一份学习计划', 409)
+    return this.repository.createDiagnosticSession({ ...input, goal })
+  }
+
+  getDiagnosticSession(learnerId: string, sessionId: string): DiagnosticSession {
+    try { return this.repository.getDiagnosticSessionForLearner(sessionId, learnerId) } catch { throw new ProductNotFoundError(`Diagnostic session not found: ${sessionId}`) }
+  }
+
+  profileEvidence(learnerId: string) {
+    this.repository.ensureLearner(learnerId)
+    return this.repository.listProfileEvidence(learnerId)
+  }
+
+  saveDiagnosticAnswers(input: DiagnosticInput & { learnerId: string; sessionId: string; revision: number }): DiagnosticSession {
+    const goal = input.goal.trim(); const contextNote = input.contextNote.trim()
+    if (!goal || !input.experience.trim() || !input.selfAssessment.trim() || !input.outcome.trim()) throw new LabError('invalid_request', '请完成诊断表单后继续', 400)
+    if (!Number.isInteger(input.weeklyMinutes) || input.weeklyMinutes <= 0 || input.weeklyMinutes > 1440) throw new LabError('invalid_request', '每周投入时间无效', 400)
+    try { return this.repository.saveDiagnosticAnswers({ id: input.sessionId, ...input, goal, contextNote }) } catch (error) {
+      if (error instanceof Error && error.message === 'DIAGNOSTIC_REVISION_CONFLICT') throw new LabError('revision_conflict', '诊断内容已在其他页面更新，请刷新后重试', 409)
+      throw error
+    }
+  }
+
+  createDiagnosticProposal(learnerId: string, sessionId: string): PlanProposal {
+    const session = this.getDiagnosticSession(learnerId, sessionId)
+    const answers = new Map(session.turns.map((turn) => [turn.questionKey, turn.answer]))
+    const input: DiagnosticInput = {
+      targetKey: session.targetKey,
+      goal: this.getIntake(learnerId, session.intakeId).goal,
+      experience: answers.get('experience') ?? '',
+      selfAssessment: answers.get('self_assessment') ?? '',
+      weeklyMinutes: Number(answers.get('weekly_minutes') ?? 0),
+      outcome: answers.get('outcome') ?? '',
+      contextNote: answers.get('context_note') ?? '',
+    }
+    if (!input.experience || !input.selfAssessment || !input.weeklyMinutes || !input.outcome) throw new LabError('diagnostic_incomplete', '请先完成诊断内容', 422)
+    const spec = buildPlanProposal(input)
+    return this.repository.createPlanProposal({ learnerId, sessionId, inputFingerprint: inputFingerprint(input), templateKey: spec.templateKey, targetKey: spec.targetKey, inputSnapshot: { ...input }, planSnapshot: { title: spec.title, goal: spec.goal, planState: spec.planState, units: spec.units }, rationale: spec.rationale, rulesVersion: DIAGNOSTIC_RULES_VERSION })
+  }
+
+  getDiagnosticProposal(learnerId: string, proposalId: string): PlanProposal {
+    try { return this.repository.getPlanProposalForLearner(proposalId, learnerId) } catch { throw new ProductNotFoundError(`Plan proposal not found: ${proposalId}`) }
+  }
+
+  confirmDiagnosticProposal(learnerId: string, proposalId: string, revision: number) {
+    try { return this.repository.confirmPlanProposalForLearner(proposalId, learnerId, revision) } catch (error) {
+      if (error instanceof Error && ['PROPOSAL_REVISION_CONFLICT', 'PROPOSAL_ALREADY_CONFIRMED'].includes(error.message)) throw new LabError('revision_conflict', '计划草案已发生变化，请刷新后重试', 409)
+      if (error instanceof Error && error.message === 'PLAN_PROPOSAL_NOT_READY') throw new LabError('proposal_not_ready', '当前草案不能确认', 409)
+      if (error instanceof Error && error.message === 'PLAN_EXISTS') throw new LabError('plan_exists', '当前已经有一份学习计划', 409)
+      throw error
+    }
+  }
+
   draftPlan(learnerId: string, intakeId: string) { return createPlan(this.repository, this.getIntake(learnerId, intakeId)) }
 
   confirmPlan(learnerId: string, planId: string) {
@@ -120,6 +191,11 @@ export class PracticeService {
   getActivePlan(learnerId: string) {
     this.repository.ensureLearner(learnerId)
     return this.repository.getActivePlan(learnerId, 'mysql-performance-v1')
+  }
+
+  getCurrentPlan(learnerId: string) {
+    this.repository.ensureLearner(learnerId)
+    return this.repository.getActivePlan(learnerId)
   }
 
   getPlan(learnerId: string, planId: string) {
@@ -139,7 +215,7 @@ export class PracticeService {
     return { plan, unit: unit as PlanUnit & { caseId: CaseId } }
   }
 
-  private queuedPracticeResult(practice: PracticeRun): { practice: PracticeRun; lab?: { run: unknown; accessToken: string }; queue?: unknown } | null {
+  private queuedPracticeResult(practice: PracticeRun): { practice: PracticeRun; lab?: { run: unknown; accessToken: string }; queue?: { ticketId: string; caseId: CaseId; status: string; position?: number; pollAfterMs?: number; expiresAt: string } } | null {
     const ticketId = this.pendingQueues.get(practice.id)
     if (!ticketId) return null
     const ticket = this.scheduler.getTicket(ticketId)

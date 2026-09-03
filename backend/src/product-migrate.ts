@@ -4,7 +4,14 @@ import { fileURLToPath } from 'node:url'
 import Database from 'better-sqlite3'
 
 function migrationDir(): string {
-  return path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../migrations/product')
+  const moduleDir = path.dirname(fileURLToPath(import.meta.url))
+  const candidates = [
+    path.resolve(moduleDir, '../migrations/product'),
+    path.resolve(moduleDir, '../../migrations/product'),
+  ]
+  const directory = candidates.find((candidate) => fs.existsSync(candidate))
+  if (!directory) throw new Error(`Product migration directory not found. Checked: ${candidates.join(', ')}`)
+  return directory
 }
 
 function migrationFiles(): string[] {

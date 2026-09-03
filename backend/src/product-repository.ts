@@ -3,8 +3,8 @@ import Database from 'better-sqlite3'
 import { assertProductMigrations, openProductDatabase } from './product-migrate.js'
 import { evaluatePracticeCompletion } from './coach.js'
 import type {
-  Artifact, ArtifactKind, ArtifactSourceKind, CaseStage, EventActor, EventType, Intake, LearningPlan,
-  LabSegment, Learner, MemoryItem, PathNode, PlanUnit, PracticeEvent, PracticePin, PracticeRun, PracticeSnapshot, SourceItem,
+  Artifact, ArtifactKind, ArtifactSourceKind, CaseStage, DiagnosticSession, DiagnosticSessionStatus, DiagnosticTargetKey, DiagnosticTurn, EventActor, EventType, Intake, LearningPlan,
+  LabSegment, Learner, MemoryItem, PathNode, PlanProposal, PlanProposalStatus, PlanProposalUnit, PlanUnit, PracticeEvent, PracticePin, PracticeRun, PracticeSnapshot, ProfileEvidence, SourceItem,
   StageMemory, TutorInvocation, TutorInvocationStatus, VerificationStatus, WritingBlockEvidence, WritingEvidenceReference, WritingCapsuleMember, WritingClusterCapsule, WritingClaim, WritingCluster, WritingClusterDetail, WritingClusterKey, WritingClusterMember, WritingClusterMemberRole, WritingClusterOverview, WritingClusterStatus, WritingClusterSummaryStatus, WritingDocument, WritingDocumentBlock, WritingEvidenceItem, WritingEvidencePack, WritingGenerationJob, WritingGenerationKind, WritingGenerationStatus, WritingMaterial, WritingProject, WritingReviewItem, WritingSection, WritingSectionBlock, WritingDraftRun, WritingDraftPhase, WritingDraftStatus,
 } from './product-types.js'
 
@@ -64,6 +64,7 @@ function unitFrom(row: Row): PlanUnit {
     id: text(row, 'id'), planId: text(row, 'plan_id'), position: number(row, 'position'), title: text(row, 'title'),
     objective: text(row, 'objective'), caseId: nullableText(row, 'case_id') as PlanUnit['caseId'],
     status: text(row, 'status') as PlanUnit['status'], availability: text(row, 'availability') as PlanUnit['availability'], completedAt: nullableText(row, 'completed_at'), sourceRefs: json<string[]>(row.source_refs_json, []),
+    learningMode: (nullableText(row, 'learning_mode') ?? (row.case_id ? 'lab' : 'unavailable')) as PlanUnit['learningMode'], estimatedMinutes: row.estimated_minutes == null ? 60 : number(row, 'estimated_minutes'), rationale: nullableText(row, 'rationale') ?? '',
   }
 }
 
@@ -71,7 +72,30 @@ function planFrom(row: Row, units: PlanUnit[]): LearningPlan {
   return {
     id: text(row, 'id'), learnerId: text(row, 'learner_id'), intakeId: text(row, 'intake_id'), title: text(row, 'title'),
     goal: text(row, 'goal'), sourceStatus: text(row, 'source_status') as LearningPlan['sourceStatus'],
-    status: text(row, 'status') as LearningPlan['status'], templateKey: text(row, 'template_key'), revision: number(row, 'revision'), createdAt: text(row, 'created_at'), updatedAt: text(row, 'updated_at'), units,
+    status: text(row, 'status') as LearningPlan['status'], templateKey: text(row, 'template_key'), revision: number(row, 'revision'), weeklyMinutes: row.weekly_minutes == null ? null : number(row, 'weekly_minutes'), createdAt: text(row, 'created_at'), updatedAt: text(row, 'updated_at'), units,
+    planState: (nullableText(row, 'plan_state') ?? 'active') as LearningPlan['planState'],
+  }
+}
+
+function diagnosticTurnFrom(row: Row): DiagnosticTurn {
+  return { id: text(row, 'id'), sessionId: text(row, 'session_id'), position: number(row, 'position'), questionKey: text(row, 'question_key'), question: text(row, 'question'), answer: text(row, 'answer'), createdAt: text(row, 'created_at'), updatedAt: text(row, 'updated_at') }
+}
+
+function profileEvidenceFrom(row: Row): ProfileEvidence {
+  return { id: text(row, 'id'), learnerId: text(row, 'learner_id'), diagnosticSessionId: text(row, 'diagnostic_session_id'), evidenceKey: text(row, 'evidence_key'), sourceKind: 'user_input', content: text(row, 'content'), status: text(row, 'status') as ProfileEvidence['status'], createdAt: text(row, 'created_at'), updatedAt: text(row, 'updated_at') }
+}
+
+function diagnosticSessionFrom(row: Row, turns: DiagnosticTurn[], evidence: ProfileEvidence[]): DiagnosticSession {
+  return { id: text(row, 'id'), learnerId: text(row, 'learner_id'), intakeId: text(row, 'intake_id'), goal: text(row, 'goal'), targetKey: text(row, 'target_key') as DiagnosticTargetKey, status: text(row, 'status') as DiagnosticSessionStatus, rulesVersion: text(row, 'rules_version'), revision: number(row, 'revision'), createdAt: text(row, 'created_at'), updatedAt: text(row, 'updated_at'), turns, evidence }
+}
+
+function proposalFrom(row: Row): PlanProposal {
+  return {
+    id: text(row, 'id'), learnerId: text(row, 'learner_id'), diagnosticSessionId: text(row, 'diagnostic_session_id'), inputFingerprint: text(row, 'input_fingerprint'),
+    templateKey: text(row, 'template_key'), targetKey: text(row, 'target_key') as DiagnosticTargetKey, status: text(row, 'status') as PlanProposalStatus,
+    rulesVersion: text(row, 'rules_version'), revision: number(row, 'revision'), inputSnapshot: json<Record<string, unknown>>(row.input_snapshot_json, {}),
+    planSnapshot: json<PlanProposal['planSnapshot']>(row.plan_snapshot_json, { title: '', goal: '', planState: 'pending_content', units: [] }),
+    rationale: json<PlanProposal['rationale']>(row.rationale_json, []), confirmedPlanId: nullableText(row, 'confirmed_plan_id'), createdAt: text(row, 'created_at'), updatedAt: text(row, 'updated_at'),
   }
 }
 
@@ -380,14 +404,14 @@ export class ProductRepository {
     return intakeFrom(row)
   }
 
-  createPlan(input: { learnerId: string; intakeId: string; title: string; goal: string; sourceStatus: LearningPlan['sourceStatus']; templateKey?: string; units: Array<Omit<PlanUnit, 'id' | 'planId' | 'availability' | 'completedAt'> & { availability?: PlanUnit['availability']; completedAt?: string | null }> }): LearningPlan {
+  createPlan(input: { learnerId: string; intakeId: string; title: string; goal: string; sourceStatus: LearningPlan['sourceStatus']; templateKey?: string; planState?: LearningPlan['planState']; units: Array<Omit<PlanUnit, 'id' | 'planId' | 'availability' | 'completedAt' | 'learningMode' | 'estimatedMinutes' | 'rationale'> & { availability?: PlanUnit['availability']; completedAt?: string | null; learningMode?: PlanUnit['learningMode']; estimatedMinutes?: number; rationale?: string }> }): LearningPlan {
     const planId = randomUUID(); const now = new Date().toISOString()
     const transaction = this.db.transaction(() => {
-      this.db.prepare(`INSERT INTO learning_plans(id, learner_id, intake_id, title, goal, source_status, status, template_key, revision, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`).run(planId, input.learnerId, input.intakeId, input.title, input.goal, input.sourceStatus, input.templateKey ? 'active' : 'draft', input.templateKey ?? 'legacy', now, now)
-      const insert = this.db.prepare(`INSERT INTO plan_units(id, plan_id, position, title, objective, case_id, status, availability, completed_at, source_refs_json)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-      for (const unit of input.units) insert.run(randomUUID(), planId, unit.position, unit.title, unit.objective, unit.caseId, unit.status, unit.availability ?? 'available', unit.completedAt ?? null, JSON.stringify(unit.sourceRefs))
+      this.db.prepare(`INSERT INTO learning_plans(id, learner_id, intake_id, title, goal, source_status, status, plan_state, template_key, revision, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`).run(planId, input.learnerId, input.intakeId, input.title, input.goal, input.sourceStatus, input.templateKey ? 'active' : 'draft', input.planState ?? 'active', input.templateKey ?? 'legacy', now, now)
+      const insert = this.db.prepare(`INSERT INTO plan_units(id, plan_id, position, title, objective, case_id, status, availability, learning_mode, estimated_minutes, rationale, completed_at, source_refs_json)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      for (const unit of input.units) insert.run(randomUUID(), planId, unit.position, unit.title, unit.objective, unit.caseId, unit.status, unit.availability ?? 'available', unit.learningMode ?? (unit.caseId ? 'lab' : 'unavailable'), unit.estimatedMinutes ?? 60, unit.rationale ?? '', unit.completedAt ?? null, JSON.stringify(unit.sourceRefs))
       this.db.prepare("UPDATE intakes SET status = 'planned', updated_at = ? WHERE id = ?").run(now, input.intakeId)
     })
     transaction()
@@ -421,15 +445,15 @@ export class ProductRepository {
     const transaction = this.db.transaction(() => {
       this.db.prepare('INSERT INTO intakes(id, learner_id, goal, technology, outcome, weekly_minutes, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
         .run(intakeId, learnerId, '通过真实实验掌握 MySQL 性能问题的分析与验证方法', 'MySQL 8', null, 240, 'planned', now, now)
-      this.db.prepare(`INSERT INTO learning_plans(id, learner_id, intake_id, title, goal, source_status, status, template_key, revision, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, 'local_catalog', 'active', 'mysql-performance-v1', 1, ?, ?)`).run(planId, learnerId, intakeId, 'MySQL 性能优化路线', '通过真实实验掌握 MySQL 性能问题的分析与验证方法', now, now)
+      this.db.prepare(`INSERT INTO learning_plans(id, learner_id, intake_id, title, goal, source_status, status, plan_state, template_key, revision, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, 'local_catalog', 'active', 'active', 'mysql-performance-v1', 1, ?, ?)`).run(planId, learnerId, intakeId, 'MySQL 性能优化路线', '通过真实实验掌握 MySQL 性能问题的分析与验证方法', now, now)
       const units = [
         ['慢查询与联合索引', '从慢日志和表结构定位问题，用 EXPLAIN、索引和结果验证优化假设。', 'mysql-order-list-index-001', 'current', 'available'],
         ['死锁与锁等待', '区分临时止损和根因修复，并用事务会话复测访问顺序。', 'mysql-deadlock-lock-order-001', 'upcoming', 'coming_soon'],
         ['深分页与产品约束', '比较 OFFSET 和游标分页，说明性能与交互能力的取舍。', 'mysql-deep-pagination-001', 'upcoming', 'coming_soon'],
       ] as const
-      const insert = this.db.prepare('INSERT INTO plan_units(id, plan_id, position, title, objective, case_id, status, availability, completed_at, source_refs_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)')
-      units.forEach(([title, objective, caseId, status, availability], index) => insert.run(randomUUID(), planId, index + 1, title, objective, caseId, status, availability, '[]'))
+      const insert = this.db.prepare('INSERT INTO plan_units(id, plan_id, position, title, objective, case_id, status, availability, learning_mode, estimated_minutes, rationale, completed_at, source_refs_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)')
+      units.forEach(([title, objective, caseId, status, availability], index) => insert.run(randomUUID(), planId, index + 1, title, objective, caseId, status, availability, 'lab', 90, '按固定 MySQL 工程路线推进。', '[]'))
       this.db.prepare('INSERT INTO plan_events(id, learner_id, plan_id, plan_unit_id, practice_run_id, type, payload_json, created_at) VALUES (?, ?, ?, NULL, NULL, ?, ?, ?)')
         .run(randomUUID(), learnerId, planId, 'plan_created', JSON.stringify({ templateKey: 'mysql-performance-v1' }), now)
     })
@@ -443,17 +467,133 @@ export class ProductRepository {
   }
 
   getPlanForLearner(id: string, learnerId: string): LearningPlan {
-    const row = this.db.prepare('SELECT * FROM learning_plans WHERE id = ? AND learner_id = ?').get(id, learnerId) as Row | undefined
+    const row = this.db.prepare('SELECT p.*, i.weekly_minutes FROM learning_plans p INNER JOIN intakes i ON i.id = p.intake_id WHERE p.id = ? AND p.learner_id = ?').get(id, learnerId) as Row | undefined
     if (!row) throw new Error(`Plan not found: ${id}`)
     const units = (this.db.prepare('SELECT * FROM plan_units WHERE plan_id = ? ORDER BY position ASC').all(id) as Row[]).map(unitFrom)
     return planFrom(row, units)
   }
 
   getActivePlan(learnerId: string, templateKey?: string): LearningPlan | null {
-    const row = this.db.prepare(`SELECT * FROM learning_plans WHERE learner_id = ? AND status IN ('confirmed', 'active') ${templateKey ? 'AND template_key = ?' : ''} ORDER BY updated_at DESC, id DESC LIMIT 1`).get(...(templateKey ? [learnerId, templateKey] : [learnerId])) as Row | undefined
+      const row = this.db.prepare(`SELECT p.*, i.weekly_minutes FROM learning_plans p INNER JOIN intakes i ON i.id = p.intake_id WHERE p.learner_id = ? AND p.status IN ('confirmed', 'active', 'pending_content') ${templateKey ? 'AND p.template_key = ?' : ''} ORDER BY p.updated_at DESC, p.id DESC LIMIT 1`).get(...(templateKey ? [learnerId, templateKey] : [learnerId])) as Row | undefined
     if (!row) return null
     const units = (this.db.prepare('SELECT * FROM plan_units WHERE plan_id = ? ORDER BY position ASC').all(text(row, 'id')) as Row[]).map(unitFrom)
     return planFrom(row, units)
+  }
+
+  getOnboardingState(learnerId: string): { currentPlan: LearningPlan | null; session: DiagnosticSession | null; proposal: PlanProposal | null } {
+    const currentPlan = this.getActivePlan(learnerId)
+    const sessionRow = this.db.prepare("SELECT * FROM diagnostic_sessions WHERE learner_id = ? AND status IN ('draft', 'ready', 'proposed') ORDER BY updated_at DESC, id DESC LIMIT 1").get(learnerId) as Row | undefined
+    const session = sessionRow ? this.getDiagnosticSessionForLearner(text(sessionRow, 'id'), learnerId) : null
+    const proposalRow = this.db.prepare("SELECT * FROM plan_proposals WHERE learner_id = ? AND status = 'ready' ORDER BY updated_at DESC, id DESC LIMIT 1").get(learnerId) as Row | undefined
+    const proposal = proposalRow ? proposalFrom(proposalRow) : null
+    return { currentPlan, session, proposal }
+  }
+
+  createDiagnosticSession(input: { learnerId: string; targetKey: DiagnosticTargetKey; goal: string; clientRequestId?: string | null }): DiagnosticSession {
+    const existing = input.clientRequestId ? this.db.prepare('SELECT * FROM diagnostic_sessions WHERE learner_id = ? AND client_request_id = ?').get(input.learnerId, input.clientRequestId) as Row | undefined : undefined
+    if (existing) return this.getDiagnosticSessionForLearner(text(existing, 'id'), input.learnerId)
+    const sessionId = randomUUID(); const intakeId = randomUUID(); const now = new Date().toISOString()
+    const technology = input.targetKey === 'mysql_performance' ? 'MySQL 8' : '其他技术'
+    const transaction = this.db.transaction(() => {
+      this.db.prepare('INSERT INTO intakes(id, learner_id, goal, technology, outcome, weekly_minutes, status, created_at, updated_at) VALUES (?, ?, ?, ?, NULL, NULL, \'draft\', ?, ?)').run(intakeId, input.learnerId, input.goal, technology, now, now)
+      this.db.prepare('INSERT INTO diagnostic_sessions(id, learner_id, intake_id, target_key, status, rules_version, revision, client_request_id, created_at, updated_at) VALUES (?, ?, ?, ?, \'draft\', \'diagnostic-v1\', 1, ?, ?, ?)').run(sessionId, input.learnerId, intakeId, input.targetKey, input.clientRequestId ?? null, now, now)
+      this.db.prepare('INSERT INTO profile_evidence(id, learner_id, diagnostic_session_id, evidence_key, source_kind, content, status, created_at, updated_at) VALUES (?, ?, ?, \'goal\', \'user_input\', ?, \'active\', ?, ?)').run(randomUUID(), input.learnerId, sessionId, input.goal, now, now)
+    })
+    try { transaction() } catch (error) {
+      if (!(error instanceof Error) || !error.message.includes('UNIQUE')) throw error
+      const concurrent = input.clientRequestId ? this.db.prepare('SELECT * FROM diagnostic_sessions WHERE learner_id = ? AND client_request_id = ?').get(input.learnerId, input.clientRequestId) as Row | undefined : undefined
+      if (concurrent) return this.getDiagnosticSessionForLearner(text(concurrent, 'id'), input.learnerId)
+      throw error
+    }
+    return this.getDiagnosticSessionForLearner(sessionId, input.learnerId)
+  }
+
+  getDiagnosticSessionForLearner(id: string, learnerId: string): DiagnosticSession {
+    const row = this.db.prepare('SELECT d.*, i.goal FROM diagnostic_sessions d INNER JOIN intakes i ON i.id = d.intake_id WHERE d.id = ? AND d.learner_id = ?').get(id, learnerId) as Row | undefined
+    if (!row) throw new Error(`Diagnostic session not found: ${id}`)
+    const turns = (this.db.prepare('SELECT * FROM diagnostic_turns WHERE session_id = ? ORDER BY position ASC').all(id) as Row[]).map(diagnosticTurnFrom)
+    const evidence = (this.db.prepare('SELECT * FROM profile_evidence WHERE diagnostic_session_id = ? AND learner_id = ? ORDER BY created_at ASC, id ASC').all(id, learnerId) as Row[]).map(profileEvidenceFrom)
+    return diagnosticSessionFrom(row, turns, evidence)
+  }
+
+  listProfileEvidence(learnerId: string): ProfileEvidence[] {
+    return (this.db.prepare("SELECT * FROM profile_evidence WHERE learner_id = ? AND status = 'active' ORDER BY updated_at DESC, id DESC").all(learnerId) as Row[]).map(profileEvidenceFrom)
+  }
+
+  saveDiagnosticAnswers(input: { id: string; learnerId: string; revision: number; goal: string; weeklyMinutes: number; outcome: string; experience: string; selfAssessment: string; contextNote: string }): DiagnosticSession {
+    const current = this.db.prepare('SELECT * FROM diagnostic_sessions WHERE id = ? AND learner_id = ?').get(input.id, input.learnerId) as Row | undefined
+    if (!current) throw new Error(`Diagnostic session not found: ${input.id}`)
+    if (number(current, 'revision') !== input.revision) throw new Error('DIAGNOSTIC_REVISION_CONFLICT')
+    const intakeId = text(current, 'intake_id'); const now = new Date().toISOString()
+    const answers = [
+      ['experience', '你已有多少相关经验？', input.experience],
+      ['self_assessment', '你如何评价当前水平？', input.selfAssessment],
+      ['weekly_minutes', '每周可以投入多少时间？', String(input.weeklyMinutes)],
+      ['outcome', '你希望最终产出什么？', input.outcome],
+      ['context_note', '还有哪些背景需要补充？', input.contextNote || '未补充'],
+    ] as const
+    const transaction = this.db.transaction(() => {
+      this.db.prepare('UPDATE intakes SET goal = ?, weekly_minutes = ?, outcome = ?, updated_at = ? WHERE id = ? AND learner_id = ?').run(input.goal, input.weeklyMinutes, input.outcome, now, intakeId, input.learnerId)
+      this.db.prepare('UPDATE diagnostic_sessions SET status = \'ready\', revision = revision + 1, updated_at = ? WHERE id = ? AND learner_id = ? AND revision = ?').run(now, input.id, input.learnerId, input.revision)
+      this.db.prepare("UPDATE plan_proposals SET status = 'superseded', revision = revision + 1, updated_at = ? WHERE diagnostic_session_id = ? AND learner_id = ? AND status = 'ready'").run(now, input.id, input.learnerId)
+      this.db.prepare("UPDATE profile_evidence SET status = 'superseded', updated_at = ? WHERE diagnostic_session_id = ? AND learner_id = ? AND status = 'active'").run(now, input.id, input.learnerId)
+      const upsertTurn = this.db.prepare('INSERT INTO diagnostic_turns(id, session_id, position, question_key, question, answer, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(session_id, question_key) DO UPDATE SET answer = excluded.answer, updated_at = excluded.updated_at')
+      const evidence = this.db.prepare('INSERT INTO profile_evidence(id, learner_id, diagnostic_session_id, evidence_key, source_kind, content, status, created_at, updated_at) VALUES (?, ?, ?, ?, \'user_input\', ?, \'active\', ?, ?)')
+      answers.forEach(([key, question, answer], index) => { upsertTurn.run(randomUUID(), input.id, index + 1, key, question, answer, now, now); evidence.run(randomUUID(), input.learnerId, input.id, key, answer, now, now) })
+      evidence.run(randomUUID(), input.learnerId, input.id, 'goal', input.goal, now, now)
+    })
+    transaction()
+    return this.getDiagnosticSessionForLearner(input.id, input.learnerId)
+  }
+
+  createPlanProposal(input: { learnerId: string; sessionId: string; inputFingerprint: string; templateKey: string; targetKey: DiagnosticTargetKey; inputSnapshot: Record<string, unknown>; planSnapshot: PlanProposal['planSnapshot']; rationale: PlanProposal['rationale']; rulesVersion: string }): PlanProposal {
+    const existing = this.db.prepare('SELECT * FROM plan_proposals WHERE diagnostic_session_id = ? AND input_fingerprint = ?').get(input.sessionId, input.inputFingerprint) as Row | undefined
+    if (existing) return proposalFrom(existing)
+    const id = randomUUID(); const now = new Date().toISOString()
+    this.db.prepare('INSERT INTO plan_proposals(id, learner_id, diagnostic_session_id, input_fingerprint, template_key, target_key, status, rules_version, revision, input_snapshot_json, plan_snapshot_json, rationale_json, confirmed_plan_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, \'ready\', ?, 1, ?, ?, ?, NULL, ?, ?)').run(id, input.learnerId, input.sessionId, input.inputFingerprint, input.templateKey, input.targetKey, input.rulesVersion, JSON.stringify(input.inputSnapshot), JSON.stringify(input.planSnapshot), JSON.stringify(input.rationale), now, now)
+    this.db.prepare("UPDATE diagnostic_sessions SET status = 'proposed', updated_at = ? WHERE id = ? AND learner_id = ?").run(now, input.sessionId, input.learnerId)
+    return proposalFrom(this.db.prepare('SELECT * FROM plan_proposals WHERE id = ?').get(id) as Row)
+  }
+
+  getPlanProposalForLearner(id: string, learnerId: string): PlanProposal {
+    const row = this.db.prepare('SELECT * FROM plan_proposals WHERE id = ? AND learner_id = ?').get(id, learnerId) as Row | undefined
+    if (!row) throw new Error(`Plan proposal not found: ${id}`)
+    return proposalFrom(row)
+  }
+
+  confirmPlanProposalForLearner(id: string, learnerId: string, revision: number): LearningPlan {
+    const proposal = this.getPlanProposalForLearner(id, learnerId)
+    if (proposal.confirmedPlanId) return this.getPlanForLearner(proposal.confirmedPlanId, learnerId)
+    if (proposal.status !== 'ready') throw new Error('PLAN_PROPOSAL_NOT_READY')
+    if (proposal.revision !== revision) throw new Error('PROPOSAL_REVISION_CONFLICT')
+    const planId = randomUUID(); const now = new Date().toISOString(); const snapshot = proposal.planSnapshot
+    const transaction = this.db.transaction(() => {
+      const session = this.db.prepare('SELECT intake_id FROM diagnostic_sessions WHERE id = ? AND learner_id = ?').get(proposal.diagnosticSessionId, learnerId) as Row | undefined
+      if (!session) throw new Error('DIAGNOSTIC_SESSION_NOT_FOUND')
+      const latestProposal = this.db.prepare('SELECT status, revision, confirmed_plan_id FROM plan_proposals WHERE id = ? AND learner_id = ?').get(id, learnerId) as Row | undefined
+      if (!latestProposal) throw new Error('PLAN_PROPOSAL_NOT_FOUND')
+      if (nullableText(latestProposal, 'confirmed_plan_id')) throw new Error('PROPOSAL_ALREADY_CONFIRMED')
+      if (text(latestProposal, 'status') !== 'ready') throw new Error('PLAN_PROPOSAL_NOT_READY')
+      if (number(latestProposal, 'revision') !== revision) throw new Error('PROPOSAL_REVISION_CONFLICT')
+      const existingPlan = this.db.prepare("SELECT id FROM learning_plans WHERE learner_id = ? AND status IN ('confirmed', 'active', 'pending_content') LIMIT 1").get(learnerId) as Row | undefined
+      if (existingPlan) throw new Error('PLAN_EXISTS')
+      this.db.prepare("INSERT INTO learning_plans(id, learner_id, intake_id, title, goal, source_status, status, plan_state, template_key, revision, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 'local_catalog', 'active', ?, ?, 1, ?, ?)").run(planId, learnerId, text(session, 'intake_id'), snapshot.title, snapshot.goal, snapshot.planState, proposal.templateKey, now, now)
+      const insert = this.db.prepare('INSERT INTO plan_units(id, plan_id, position, title, objective, case_id, status, availability, learning_mode, estimated_minutes, rationale, completed_at, source_refs_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)')
+      snapshot.units.forEach((unit) => insert.run(randomUUID(), planId, unit.position, unit.title, unit.objective, unit.caseId, unit.status, unit.availability, unit.learningMode, unit.estimatedMinutes, unit.rationale, JSON.stringify(unit.sourceRefs)))
+      this.db.prepare("UPDATE intakes SET status = 'planned', updated_at = ? WHERE id = (SELECT intake_id FROM diagnostic_sessions WHERE id = ?)").run(now, proposal.diagnosticSessionId)
+      this.db.prepare("UPDATE diagnostic_sessions SET status = 'confirmed', updated_at = ? WHERE id = ? AND learner_id = ?").run(now, proposal.diagnosticSessionId, learnerId)
+      this.db.prepare('INSERT INTO plan_events(id, learner_id, plan_id, plan_unit_id, practice_run_id, type, payload_json, created_at) VALUES (?, ?, ?, NULL, NULL, \'plan_created\', ?, ?)').run(randomUUID(), learnerId, planId, JSON.stringify({ templateKey: proposal.templateKey, proposalId: id, rulesVersion: proposal.rulesVersion }), now)
+      const claimed = this.db.prepare("UPDATE plan_proposals SET status = 'confirmed', confirmed_plan_id = ?, revision = revision + 1, updated_at = ? WHERE id = ? AND learner_id = ? AND status = 'ready' AND revision = ?").run(planId, now, id, learnerId, revision)
+      if (claimed.changes === 0) throw new Error('PROPOSAL_ALREADY_CONFIRMED')
+    })
+    try { transaction() } catch (error) {
+      if (error instanceof Error && error.message === 'PROPOSAL_ALREADY_CONFIRMED') {
+        const latest = this.getPlanProposalForLearner(id, learnerId)
+        if (latest.confirmedPlanId) return this.getPlanForLearner(latest.confirmedPlanId, learnerId)
+      }
+      throw error
+    }
+    return this.getPlanForLearner(planId, learnerId)
   }
 
   listPlanUnits(planId: string): PlanUnit[] {

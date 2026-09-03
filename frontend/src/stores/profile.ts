@@ -1,19 +1,19 @@
 import { ref } from 'vue'
 import { defineStore } from 'pinia'
-import { getProfile } from '@/api/profileService'
-import type { UserProfile } from '@/types/domain'
+import { getProfileEvidence } from '@/api/profileService'
+import type { ProductProfileEvidence } from '@/types/product'
 
 export const useProfileStore = defineStore('profile', () => {
-  const profile = ref<UserProfile | null>(null)
+  const evidence = ref<ProductProfileEvidence[]>([])
   const loading = ref(false)
   const error = ref<string | null>(null)
 
   async function load() {
-    if (profile.value) return
+    if (evidence.value.length) return
     loading.value = true
     error.value = null
     try {
-      profile.value = await getProfile()
+      evidence.value = await getProfileEvidence()
     } catch (cause) {
       error.value = cause instanceof Error ? cause.message : '学习档案加载失败'
     } finally {
@@ -21,5 +21,5 @@ export const useProfileStore = defineStore('profile', () => {
     }
   }
 
-  return { profile, loading, error, load }
+  return { evidence, loading, error, load }
 })

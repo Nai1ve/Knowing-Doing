@@ -1,9 +1,6 @@
-import { mockProfile } from '@/data/mock'
-import type { UserProfile } from '@/types/domain'
+import type { ProductProfileEvidence } from '@/types/product'
 import { apiClient } from './client'
-import { useMockApi } from './mode'
 
-export async function getProfile(): Promise<UserProfile> {
-  if (useMockApi) return structuredClone(mockProfile)
-  return apiClient.request<UserProfile>('/profile')
-}
+const learnerStorageKey = 'zhixing.learner.id'
+function learnerId(): string { if (typeof window === 'undefined') return 'anonymous-web'; const existing = window.localStorage.getItem(learnerStorageKey); if (existing) return existing; const value = crypto.randomUUID(); window.localStorage.setItem(learnerStorageKey, value); return value }
+export function getProfileEvidence(): Promise<ProductProfileEvidence[]> { return apiClient.request<ProductProfileEvidence[]>('/product/profile/evidence', { headers: { 'X-Learner-Id': learnerId() } }) }

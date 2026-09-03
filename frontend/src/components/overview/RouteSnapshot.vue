@@ -23,7 +23,7 @@ defineProps<{ milestones: Milestone[] }>()
 .snapshot-heading { display: flex; align-items: end; justify-content: space-between; gap: 12px; padding-bottom: 10px; border-bottom: 1px solid var(--line); }
 .snapshot-heading h2 { margin: 7px 0 0; color: #303738; font: 400 22px var(--serif); }
 .snapshot-heading a { display: inline-flex; align-items: center; gap: 5px; color: var(--blue); font-size: 10px; text-decoration: none; }
-.route-line { display: grid; grid-template-columns: repeat(4, 1fr); gap: 0; padding-top: 18px; }
+.route-line { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0; padding-top: 18px; }
 .route-stop { position: relative; min-height: 110px; padding: 0 13px 0 20px; border-left: 1px solid var(--line); }
 .route-stop:first-child { border-left: 0; padding-inline-start: 0; }
 .route-stop::before { position: absolute; top: 5px; right: 0; left: 18px; height: 1px; background: var(--line); content: ""; }

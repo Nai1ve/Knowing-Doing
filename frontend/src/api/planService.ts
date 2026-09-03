@@ -1,8 +1,8 @@
 import type { ProductPlan } from '@/types/product'
 import { apiClient } from './client'
 
-export async function getActivePlan(): Promise<ProductPlan | null> {
-  return apiClient.request<ProductPlan | null>('/product/plans/active')
+export async function getCurrentPlan(): Promise<ProductPlan | null> {
+  return apiClient.request<ProductPlan | null>('/product/plans/current')
 }
 
 export async function createMysqlPerformancePlan(): Promise<ProductPlan> {

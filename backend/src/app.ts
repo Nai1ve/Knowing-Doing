@@ -176,6 +176,10 @@ function registerProductRoutes(app: FastifyInstance, service: PracticeService, w
     reply.send(service.getActivePlan(learnerId(request)))
   })
 
+  app.get('/api/product/plans/current', async (request, reply) => {
+    reply.send(service.getCurrentPlan(learnerId(request)))
+  })
+
   app.get('/api/product/plans/:planId', async (request, reply) => {
     reply.send(service.getPlan(learnerId(request), String((request.params as { planId: string }).planId)))
   })
@@ -184,6 +188,49 @@ function registerProductRoutes(app: FastifyInstance, service: PracticeService, w
     const params = request.params as { planId: string; unitId: string }
     const result = await service.startPlannedPractice({ learnerId: learnerId(request), planId: params.planId, planUnitId: params.unitId })
     reply.code(result.queue ? 202 : 201).send(result)
+  })
+
+  app.get('/api/product/onboarding/state', async (request, reply) => {
+    reply.send(service.onboardingState(learnerId(request)))
+  })
+
+  app.get('/api/product/profile/evidence', async (request, reply) => {
+    reply.send(service.profileEvidence(learnerId(request)))
+  })
+
+  app.post('/api/product/diagnostic-sessions', async (request, reply) => {
+    const body = productBody(request)
+    const targetKey = stringField(body, 'targetKey')
+    const goal = stringField(body, 'goal')
+    const clientRequestId = optionalString(body, 'clientRequestId')
+    reply.code(201).send(service.createDiagnosticSession({ learnerId: learnerId(request), targetKey: targetKey as 'mysql_performance' | 'general', goal, clientRequestId }))
+  })
+
+  app.get('/api/product/diagnostic-sessions/:sessionId', async (request, reply) => {
+    reply.send(service.getDiagnosticSession(learnerId(request), String((request.params as { sessionId: string }).sessionId)))
+  })
+
+  app.patch('/api/product/diagnostic-sessions/:sessionId', async (request, reply) => {
+    const body = productBody(request); const sessionId = String((request.params as { sessionId: string }).sessionId)
+    const session = service.getDiagnosticSession(learnerId(request), sessionId)
+    reply.send(service.saveDiagnosticAnswers({
+      learnerId: learnerId(request), sessionId, revision: numberField(body, 'revision'), targetKey: session.targetKey,
+      goal: stringField(body, 'goal'), experience: stringField(body, 'experience'), selfAssessment: stringField(body, 'selfAssessment'),
+      weeklyMinutes: numberField(body, 'weeklyMinutes'), outcome: stringField(body, 'outcome'), contextNote: optionalString(body, 'contextNote') ?? '',
+    }))
+  })
+
+  app.post('/api/product/diagnostic-sessions/:sessionId/proposals', async (request, reply) => {
+    reply.code(201).send(service.createDiagnosticProposal(learnerId(request), String((request.params as { sessionId: string }).sessionId)))
+  })
+
+  app.get('/api/product/plan-proposals/:proposalId', async (request, reply) => {
+    reply.send(service.getDiagnosticProposal(learnerId(request), String((request.params as { proposalId: string }).proposalId)))
+  })
+
+  app.post('/api/product/plan-proposals/:proposalId/confirm', async (request, reply) => {
+    const body = productBody(request)
+    reply.send(service.confirmDiagnosticProposal(learnerId(request), String((request.params as { proposalId: string }).proposalId), numberField(body, 'revision')))
   })
 
   app.post('/api/product/intakes', async (request, reply) => {
