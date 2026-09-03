@@ -6,7 +6,7 @@ import PageToc from './PageToc.vue'
 
 const route = useRoute()
 const currentPage = computed(() => String(route.name ?? 'overview'))
-const isWorkspacePage = computed(() => currentPage.value === 'lesson' || currentPage.value === 'writing' || currentPage.value.startsWith('writing-'))
+const isWorkspacePage = computed(() => currentPage.value === 'lesson' || currentPage.value === 'writing' || currentPage.value === 'planning' || currentPage.value === 'roadmap-preview' || currentPage.value === 'roadmap' || currentPage.value === 'roadmap-node' || currentPage.value.startsWith('writing-'))
 const tocItems = computed(() => ({
   overview: [{ label: '总目标', href: '#goal' }, { label: '当前状况', href: '#status' }, { label: '整体路线', href: '#overview-route' }, { label: '当前节点', href: '#current-node' }],
   start: [{ label: '开始学习', href: '#capture-title' }],

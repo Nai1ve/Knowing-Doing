@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ArrowRight, Database, FlaskConical } from 'lucide-vue-next'
+import { ArrowRight, Database } from 'lucide-vue-next'
 import { ref } from 'vue'
 import type { DiagnosticTargetKey } from '@/types/product'
 
@@ -15,7 +15,7 @@ function submit() { if (goal.value.trim()) emit('submit', { targetKey: targetKey
   <section class="capture-form" aria-labelledby="capture-title">
     <div class="form-copy"><div class="eyebrow">Start with a direction</div><h2 id="capture-title">你现在想系统学会什么？</h2><p>先告诉知行一个明确方向。接下来只会问几项真正会影响路线的问题。</p></div>
     <form @submit.prevent="submit">
-      <fieldset><legend>学习方向</legend><label :class="{ selected: targetKey === 'mysql_performance' }"><input v-model="targetKey" type="radio" value="mysql_performance" /><Database :size="15" aria-hidden="true" /><span><strong>MySQL 性能优化</strong><small>可直接进入真实实验</small></span></label><label :class="{ selected: targetKey === 'general' }"><input v-model="targetKey" type="radio" value="general" /><FlaskConical :size="15" aria-hidden="true" /><span><strong>其他技术</strong><small>先保存为待实施计划</small></span></label></fieldset>
+      <fieldset><legend>当前样例</legend><label class="selected"><input v-model="targetKey" type="radio" value="mysql_performance" /><Database :size="15" aria-hidden="true" /><span><strong>高级后端 + AI 应用工程师</strong><small>从后端系统能力与 MySQL 真实实践开始</small></span></label></fieldset>
       <label class="goal-label" for="learning-goal">学习目标</label><textarea id="learning-goal" v-model="goal" rows="3" maxlength="240" placeholder="例如：我想学会定位和优化 MySQL 慢查询" /><button class="primary-button" type="submit" :disabled="submitting || !goal.trim()"><ArrowRight :size="14" aria-hidden="true" />{{ submitting ? '正在创建诊断…' : '开始诊断' }}</button>
       <p v-if="error" class="form-error" role="alert">{{ error }}</p>
     </form>

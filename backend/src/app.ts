@@ -12,6 +12,7 @@ import { verifyLabToken } from './token.js'
 import { PracticeService, ProductNotFoundError, type TutorStreamEvent } from './practice-service.js'
 import { TutorProviderError } from './tutor.js'
 import { WritingConflictError, WritingNotFoundError, WritingService } from './writing-service.js'
+import { PlanningService } from './planning.js'
 
 type Body = Record<string, unknown>
 
@@ -43,6 +44,7 @@ export interface AppDependencies {
   store?: LabStore
   practiceServiceFactory?: (scheduler: LabScheduler) => PracticeService
   writingServiceFactory?: () => WritingService
+  planningServiceFactory?: () => PlanningService
   runtimeStatus?: () => Promise<Record<string, unknown>>
 }
 
@@ -145,8 +147,50 @@ export function buildApp(dependencies: AppDependencies): { app: FastifyInstance;
   })
 
   if (dependencies.practiceServiceFactory) registerProductRoutes(app, dependencies.practiceServiceFactory(scheduler), dependencies.writingServiceFactory?.())
+  if (dependencies.planningServiceFactory) registerPlanningRoutes(app, dependencies.planningServiceFactory())
 
   return { app, scheduler }
+}
+
+function registerPlanningRoutes(app: FastifyInstance, service: PlanningService): void {
+  app.post('/api/product/planning-sessions', async (request, reply) => {
+    const body = productBody(request)
+    reply.code(201).send(service.createSession(learnerId(request), { goal: optionalString(body, 'goal') ?? undefined, clientRequestId: optionalString(body, 'clientRequestId') }))
+  })
+  app.get('/api/product/planning-sessions/:sessionId', async (request, reply) => {
+    reply.send(service.getSession(learnerId(request), String((request.params as { sessionId: string }).sessionId)))
+  })
+  app.post('/api/product/planning-sessions/:sessionId/turns', async (request, reply) => {
+    const body = productBody(request)
+    reply.send(service.addTurn(learnerId(request), String((request.params as { sessionId: string }).sessionId), {
+      revision: numberField(body, 'revision'), stepKey: stringField(body, 'stepKey'), answer: stringField(body, 'answer'), structuredValue: body.structuredValue,
+    }))
+  })
+  app.post('/api/product/planning-sessions/:sessionId/adjustments', async (request, reply) => {
+    const body = productBody(request)
+    const mastered = body.masteredNodeKeys == null ? undefined : Array.isArray(body.masteredNodeKeys) && body.masteredNodeKeys.every((item) => typeof item === 'string') ? body.masteredNodeKeys as string[] : (() => { throw new LabError('invalid_request', 'masteredNodeKeys 必须是字符串数组', 400) })()
+    const weeklyMinutes = body.weeklyMinutes == null ? undefined : numberField(body, 'weeklyMinutes')
+    reply.send(service.adjust(learnerId(request), String((request.params as { sessionId: string }).sessionId), { revision: numberField(body, 'revision'), weeklyMinutes, priorityDomain: optionalString(body, 'priorityDomain') ?? undefined, masteredNodeKeys: mastered }))
+  })
+  app.get('/api/product/roadmap-drafts/:roadmapId', async (request, reply) => {
+    reply.send(service.getDraftForLearner(learnerId(request), String((request.params as { roadmapId: string }).roadmapId)))
+  })
+  app.post('/api/product/roadmap-drafts/:roadmapId/confirm', async (request, reply) => {
+    reply.send(service.confirm(learnerId(request), String((request.params as { roadmapId: string }).roadmapId), numberField(productBody(request), 'revision')))
+  })
+  app.get('/api/product/roadmaps/current', async (request, reply) => {
+    reply.send(service.current(learnerId(request)))
+  })
+  app.get('/api/product/roadmaps/:roadmapId/nodes', async (request, reply) => {
+    const query = request.query as { parentId?: string; depth?: string }
+    const depth = query.depth == null ? 1 : Number(query.depth)
+    if (!Number.isInteger(depth) || depth < 1 || depth > 2) throw new LabError('invalid_request', 'depth 必须是 1 或 2', 400)
+    reply.send(service.listNodes(learnerId(request), String((request.params as { roadmapId: string }).roadmapId), query.parentId || null, depth))
+  })
+  app.post('/api/product/roadmaps/:roadmapId/nodes/:nodeId/complete', async (request, reply) => {
+    const body = productBody(request); const status = body.status == null ? undefined : body.status === 'self_reported' || body.status === 'completed' ? body.status : (() => { throw new LabError('invalid_request', 'status 不受支持', 400) })()
+    reply.send(service.completeNode(learnerId(request), String((request.params as { roadmapId: string }).roadmapId), String((request.params as { nodeId: string }).nodeId), { revision: numberField(body, 'revision'), status }))
+  })
 }
 
 function learnerId(request: FastifyRequest): string {

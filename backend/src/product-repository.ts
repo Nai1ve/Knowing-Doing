@@ -61,7 +61,7 @@ function intakeFrom(row: Row): Intake {
 
 function unitFrom(row: Row): PlanUnit {
   return {
-    id: text(row, 'id'), planId: text(row, 'plan_id'), position: number(row, 'position'), title: text(row, 'title'),
+    id: text(row, 'id'), planId: text(row, 'plan_id'), roadmapNodeId: nullableText(row, 'roadmap_node_id'), position: number(row, 'position'), title: text(row, 'title'),
     objective: text(row, 'objective'), caseId: nullableText(row, 'case_id') as PlanUnit['caseId'],
     status: text(row, 'status') as PlanUnit['status'], availability: text(row, 'availability') as PlanUnit['availability'], completedAt: nullableText(row, 'completed_at'), sourceRefs: json<string[]>(row.source_refs_json, []),
     learningMode: (nullableText(row, 'learning_mode') ?? (row.case_id ? 'lab' : 'unavailable')) as PlanUnit['learningMode'], estimatedMinutes: row.estimated_minutes == null ? 60 : number(row, 'estimated_minutes'), rationale: nullableText(row, 'rationale') ?? '',
@@ -72,7 +72,7 @@ function planFrom(row: Row, units: PlanUnit[]): LearningPlan {
   return {
     id: text(row, 'id'), learnerId: text(row, 'learner_id'), intakeId: text(row, 'intake_id'), title: text(row, 'title'),
     goal: text(row, 'goal'), sourceStatus: text(row, 'source_status') as LearningPlan['sourceStatus'],
-    status: text(row, 'status') as LearningPlan['status'], templateKey: text(row, 'template_key'), revision: number(row, 'revision'), weeklyMinutes: row.weekly_minutes == null ? null : number(row, 'weekly_minutes'), createdAt: text(row, 'created_at'), updatedAt: text(row, 'updated_at'), units,
+    status: text(row, 'status') as LearningPlan['status'], templateKey: text(row, 'template_key'), roadmapId: nullableText(row, 'roadmap_id'), revision: number(row, 'revision'), weeklyMinutes: row.weekly_minutes == null ? null : number(row, 'weekly_minutes'), createdAt: text(row, 'created_at'), updatedAt: text(row, 'updated_at'), units,
     planState: (nullableText(row, 'plan_state') ?? 'active') as LearningPlan['planState'],
   }
 }

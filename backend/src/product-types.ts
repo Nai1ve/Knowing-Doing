@@ -144,6 +144,7 @@ export interface PlanProposal {
 export interface PlanUnit {
   id: string
   planId: string
+  roadmapNodeId?: string | null
   position: number
   title: string
   objective: string
@@ -166,6 +167,7 @@ export interface LearningPlan {
   sourceStatus: 'local_catalog' | 'retrieved' | 'general_model_knowledge'
   status: 'draft' | 'confirmed' | 'active' | 'completed' | 'superseded'
   templateKey: string
+  roadmapId?: string | null
   revision: number
   weeklyMinutes: number | null
   createdAt: string

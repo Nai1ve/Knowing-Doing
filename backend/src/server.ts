@@ -8,6 +8,7 @@ import { TutorEngine } from './tutor.js'
 import { WritingService } from './writing-service.js'
 import { CurationService, ModelCurationSummarizer } from './curation-service.js'
 import { DeepSeekWritingAgent } from './writing-agent.js'
+import { PlanningService } from './planning.js'
 
 const config = loadConfig()
 const productRepository = new ProductRepository(config.productDbPath)
@@ -17,10 +18,12 @@ const curation = new CurationService(productRepository, new ModelCurationSummari
 curation.resume()
 const writingService = new WritingService(productRepository, curation, new DeepSeekWritingAgent(config))
 writingService.resumeGenerations()
+const planningService = new PlanningService(productRepository)
 const { app, scheduler } = buildApp({
   config,
-  practiceServiceFactory: (labScheduler) => new PracticeService(productRepository, labScheduler, new TutorEngine(config), retrieval, curation, (runId) => { writingService.enqueueAutoDraft(runId) }),
+  practiceServiceFactory: (labScheduler) => new PracticeService(productRepository, labScheduler, new TutorEngine(config), retrieval, curation, (runId) => { planningService.markLabVerified(runId); writingService.enqueueAutoDraft(runId) }),
   writingServiceFactory: () => writingService,
+  planningServiceFactory: () => planningService,
   runtimeStatus: async () => ({ model: { configured: Boolean(config.modelBaseUrl && config.modelApiKey), name: config.modelName }, zhihu: { configured: Boolean(config.zhihuCliPath), executable: await new ZhihuCliProvider(config).isAvailable(), lastRetrieval: null } }),
 })
 
