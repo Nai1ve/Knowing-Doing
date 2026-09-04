@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "@vitejs/plugin-vue": "latest",
+    "@vue-flow/core": "^1.48.2",
     "dompurify": "^3.4.14",
     "lucide-vue-next": "latest",
     "markdown-it": "^15.0.1",
@@ -24,9 +25,9 @@
     "@types/dompurify": "^3.0.5",
     "@types/markdown-it": "^14.2.0",
     "@types/node": "22.15.30",
-    "typescript": "5.9.3",
-    "vue-tsc": "3.3.11",
     "jsdom": "^26.1.0",
-    "vitest": "^3.2.4"
+    "typescript": "5.9.3",
+    "vitest": "^3.2.4",
+    "vue-tsc": "3.3.11"
   }
 }

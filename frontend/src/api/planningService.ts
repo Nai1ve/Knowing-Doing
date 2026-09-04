@@ -1,5 +1,5 @@
 import { apiClient } from './client'
-import type { CurrentRoadmapResponse, PlanningSession, RoadmapDraft, RoadmapNode, RoadmapNodePage } from '@/types/product'
+import type { CurrentRoadmapResponse, PlanningSession, ProductResumeAttachment, RoadmapDraft, RoadmapNode, RoadmapNodePage } from '@/types/product'
 
 const learnerKey = 'zhixing.learner.id'
 function learnerId(): string {
@@ -11,6 +11,7 @@ function request<T>(path: string, init: RequestInit = {}): Promise<T> { const he
 
 export function createPlanningSession(goal?: string): Promise<PlanningSession> { return request<PlanningSession>('/product/planning-sessions', { method: 'POST', body: JSON.stringify({ goal, clientRequestId: crypto.randomUUID() }) }) }
 export function getPlanningSession(id: string): Promise<PlanningSession> { return request<PlanningSession>(`/product/planning-sessions/${id}`) }
+export function uploadPlanningResume(sessionId: string, file: File): Promise<ProductResumeAttachment> { const body = new FormData(); body.append('resume', file, file.name); return request<ProductResumeAttachment>(`/product/planning-sessions/${sessionId}/resume`, { method: 'POST', body }) }
 export function addPlanningTurn(id: string, input: { revision: number; stepKey: string; answer: string; structuredValue?: unknown }): Promise<PlanningSession> { return request<PlanningSession>(`/product/planning-sessions/${id}/turns`, { method: 'POST', body: JSON.stringify(input) }) }
 export function adjustPlanning(id: string, input: { revision: number; weeklyMinutes?: number; priorityDomain?: string; masteredNodeKeys?: string[] }): Promise<RoadmapDraft> { return request<RoadmapDraft>(`/product/planning-sessions/${id}/adjustments`, { method: 'POST', body: JSON.stringify(input) }) }
 export function getRoadmapDraft(id: string): Promise<RoadmapDraft> { return request<RoadmapDraft>(`/product/roadmap-drafts/${id}`) }

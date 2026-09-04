@@ -4,7 +4,7 @@ import { assertProductMigrations, openProductDatabase } from './product-migrate.
 import { evaluatePracticeCompletion } from './coach.js'
 import type {
   Artifact, ArtifactKind, ArtifactSourceKind, CaseStage, DiagnosticSession, DiagnosticSessionStatus, DiagnosticTargetKey, DiagnosticTurn, EventActor, EventType, Intake, LearningPlan,
-  LabSegment, Learner, MemoryItem, PathNode, PlanProposal, PlanProposalStatus, PlanProposalUnit, PlanUnit, PracticeEvent, PracticePin, PracticeRun, PracticeSnapshot, ProfileEvidence, SourceItem,
+  LabSegment, Learner, MemoryItem, PathNode, PlanProposal, PlanProposalStatus, PlanProposalUnit, PlanUnit, PracticeEvent, PracticePin, PracticeRun, PracticeSnapshot, ProfileEvidence, ResumeAttachment, SourceItem,
   StageMemory, TutorInvocation, TutorInvocationStatus, VerificationStatus, WritingBlockEvidence, WritingEvidenceReference, WritingCapsuleMember, WritingClusterCapsule, WritingClaim, WritingCluster, WritingClusterDetail, WritingClusterKey, WritingClusterMember, WritingClusterMemberRole, WritingClusterOverview, WritingClusterStatus, WritingClusterSummaryStatus, WritingDocument, WritingDocumentBlock, WritingEvidenceItem, WritingEvidencePack, WritingGenerationJob, WritingGenerationKind, WritingGenerationStatus, WritingMaterial, WritingProject, WritingReviewItem, WritingSection, WritingSectionBlock, WritingDraftRun, WritingDraftPhase, WritingDraftStatus,
 } from './product-types.js'
 
@@ -83,6 +83,10 @@ function diagnosticTurnFrom(row: Row): DiagnosticTurn {
 
 function profileEvidenceFrom(row: Row): ProfileEvidence {
   return { id: text(row, 'id'), learnerId: text(row, 'learner_id'), diagnosticSessionId: text(row, 'diagnostic_session_id'), evidenceKey: text(row, 'evidence_key'), sourceKind: 'user_input', content: text(row, 'content'), status: text(row, 'status') as ProfileEvidence['status'], createdAt: text(row, 'created_at'), updatedAt: text(row, 'updated_at') }
+}
+
+function resumeAttachmentFrom(row: Row): ResumeAttachment {
+  return { id: text(row, 'id'), learnerId: text(row, 'learner_id'), planningSessionId: text(row, 'planning_session_id'), originalFilename: text(row, 'original_filename'), mimeType: 'application/pdf', sizeBytes: number(row, 'size_bytes'), sha256: text(row, 'sha256'), parseStatus: text(row, 'parse_status') as ResumeAttachment['parseStatus'], pageCount: number(row, 'page_count'), textLength: number(row, 'text_length'), parseError: nullableText(row, 'parse_error'), createdAt: text(row, 'created_at'), updatedAt: text(row, 'updated_at') }
 }
 
 function diagnosticSessionFrom(row: Row, turns: DiagnosticTurn[], evidence: ProfileEvidence[]): DiagnosticSession {
@@ -545,6 +549,22 @@ export class ProductRepository {
     const turns = (this.db.prepare('SELECT * FROM diagnostic_turns WHERE session_id = ? ORDER BY position ASC').all(id) as Row[]).map(diagnosticTurnFrom)
     const evidence = (this.db.prepare('SELECT * FROM profile_evidence WHERE diagnostic_session_id = ? AND learner_id = ? ORDER BY created_at ASC, id ASC').all(id, learnerId) as Row[]).map(profileEvidenceFrom)
     return diagnosticSessionFrom(row, turns, evidence)
+  }
+
+  getPlanningResumeAttachment(planningSessionId: string, learnerId: string): ResumeAttachment | null {
+    const row = this.db.prepare('SELECT * FROM planning_resume_attachments WHERE planning_session_id = ? AND learner_id = ? LIMIT 1').get(planningSessionId, learnerId) as Row | undefined
+    return row ? resumeAttachmentFrom(row) : null
+  }
+
+  replacePlanningResumeAttachment(input: { id: string; learnerId: string; planningSessionId: string; originalFilename: string; storedFilename: string; sizeBytes: number; sha256: string; pageCount: number; extractedText: string }): { attachment: ResumeAttachment; previousStoredFilename: string | null } {
+    const previous = this.db.prepare('SELECT stored_filename FROM planning_resume_attachments WHERE planning_session_id = ? AND learner_id = ?').get(input.planningSessionId, input.learnerId) as Row | undefined
+    const now = new Date().toISOString()
+    this.db.transaction(() => {
+      this.db.prepare('DELETE FROM planning_resume_attachments WHERE planning_session_id = ? AND learner_id = ?').run(input.planningSessionId, input.learnerId)
+      this.db.prepare('INSERT INTO planning_resume_attachments(id, learner_id, planning_session_id, original_filename, stored_filename, mime_type, size_bytes, sha256, parse_status, page_count, text_length, extracted_text, parse_error, created_at, updated_at) VALUES (?, ?, ?, ?, ?, \'application/pdf\', ?, ?, \'ready\', ?, ?, ?, NULL, ?, ?)').run(input.id, input.learnerId, input.planningSessionId, input.originalFilename, input.storedFilename, input.sizeBytes, input.sha256, input.pageCount, input.extractedText.length, input.extractedText, now, now)
+    })()
+    const row = this.db.prepare('SELECT * FROM planning_resume_attachments WHERE id = ? AND learner_id = ?').get(input.id, input.learnerId) as Row
+    return { attachment: resumeAttachmentFrom(row), previousStoredFilename: previous ? text(previous, 'stored_filename') : null }
   }
 
   listProfileEvidence(learnerId: string): ProfileEvidence[] {

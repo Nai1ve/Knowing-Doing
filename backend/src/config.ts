@@ -1,3 +1,4 @@
+import path from 'node:path'
 import type { CaseId } from './domain.js'
 
 function numberEnv(name: string, fallback: number): number {
@@ -31,6 +32,8 @@ export interface LabConfig {
   modelApiKey: string
   modelName: string
   modelTimeoutMs: number
+  resumeStoragePath: string
+  resumeMaxBytes: number
   zhihuCliPath: string
   retrievalTimeoutMs: number
   retrievalCacheTtlMs: number
@@ -66,6 +69,8 @@ export function loadConfig(): LabConfig {
     modelApiKey: process.env.ZHIXING_MODEL_API_KEY ?? '',
     modelName: process.env.ZHIXING_MODEL_NAME ?? 'default',
     modelTimeoutMs: numberEnv('ZHIXING_MODEL_TIMEOUT_MS', 5 * 60 * 1000),
+    resumeStoragePath: process.env.ZHIXING_RESUME_STORAGE_PATH ?? path.resolve(process.cwd(), 'data/resumes'),
+    resumeMaxBytes: numberEnv('ZHIXING_RESUME_MAX_BYTES', 10 * 1024 * 1024),
     zhihuCliPath: process.env.ZHIXING_ZHIHU_CLI_PATH ?? '',
     retrievalTimeoutMs: numberEnv('ZHIXING_RETRIEVAL_TIMEOUT_MS', 15_000),
     retrievalCacheTtlMs: numberEnv('ZHIXING_RETRIEVAL_CACHE_TTL_MS', 24 * 60 * 60 * 1000),

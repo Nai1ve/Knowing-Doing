@@ -1,10 +1,20 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, ref } from 'vue'
-import { BookOpen, CheckCircle2, ChevronDown, ChevronRight, FlaskConical, LockKeyhole, Minus, Plus, RotateCcw } from 'lucide-vue-next'
+import { computed, markRaw, nextTick, watch } from 'vue'
+import { Panel, VueFlow, useVueFlow, type Edge, type Node, type NodeMouseEvent } from '@vue-flow/core'
+import { Minus, Plus, RotateCcw } from 'lucide-vue-next'
 import type { RoadmapNode } from '@/types/product'
+import RoadmapMindmapNode from './RoadmapMindmapNode.vue'
 
-interface Point { x: number; y: number }
-interface PositionedNode { node: RoadmapNode; point: Point; direction: Point }
+interface FlowNodeData {
+  kind: 'goal' | 'roadmap'
+  goal?: string
+  node?: RoadmapNode
+  selected?: boolean
+  current?: boolean
+  open?: boolean
+}
+
+type MindmapNode = Node<FlowNodeData>
 
 const props = defineProps<{
   goal: string
@@ -19,57 +29,117 @@ const emit = defineEmits<{
   toggle: [node: RoadmapNode]
 }>()
 
-const scale = ref(1)
-const pan = ref<Point>({ x: 0, y: 0 })
-const dragging = ref(false)
-const dragStart = ref<Point>({ x: 0, y: 0 })
-const panStart = ref<Point>({ x: 0, y: 0 })
+const nodeTypes = markRaw({ goal: RoadmapMindmapNode, roadmap: RoadmapMindmapNode })
+const flow = useVueFlow('roadmap-mindmap')
+const nodeMap = computed(() => new Map(props.nodes.map((node) => [node.id, node])))
 
-function outward(point: Point): Point {
-  const length = Math.hypot(point.x, point.y) || 1
-  return { x: point.x / length, y: point.y / length }
-}
-
-function childrenOf(parentId: string): RoadmapNode[] {
+function childrenOf(parentId: string) {
   return props.nodes.filter((node) => node.parentId === parentId).sort((a, b) => a.position - b.position)
 }
 
-function placeChildren(parent: PositionedNode, children: RoadmapNode[], result: PositionedNode[]) {
-  const direction = parent.direction
-  const perpendicular = { x: -direction.y, y: direction.x }
-  const spread = Math.min(13, 30 / Math.max(children.length, 2))
-  const distance = parent.node.parentId === null ? 16 : 13
-  const middle = (children.length - 1) / 2
-  children.forEach((node, index) => {
-    const point = {
-      x: parent.point.x + direction.x * distance + perpendicular.x * (index - middle) * spread,
-      y: parent.point.y + direction.y * distance + perpendicular.y * (index - middle) * spread,
-    }
-    const positioned = { node, point, direction: outward({ x: point.x - 50, y: point.y - 50 }) }
-    result.push(positioned)
-    if (props.openIds.includes(node.id)) placeChildren(positioned, childrenOf(node.id), result)
-  })
+function outward(x: number, y: number) {
+  const length = Math.hypot(x, y) || 1
+  return { x: x / length, y: y / length }
 }
 
-const positionedNodes = computed<PositionedNode[]>(() => {
+function positionForRoot(index: number) {
+  return [
+    { x: -430, y: -180 },
+    { x: 430, y: -180 },
+    { x: 0, y: 350 },
+  ][index] ?? { x: index % 2 ? 500 : -500, y: 200 + Math.floor(index / 2) * 190 }
+}
+
+function childPosition(parent: { x: number; y: number }, index: number, total: number) {
+  const direction = outward(parent.x, parent.y)
+  const perpendicular = { x: -direction.y, y: direction.x }
+  const middle = (total - 1) / 2
+  const spread = total > 3 ? 150 : 175
+  return {
+    x: parent.x + direction.x * 250 + perpendicular.x * (index - middle) * spread,
+    y: parent.y + direction.y * 250 + perpendicular.y * (index - middle) * spread,
+  }
+}
+
+function buildPositions() {
+  const positions = new Map<string, { x: number; y: number }>()
   const roots = props.nodes.filter((node) => node.parentId === null).sort((a, b) => a.position - b.position)
-  const anchors: Point[] = [{ x: 25, y: 22 }, { x: 75, y: 22 }, { x: 75, y: 78 }, { x: 25, y: 78 }]
-  const result: PositionedNode[] = []
-  roots.forEach((node, index) => {
-    const point = anchors[index] ?? { x: 50 + (index % 2 ? 25 : -25), y: 20 + Math.min(index, 3) * 20 }
-    const positioned = { node, point, direction: outward({ x: point.x - 50, y: point.y - 50 }) }
-    result.push(positioned)
-    if (props.openIds.includes(node.id)) placeChildren(positioned, childrenOf(node.id), result)
+
+  function placeBranch(node: RoadmapNode, position: { x: number; y: number }) {
+    positions.set(node.id, position)
+    const children = childrenOf(node.id)
+    children.forEach((child, index) => placeBranch(child, childPosition(position, index, children.length)))
+  }
+
+  roots.forEach((node, index) => placeBranch(node, positionForRoot(index)))
+  return positions
+}
+
+function handlePair(source: { x: number; y: number }, target: { x: number; y: number }) {
+  const dx = target.x - source.x
+  const dy = target.y - source.y
+  if (Math.abs(dx) >= Math.abs(dy)) return dx >= 0 ? { sourceHandle: 'source-right', targetHandle: 'target-left' } : { sourceHandle: 'source-left', targetHandle: 'target-right' }
+  return dy >= 0 ? { sourceHandle: 'source-bottom', targetHandle: 'target-top' } : { sourceHandle: 'source-top', targetHandle: 'target-bottom' }
+}
+
+const positions = computed(() => buildPositions())
+const flowNodes = computed<MindmapNode[]>(() => [
+  {
+    id: 'goal',
+    type: 'goal' as const,
+    position: { x: 0, y: 0 },
+    width: 280,
+    height: 130,
+    selectable: false,
+    draggable: false,
+    connectable: false,
+    data: { kind: 'goal' as const, goal: props.goal },
+  },
+  ...props.nodes.map((node): MindmapNode => ({
+    id: node.id,
+    type: 'roadmap' as const,
+    position: positions.value.get(node.id) ?? { x: 0, y: 0 },
+    width: node.nodeType === 'domain' ? 224 : 196,
+    height: node.nodeType === 'domain' ? 112 : 98,
+    selectable: false,
+    draggable: false,
+    connectable: false,
+    ariaLabel: `${node.title}，${statusLabel(node)}`,
+    data: {
+      kind: 'roadmap' as const,
+      node,
+      selected: node.id === props.selectedId,
+      current: node.id === props.currentNodeId,
+      open: props.openIds.includes(node.id),
+    },
+  })),
+])
+
+const flowEdges = computed<Edge[]>(() => {
+  const visible = nodeMap.value
+  const result: Edge[] = []
+  props.nodes.forEach((node) => {
+    const targetPosition = positions.value.get(node.id)
+    const parentPosition = node.parentId ? positions.value.get(node.parentId) : { x: 0, y: 0 }
+    if (!targetPosition || !parentPosition) return
+    const pair = handlePair(parentPosition, targetPosition)
+    const active = node.id === props.selectedId || node.parentId === props.selectedId
+    result.push({
+      id: `edge-${node.parentId ?? 'goal'}-${node.id}`,
+      source: node.parentId ?? 'goal',
+      target: node.id,
+      sourceHandle: pair.sourceHandle,
+      targetHandle: pair.targetHandle,
+      type: 'bezier',
+      selectable: false,
+      style: { stroke: active ? '#d27b50' : '#aeb8c4', strokeWidth: active ? 2.5 : 1.35, opacity: active ? 1 : .8 },
+      data: { visible: visible.has(node.id) },
+    })
   })
   return result
 })
 
-const edges = computed(() => positionedNodes.value.flatMap((item) => {
-  const start = item.node.parentId
-    ? positionedNodes.value.find((candidate) => candidate.node.id === item.node.parentId)?.point
-    : { x: 50, y: 50 }
-  return start ? [{ start, end: item.point, active: item.node.id === props.selectedId || item.node.parentId === props.selectedId }] : []
-}))
+const zoomLabel = computed(() => `${Math.round(flow.viewport.value.zoom * 100)}%`)
 
 function statusLabel(node: RoadmapNode) {
   if (node.status === 'verified') return '已验证'
@@ -80,57 +150,78 @@ function statusLabel(node: RoadmapNode) {
   return '后续开放'
 }
 
-function statusIcon(node: RoadmapNode) {
-  if (node.status === 'locked') return LockKeyhole
-  if (node.learningMode === 'lab') return FlaskConical
-  return node.status === 'completed' || node.status === 'verified' ? CheckCircle2 : BookOpen
+function zoomIn() { void flow.zoomIn({ duration: 180 }) }
+function zoomOut() { void flow.zoomOut({ duration: 180 }) }
+function fitView() { void flow.fitView({ padding: .2, duration: 240 }) }
+
+function handleNodeClick({ node, event }: NodeMouseEvent) {
+  const data = node.data as FlowNodeData
+  if (!data.node) return
+  const path = typeof event.composedPath === 'function' ? event.composedPath() : []
+  const target = event.target instanceof HTMLElement ? event.target : null
+  const clickedExpand = path.some((item) => item instanceof HTMLElement && item.dataset.action === 'expand') || Boolean(target?.closest('[data-action="expand"]'))
+  if (clickedExpand) emit('toggle', data.node)
+  else emit('select', data.node)
 }
 
-function nodeStyle(item: PositionedNode) { return { left: item.point.x + '%', top: item.point.y + '%' } }
-function zoom(delta: number) { scale.value = Math.min(1.35, Math.max(.72, Number((scale.value + delta).toFixed(2)))) }
-function resetView() { scale.value = 1; pan.value = { x: 0, y: 0 } }
-
-function startDrag(event: PointerEvent) {
-  if (event.button !== 0) return
-  dragging.value = true; dragStart.value = { x: event.clientX, y: event.clientY }; panStart.value = { ...pan.value }
-  ;(event.currentTarget as HTMLElement).setPointerCapture(event.pointerId)
-}
-function moveDrag(event: PointerEvent) {
-  if (!dragging.value) return
-  pan.value = { x: panStart.value.x + event.clientX - dragStart.value.x, y: panStart.value.y + event.clientY - dragStart.value.y }
-}
-function stopDrag(event?: PointerEvent) {
-  dragging.value = false
-  if (event?.currentTarget instanceof HTMLElement && event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId)
-}
-function wheel(event: WheelEvent) { zoom(event.deltaY > 0 ? -.06 : .06) }
-onBeforeUnmount(() => { dragging.value = false })
+watch(() => props.nodes.map((node) => node.id).join(','), () => {
+  void nextTick(() => fitView())
+})
 </script>
 
 <template>
   <section class="mindmap-shell" aria-labelledby="mindmap-title">
     <header class="mindmap-toolbar">
-      <div><div class="eyebrow">The learning map</div><h2 id="mindmap-title">从目标出发，沿着能力分支逐步点亮。</h2></div>
-      <div class="mindmap-controls" aria-label="路线图视图控制">
-        <button type="button" title="缩小路线图" aria-label="缩小路线图" @click="zoom(-.1)"><Minus :size="14" aria-hidden="true" /></button><span>{{ Math.round(scale * 100) }}%</span><button type="button" title="放大路线图" aria-label="放大路线图" @click="zoom(.1)"><Plus :size="14" aria-hidden="true" /></button><button type="button" title="恢复路线图视图" aria-label="恢复路线图视图" @click="resetView"><RotateCcw :size="14" aria-hidden="true" /></button>
+      <div>
+        <div class="eyebrow">The learning map</div>
+        <h2 id="mindmap-title">从目标出发，沿着能力分支逐步点亮。</h2>
       </div>
+      <div class="mindmap-status"><span class="map-dot" />{{ nodes.length }} 个已载入节点 · 可展开分支</div>
     </header>
-    <div class="mindmap-viewport" :class="{ dragging }" @pointerdown="startDrag" @pointermove="moveDrag" @pointerup="stopDrag" @pointercancel="stopDrag" @wheel.prevent="wheel">
-      <div class="mindmap-stage" :style="{ transform: 'translate(' + pan.x + 'px, ' + pan.y + 'px) scale(' + scale + ')' }">
-        <svg class="mindmap-edges" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true"><line v-for="(edge, index) in edges" :key="index" :class="{ active: edge.active }" :x1="edge.start.x" :y1="edge.start.y" :x2="edge.end.x" :y2="edge.end.y" /></svg>
-        <div class="goal-node"><span class="goal-node-label">LONG-TERM GOAL</span><strong>{{ goal }}</strong><small>能力路线图</small></div>
-        <button v-for="item in positionedNodes" :key="item.node.id" type="button" class="mindmap-node" :class="['status-' + item.node.status, 'type-' + item.node.nodeType, { selected: item.node.id === selectedId, current: item.node.id === currentNodeId }]" :style="nodeStyle(item)" :aria-label="item.node.title + '，' + statusLabel(item.node)" @pointerdown.stop @click="emit('select', item.node)">
-          <span class="node-status"><component :is="statusIcon(item.node)" :size="13" aria-hidden="true" />{{ statusLabel(item.node) }}</span><strong>{{ item.node.title }}</strong><small>{{ item.node.nodeType === 'domain' ? '能力域' : item.node.nodeType === 'capability' ? '能力分支' : '学习节点' }}<template v-if="item.node.childCount"> · {{ item.node.childCount }} 个子节点</template></small>
-          <span v-if="item.node.childCount" class="expand-control" :title="openIds.includes(item.node.id) ? '收起分支' : '展开分支'" :aria-label="openIds.includes(item.node.id) ? '收起分支' : '展开分支'" @click.stop="emit('toggle', item.node)"><component :is="openIds.includes(item.node.id) ? ChevronDown : ChevronRight" :size="13" aria-hidden="true" /></span>
-        </button>
-      </div>
+    <div class="mindmap-viewport">
+      <VueFlow id="roadmap-mindmap" :nodes="flowNodes" :edges="flowEdges" :node-types="nodeTypes" :nodes-draggable="false" :nodes-connectable="false" :elements-selectable="false" :zoom-on-double-click="false" :pan-on-scroll="true" :min-zoom=".35" :max-zoom="1.5" :fit-view-on-init="true" :fit-view-on-init-options="{ padding: .2 }" aria-label="学习路线脑图" @node-click="handleNodeClick">
+        <Panel position="top-right" class="mindmap-controls" aria-label="路线图视图控制">
+          <button type="button" title="缩小路线图" aria-label="缩小路线图" @click="zoomOut"><Minus :size="14" aria-hidden="true" /></button>
+          <span>{{ zoomLabel }}</span>
+          <button type="button" title="放大路线图" aria-label="放大路线图" @click="zoomIn"><Plus :size="14" aria-hidden="true" /></button>
+          <button type="button" title="适配全部节点" aria-label="适配全部节点" @click="fitView"><RotateCcw :size="14" aria-hidden="true" /></button>
+        </Panel>
+      </VueFlow>
     </div>
-    <footer class="mindmap-legend"><span><i class="legend-dot available" />可开始</span><span><i class="legend-dot completed" />已完成 / 已验证</span><span><i class="legend-dot locked" />后续开放</span><span class="legend-hint">点击节点查看详情，使用右上角控制查看全局</span></footer>
+    <footer class="mindmap-legend"><span><i class="legend-dot available" />可开始</span><span><i class="legend-dot completed" />已完成 / 已验证</span><span><i class="legend-dot locked" />后续开放</span><span class="legend-hint">拖动画布浏览 · 滚轮缩放 · 点击节点查看详情</span></footer>
   </section>
 </template>
 
 <style scoped>
-.mindmap-shell { margin-top: 28px; border-top: 2px solid var(--blue); background: var(--paper-deep); }.mindmap-toolbar { display: flex; align-items: end; justify-content: space-between; gap: 20px; padding: 15px 17px 12px; border-bottom: 1px solid var(--line); }.mindmap-toolbar h2 { margin: 6px 0 0; color: var(--ink); font: 400 20px/1.25 var(--serif); }.mindmap-controls { display: flex; align-items: center; gap: 5px; color: var(--muted); font: 9px var(--mono); }.mindmap-controls button { display: inline-flex; align-items: center; justify-content: center; width: 29px; height: 29px; border: 1px solid var(--line); background: var(--paper); color: var(--blue); cursor: pointer; }.mindmap-controls button:hover { border-color: var(--blue); background: var(--blue-soft); }.mindmap-controls span { min-width: 38px; text-align: center; }.mindmap-viewport { height: 590px; overflow: hidden; cursor: grab; background: var(--paper-muted); }.mindmap-viewport.dragging { cursor: grabbing; }.mindmap-stage { position: relative; width: 100%; height: 100%; transform-origin: center; transition: transform .18s ease-out; }.mindmap-edges { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }.mindmap-edges line { stroke: #c5cbd5; stroke-width: .32; vector-effect: non-scaling-stroke; }.mindmap-edges line.active { stroke: var(--orange); stroke-width: .58; }.goal-node, .mindmap-node { position: absolute; transform: translate(-50%, -50%); }.goal-node { display: grid; place-items: center; width: 220px; min-height: 105px; padding: 16px; border: 1px solid #8c98e5; background: var(--blue); color: var(--white); text-align: center; box-shadow: 0 11px 25px rgba(48,75,210,.18); }.goal-node-label { color: #cdd3ff; font: 8px var(--mono); letter-spacing: .7px; }.goal-node strong { max-width: 190px; margin-top: 7px; font: 400 21px/1.2 var(--serif); }.goal-node small { margin-top: 5px; color: #dfe3ff; font-size: 9px; }.mindmap-node { display: grid; grid-template-columns: 1fr auto; width: 174px; min-height: 86px; padding: 11px 28px 10px 12px; border: 1px solid var(--line); background: rgba(255,255,255,.94); color: #5d6964; text-align: left; cursor: pointer; box-shadow: 0 6px 16px rgba(54,65,76,.06); }.mindmap-node:hover, .mindmap-node.selected { border-color: var(--orange); background: #fffaf2; box-shadow: 0 8px 18px rgba(180,104,68,.13); }.mindmap-node.current { border-color: var(--green); }.mindmap-node.type-domain { width: 192px; min-height: 96px; border-top: 3px solid var(--blue); }.mindmap-node.status-locked { opacity: .68; }.mindmap-node.status-verified, .mindmap-node.status-completed { border-left: 3px solid var(--green); }.node-status { grid-column: 1 / -1; display: flex; align-items: center; gap: 5px; color: #8a928c; font: 8px var(--mono); }.status-available .node-status { color: var(--orange); }.status-verified .node-status, .status-completed .node-status { color: var(--green); }.mindmap-node strong { grid-column: 1 / -1; margin-top: 7px; color: var(--ink); font: 400 15px/1.25 var(--serif); }.mindmap-node > small { grid-column: 1 / -1; margin-top: 5px; color: #8b938e; font: 8px var(--mono); }.expand-control { position: absolute; top: 10px; right: 8px; display: inline-flex; align-items: center; justify-content: center; width: 20px; height: 20px; border: 1px solid var(--line); background: var(--paper); color: var(--blue); }.mindmap-legend { display: flex; align-items: center; flex-wrap: wrap; gap: 13px; padding: 10px 17px; border-top: 1px solid var(--line); color: #808983; font: 9px var(--mono); }.mindmap-legend span { display: inline-flex; align-items: center; gap: 5px; }.legend-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--line); }.legend-dot.available { background: var(--orange); }.legend-dot.completed { background: var(--green); }.legend-dot.locked { background: #a7adb1; }.legend-hint { margin-left: auto; color: #9a9f9a; }
-@media (max-width: 800px) { .mindmap-toolbar { align-items: stretch; flex-direction: column; }.mindmap-controls { align-self: start; }.mindmap-viewport { height: 540px; min-width: 0; }.mindmap-stage { min-width: 820px; left: -150px; }.mindmap-legend { align-items: flex-start; flex-direction: column; gap: 7px; }.legend-hint { margin-left: 0; } }
-@media (prefers-reduced-motion: reduce) { .mindmap-stage { transition: none; } }
+.mindmap-shell { margin-top: 28px; border-top: 2px solid var(--blue); background: var(--paper-deep); }
+.mindmap-toolbar { display: flex; align-items: end; justify-content: space-between; gap: 20px; padding: 15px 17px 12px; border-bottom: 1px solid var(--line); }
+.mindmap-toolbar h2 { margin: 6px 0 0; color: var(--ink); font: 400 20px/1.25 var(--serif); }
+.mindmap-status { display: inline-flex; align-items: center; gap: 7px; color: var(--muted); font: 9px var(--mono); }
+.map-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--green); }
+.mindmap-viewport { height: 610px; overflow: hidden; background-color: #f3f3ed; background-image: radial-gradient(#dfe2dc 1px, transparent 1px); background-size: 24px 24px; }
+.mindmap-viewport :deep(.vue-flow) { width: 100%; height: 100%; }
+.mindmap-viewport :deep(.vue-flow__pane) { cursor: grab; }
+.mindmap-viewport :deep(.vue-flow__pane.dragging) { cursor: grabbing; }
+.mindmap-viewport :deep(.vue-flow__edge path) { transition: stroke .16s ease, stroke-width .16s ease; }
+.mindmap-viewport :deep(.vue-flow__handle) { width: 1px; height: 1px; border: 0; opacity: 0; pointer-events: none; }
+.mindmap-controls { display: flex; align-items: center; gap: 4px; margin: 14px 14px 0 0; padding: 4px; border: 1px solid #cfd3cc; background: rgba(251, 250, 244, .94); box-shadow: 0 5px 14px rgba(54, 65, 76, .08); }
+.mindmap-controls button { display: inline-flex; align-items: center; justify-content: center; width: 29px; height: 29px; border: 1px solid transparent; background: transparent; color: var(--blue); cursor: pointer; }
+.mindmap-controls button:hover { border-color: #bec5ea; background: var(--blue-soft); }
+.mindmap-controls span { min-width: 40px; color: var(--muted); text-align: center; font: 9px var(--mono); }
+.mindmap-legend { display: flex; align-items: center; flex-wrap: wrap; gap: 13px; padding: 10px 17px; border-top: 1px solid var(--line); color: #808983; font: 9px var(--mono); }
+.mindmap-legend span { display: inline-flex; align-items: center; gap: 5px; }
+.legend-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--line); }
+.legend-dot.available { background: var(--orange); }
+.legend-dot.completed { background: var(--green); }
+.legend-dot.locked { background: #a7adb1; }
+.legend-hint { margin-left: auto; color: #9a9f9a; }
+@media (max-width: 800px) {
+  .mindmap-toolbar { align-items: stretch; flex-direction: column; }
+  .mindmap-viewport { height: 540px; }
+  .mindmap-legend { align-items: flex-start; flex-direction: column; gap: 7px; }
+  .legend-hint { margin-left: 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .mindmap-viewport :deep(.vue-flow__edge path) { transition: none; }
+}
 </style>

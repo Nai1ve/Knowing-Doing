@@ -13,7 +13,7 @@ const state = computed(() => onboarding.state)
 const pageLoading = computed(() => onboarding.loading || planning.loading)
 const pageError = computed(() => onboarding.error || planning.error)
 onMounted(() => void onboarding.load())
-async function start(input: { targetKey: 'mysql_performance' | 'general'; goal: string }) { const session = await planning.start(input.goal || '成为高级后端 + AI 应用工程师'); await router.push({ name: 'planning', params: { sessionId: session.id } }) }
+async function start(input: { targetKey: 'mysql_performance' | 'general'; goal: string; resume?: File }) { const session = await planning.start(input.goal || '成为高级后端 + AI 应用工程师', input.resume); await router.push({ name: 'planning', params: { sessionId: session.id } }) }
 async function startDefault() { const session = await planning.start(state.value?.currentPlan?.goal ?? '成为高级后端 + AI 应用工程师'); await router.push({ name: 'planning', params: { sessionId: session.id } }) }
 async function regenerate() { const session = await planning.start(state.value?.currentPlan?.goal ?? '成为高级后端 + AI 应用工程师'); await router.push({ name: 'planning', params: { sessionId: session.id } }) }
 </script>

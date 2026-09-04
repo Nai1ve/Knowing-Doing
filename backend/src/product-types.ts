@@ -110,6 +110,22 @@ export interface DiagnosticSession {
   evidence: ProfileEvidence[]
 }
 
+export interface ResumeAttachment {
+  id: string
+  learnerId: string
+  planningSessionId: string
+  originalFilename: string
+  mimeType: 'application/pdf'
+  sizeBytes: number
+  sha256: string
+  parseStatus: 'pending' | 'ready' | 'failed'
+  pageCount: number
+  textLength: number
+  parseError: string | null
+  createdAt: string
+  updatedAt: string
+}
+
 export interface PlanProposalUnit {
   position: number
   title: string

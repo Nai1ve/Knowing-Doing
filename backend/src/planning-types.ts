@@ -1,3 +1,5 @@
+import type { ResumeAttachment } from './product-types.js'
+
 export type PlanningTemplateKey = 'senior-backend-ai-v1'
 export type PlanningSessionStatus = 'draft' | 'ready' | 'proposed' | 'confirmed' | 'superseded'
 export type RoadmapStatus = 'draft' | 'active' | 'archived' | 'superseded'
@@ -27,6 +29,7 @@ export interface PlanningSession {
   turns: PlanningTurn[]
   nextQuestion: { key: string; prompt: string; options: string[] } | null
   draftRoadmapId: string | null
+  resume: ResumeAttachment | null
   createdAt: string
   updatedAt: string
 }

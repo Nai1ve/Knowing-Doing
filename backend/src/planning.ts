@@ -1,7 +1,13 @@
 import { createHash, randomUUID } from 'node:crypto'
+import fs from 'node:fs'
+import { mkdir, readFile, rename, rm, unlink } from 'node:fs/promises'
+import path from 'node:path'
+import { once } from 'node:events'
+import type { Readable } from 'node:stream'
 import type Database from 'better-sqlite3'
 import { LabError } from './errors.js'
-import type { LearningPlan } from './product-types.js'
+import { parseResumePdf, ResumeParseError } from './resume-parser.js'
+import type { LearningPlan, ResumeAttachment } from './product-types.js'
 import type {
   PlanningSession, PlanningTemplateKey, PlanningTurn, Roadmap, RoadmapDraft, RoadmapNode, RoadmapNodePage, RoadmapNodeStatus,
 } from './planning-types.js'
@@ -77,11 +83,66 @@ function roadmapFrom(row: Row, progress: Roadmap['progress']): Roadmap {
 }
 
 export class PlanningService {
-  constructor(private readonly repository: ProductRepository) {}
+  private readonly resumeStoragePath: string
+  private readonly resumeMaxBytes: number
+
+  constructor(private readonly repository: ProductRepository, options: { resumeStoragePath?: string; resumeMaxBytes?: number } = {}) {
+    this.resumeStoragePath = options.resumeStoragePath ?? path.resolve(process.cwd(), 'data/resumes')
+    this.resumeMaxBytes = options.resumeMaxBytes ?? 10 * 1024 * 1024
+  }
 
   private get db(): Database.Database { return this.repository.db }
 
   private assertLearner(learnerId: string): void { this.repository.ensureLearner(learnerId) }
+
+  async uploadResume(learnerId: string, sessionId: string, input: { filename: string; mimetype: string; file: Readable }): Promise<ResumeAttachment> {
+    this.sessionRow(sessionId, learnerId)
+    const filename = path.basename(input.filename).trim()
+    if (!filename.toLowerCase().endsWith('.pdf')) throw new LabError('resume_pdf_only', '简历只支持 PDF 文件', 422)
+    if (input.mimetype && input.mimetype !== 'application/pdf') throw new LabError('resume_pdf_only', '简历只支持 PDF 文件', 422)
+
+    await mkdir(this.resumeStoragePath, { recursive: true })
+    const id = randomUUID()
+    const temporaryPath = path.join(this.resumeStoragePath, `${id}.uploading`)
+    const storedFilename = `${id}.pdf`
+    const storedPath = path.join(this.resumeStoragePath, storedFilename)
+    const output = fs.createWriteStream(temporaryPath, { flags: 'wx', mode: 0o600 })
+    const hash = createHash('sha256')
+    let header = Buffer.alloc(0)
+    let sizeBytes = 0
+
+    try {
+      for await (const chunk of input.file) {
+        const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)
+        sizeBytes += buffer.byteLength
+        if (sizeBytes > this.resumeMaxBytes) throw new LabError('resume_too_large', `简历不能超过 ${Math.floor(this.resumeMaxBytes / 1024 / 1024)} MB`, 422)
+        if (header.length < 5) header = Buffer.concat([header, buffer]).subarray(0, 5)
+        hash.update(buffer)
+        if (!output.write(buffer)) await once(output, 'drain')
+      }
+      await new Promise<void>((resolve, reject) => {
+        output.once('error', reject)
+        output.once('finish', resolve)
+        output.end()
+      })
+      if (header.toString('ascii') !== '%PDF-') throw new LabError('resume_pdf_only', '文件内容不是有效的 PDF', 422)
+      let parsed: Awaited<ReturnType<typeof parseResumePdf>>
+      try {
+        parsed = await parseResumePdf(await readFile(temporaryPath))
+      } catch (error) {
+        if (error instanceof ResumeParseError) throw new LabError('resume_parse_failed', error.message, 422)
+        throw error
+      }
+      await rename(temporaryPath, storedPath)
+      const saved = this.repository.replacePlanningResumeAttachment({ id, learnerId, planningSessionId: sessionId, originalFilename: filename, storedFilename, sizeBytes, sha256: hash.digest('hex'), pageCount: parsed.pageCount, extractedText: parsed.text })
+      if (saved.previousStoredFilename) await unlink(path.join(this.resumeStoragePath, saved.previousStoredFilename)).catch(() => undefined)
+      return saved.attachment
+    } catch (error) {
+      output.destroy()
+      await Promise.all([rm(temporaryPath, { force: true }), rm(storedPath, { force: true })])
+      throw error
+    }
+  }
 
   private sessionRow(id: string, learnerId: string): Row {
     const row = this.db.prepare('SELECT * FROM planning_sessions WHERE id = ? AND learner_id = ?').get(id, learnerId) as Row | undefined
@@ -104,7 +165,8 @@ export class PlanningService {
     const id = str(row, 'id'); const turns = (this.db.prepare('SELECT * FROM planning_session_turns WHERE session_id = ? ORDER BY sequence ASC').all(id) as Row[]).map((turn) => ({ id: str(turn, 'id'), sequence: num(turn, 'sequence'), stepKey: str(turn, 'step_key'), prompt: str(turn, 'prompt'), answer: str(turn, 'answer'), structuredValue: parsed(turn.structured_json, null), createdAt: str(turn, 'created_at') } as PlanningTurn))
     const next = num(row, 'current_step') < STEPS.length ? STEPS[num(row, 'current_step')] : null
     const draft = this.db.prepare("SELECT id FROM learning_roadmaps WHERE learner_id = ? AND status = 'draft' AND json_extract(input_snapshot_json, '$.sessionId') = ? ORDER BY updated_at DESC LIMIT 1").get(str(row, 'learner_id'), id) as Row | undefined
-    return { id, learnerId: str(row, 'learner_id'), templateKey: str(row, 'template_key') as PlanningTemplateKey, goal: str(row, 'goal'), status: str(row, 'status') as PlanningSession['status'], currentStep: num(row, 'current_step'), revision: num(row, 'revision'), answers: parsed(row.answers_json, {}), turns, nextQuestion: next ? { key: next.key, prompt: next.prompt, options: [...next.options] } : null, draftRoadmapId: draft ? str(draft, 'id') : null, createdAt: str(row, 'created_at'), updatedAt: str(row, 'updated_at') }
+    const learnerId = str(row, 'learner_id')
+    return { id, learnerId, templateKey: str(row, 'template_key') as PlanningTemplateKey, goal: str(row, 'goal'), status: str(row, 'status') as PlanningSession['status'], currentStep: num(row, 'current_step'), revision: num(row, 'revision'), answers: parsed(row.answers_json, {}), turns, nextQuestion: next ? { key: next.key, prompt: next.prompt, options: [...next.options] } : null, draftRoadmapId: draft ? str(draft, 'id') : null, resume: this.repository.getPlanningResumeAttachment(id, learnerId), createdAt: str(row, 'created_at'), updatedAt: str(row, 'updated_at') }
   }
 
   createSession(learnerId: string, input: { goal?: string; clientRequestId?: string | null }): PlanningSession {

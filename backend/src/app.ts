@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from 'fastify'
 import cors from '@fastify/cors'
+import multipart from '@fastify/multipart'
 import type { LabConfig } from './config.js'
 import type { CaseId } from './domain.js'
 import { errorResponse, LabError } from './errors.js'
@@ -53,12 +54,14 @@ export function buildApp(dependencies: AppDependencies): { app: FastifyInstance;
   const scheduler = new LabScheduler(store, dependencies.config)
   const app = Fastify({ logger: false })
 
+  void app.register(multipart, { limits: { files: 1, fields: 0, fileSize: dependencies.config.resumeMaxBytes } })
   void app.register(cors, { origin: dependencies.config.corsOrigin, methods: ['GET', 'HEAD', 'POST', 'PATCH', 'DELETE', 'OPTIONS'] })
   app.setErrorHandler((error, _request, reply) => {
     if (process.env.NODE_ENV !== 'production') console.error('[zhixing-api]', error instanceof Error ? `${error.name}: ${error.message}` : error)
     if (error instanceof ProductNotFoundError || error instanceof WritingNotFoundError) return reply.code(404).send({ error: { code: 'not_found', message: error.message, retryable: false } })
     if (error instanceof WritingConflictError) return reply.code(409).send({ error: { code: 'writing_conflict', message: error.message, retryable: false } })
     if (error instanceof TutorProviderError) return reply.code(error.statusCode ?? 503).send({ error: { code: error.code, message: error.message, retryable: error.retryable } })
+    if (error && typeof error === 'object' && 'code' in error && (error as { code?: unknown }).code === 'FST_REQ_FILE_TOO_LARGE') return reply.code(422).send({ error: { code: 'resume_too_large', message: `简历不能超过 ${Math.floor(dependencies.config.resumeMaxBytes / 1024 / 1024)} MB`, retryable: false } })
     const response = errorResponse(error)
     reply.code(response.statusCode).send(response.body)
   })
@@ -165,6 +168,12 @@ function registerPlanningRoutes(app: FastifyInstance, service: PlanningService):
     reply.send(service.addTurn(learnerId(request), String((request.params as { sessionId: string }).sessionId), {
       revision: numberField(body, 'revision'), stepKey: stringField(body, 'stepKey'), answer: stringField(body, 'answer'), structuredValue: body.structuredValue,
     }))
+  })
+  app.post('/api/product/planning-sessions/:sessionId/resume', async (request, reply) => {
+    const sessionId = String((request.params as { sessionId: string }).sessionId)
+    const file = await request.file()
+    if (!file || file.fieldname !== 'resume') throw new LabError('resume_required', '请选择 PDF 格式的简历', 422)
+    reply.code(201).send(await service.uploadResume(learnerId(request), sessionId, { filename: file.filename, mimetype: file.mimetype, file: file.file }))
   })
   app.post('/api/product/planning-sessions/:sessionId/adjustments', async (request, reply) => {
     const body = productBody(request)

@@ -18,7 +18,7 @@ const curation = new CurationService(productRepository, new ModelCurationSummari
 curation.resume()
 const writingService = new WritingService(productRepository, curation, new DeepSeekWritingAgent(config))
 writingService.resumeGenerations()
-const planningService = new PlanningService(productRepository)
+const planningService = new PlanningService(productRepository, { resumeStoragePath: config.resumeStoragePath, resumeMaxBytes: config.resumeMaxBytes })
 const { app, scheduler } = buildApp({
   config,
   practiceServiceFactory: (labScheduler) => new PracticeService(productRepository, labScheduler, new TutorEngine(config), retrieval, curation, (runId) => { planningService.markLabVerified(runId); writingService.enqueueAutoDraft(runId) }),
