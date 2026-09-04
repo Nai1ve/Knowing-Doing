@@ -190,7 +190,7 @@ function registerPlanningRoutes(app: FastifyInstance, service: PlanningService, 
   app.post('/api/product/roadmap-drafts/:roadmapId/confirm', async (request, reply) => {
     const id = String((request.params as { roadmapId: string }).roadmapId); const learner = learnerId(request)
     if (agent?.isAgentRoadmap(learner, id)) {
-      const plan = service.confirm(learner, id, numberField(productBody(request), 'revision')); const snapshot = service.getDraftForLearner(learner, id); agent.markRoadmapConfirmed(learner, snapshot.planningSessionId); return reply.send(plan)
+      const snapshot = service.getDraftForLearner(learner, id); const plan = service.confirm(learner, id, numberField(productBody(request), 'revision')); agent.markRoadmapConfirmed(learner, snapshot.planningSessionId); return reply.send(plan)
     }
     reply.send(service.confirm(learner, id, numberField(productBody(request), 'revision')))
   })

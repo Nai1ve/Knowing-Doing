@@ -74,3 +74,17 @@ export interface ProductWritingWorkspace { practiceRunId: string; draftRun: Prod
 export interface ProductWritingClusterOverview { projectId: string; practiceRunId: string; clusters: ProductWritingCluster[]; capsules: ProductWritingCapsule[]; acceptedCount: number; totalCount: number; requiredAccepted: string[]; canGenerateOutline: boolean; curation: { status: 'not_started' | 'queued' | 'running' | 'succeeded' | 'failed'; jobId: string | null; error: string | null } }
 export interface ProductWritingClusterMember { id: string; clusterId: string; refType: 'artifact' | 'source' | 'path_node'; refId: string; role: 'primary' | 'supporting' | 'duplicate' | 'context'; displayOrder: number; title: string; excerpt: string; kind: string; verificationStatus: string; createdAt: string }
 export interface ProductWritingClusterDetail { cluster: ProductWritingCluster; members: ProductWritingClusterMember[]; nextCursor: string | null }
+
+export interface AgentPlanningMessage { id: string; sequence: number; role: 'user' | 'assistant' | 'system'; content: string; metadata: Record<string, unknown>; createdAt: string }
+export interface AgentPlanningTopic { key: string; label: string; priority: number; status: 'unknown' | 'covered' | 'needs_follow_up'; evidenceRefs: string[] }
+export interface AgentProfileDimension { key: string; level: 'unknown' | 'exposed' | 'applied' | 'independent' | 'advanced'; confidence: number; summary: string; nextValidation: string }
+export interface AgentProfile { id: string; version: number; summary: Record<string, unknown>; dimensions: AgentProfileDimension[]; evidence: Array<{ id: string; topicKey: string | null; sourceType: string; sourceId: string; excerpt: string; createdAt: string }> }
+export interface AgentPlanningSession { id: string; learnerId: string; goal: string; status: string; mode: 'agent'; agentStatus: string; revision: number; messages: AgentPlanningMessage[]; requiredTopics: AgentPlanningTopic[]; profile: AgentProfile | null; resume: ProductResumeAttachment | null; roadmapId: string | null; createdAt: string; updatedAt: string }
+export interface AgentRoadmapGeneration { id: string; status: 'queued' | 'running' | 'succeeded' | 'failed' | 'interrupted'; phase: 'domain' | 'module' | 'unit' | 'critic' | 'completed' | 'failed'; roadmapId: string | null; failureCode?: string | null; failureMessage?: string | null }
+export type PlanningStreamEvent =
+  | { type: 'accepted'; invocationId: string; sessionId: string }
+  | { type: 'assistant_delta'; invocationId: string; delta: string }
+  | { type: 'profile_updated'; invocationId: string; profileSnapshotId: string; coveredTopics: string[]; pendingTopics: string[]; dimensions: AgentProfileDimension[] }
+  | { type: 'next_question'; invocationId: string; question: string; topicKey: string | null; canGenerateRoadmap: boolean }
+  | { type: 'completed'; invocationId: string; session: AgentPlanningSession }
+  | { type: 'failed'; invocationId: string; code: string; message: string; retryable: boolean }

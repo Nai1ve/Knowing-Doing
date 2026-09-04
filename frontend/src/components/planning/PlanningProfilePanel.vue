@@ -1,0 +1,17 @@
+<script setup lang="ts">
+import { CheckCircle2, CircleHelp, FileText } from 'lucide-vue-next'
+import ResumeUploadField from '@/components/onboarding/ResumeUploadField.vue'
+import type { AgentPlanningSession } from '@/types/product'
+
+defineProps<{ session: AgentPlanningSession }>()
+const emit = defineEmits<{ upload: [payload: { file: File | null; valid: boolean }] }>()
+const labels: Record<string, string> = { goal_deadline: '目标与期限', projects: '真实项目经历', responsibility: '职责与决策范围', strengths_gaps: '当前强弱项', time_constraints: '投入与约束', outcome: '预期产出' }
+</script>
+
+<template>
+  <aside class="profile-panel" aria-labelledby="profile-panel-title"><div class="panel-heading"><CheckCircle2 :size="15" aria-hidden="true" /><span id="profile-panel-title">画像正在形成</span></div><div class="goal"><small>当前目标</small><strong>{{ session.goal }}</strong></div><div class="topic-list"><div v-for="topic in session.requiredTopics" :key="topic.key" class="topic"><span class="topic-mark" :class="topic.status"><CheckCircle2 v-if="topic.status === 'covered'" :size="12" aria-hidden="true" /><CircleHelp v-else :size="12" aria-hidden="true" /></span><div><strong>{{ labels[topic.key] ?? topic.label }}</strong><small>{{ topic.status === 'covered' ? '已覆盖' : topic.status === 'needs_follow_up' ? '需要再聊聊' : '待验证' }}</small></div></div></div><div v-if="session.profile?.dimensions.length" class="dimensions"><small>能力线索</small><div v-for="dimension in session.profile.dimensions" :key="dimension.key" class="dimension"><strong>{{ dimension.key }}</strong><span>{{ dimension.summary }}</span></div></div><ResumeUploadField v-if="!session.resume" @change="emit('upload', $event)" /><div v-else class="resume-attached"><FileText :size="14" aria-hidden="true" /><span>{{ session.resume.originalFilename }}</span></div><p class="panel-note">Planner 会围绕未知项继续追问。你可以随时生成路线，尚未聊清的部分会保留为待验证。</p></aside>
+</template>
+
+<style scoped>
+.profile-panel { align-self: start; padding: 15px 0; border-top: 2px solid var(--orange); border-bottom: 1px solid var(--line); }.panel-heading { display: flex; align-items: center; gap: 8px; color: var(--blue); font: 9px var(--mono); text-transform: uppercase; }.goal { margin-top: 20px; }.goal small, .dimensions > small { color: var(--muted); font: 9px var(--mono); }.goal strong { display: block; margin-top: 7px; color: var(--ink); font: 400 18px/1.35 var(--serif); }.topic-list { display: grid; gap: 11px; margin-top: 22px; }.topic { display: flex; align-items: start; gap: 8px; }.topic-mark { display: inline-flex; padding-top: 1px; color: var(--muted); }.topic-mark.covered { color: var(--green); }.topic strong { display: block; color: #4d5a53; font-size: 11px; font-weight: 500; }.topic small { display: block; margin-top: 3px; color: var(--muted); font: 8px var(--mono); }.dimensions { display: grid; gap: 8px; margin-top: 22px; padding-top: 13px; border-top: 1px solid var(--line); }.dimension { display: grid; gap: 3px; }.dimension strong { color: #4d5a53; font-size: 10px; }.dimension span { color: var(--muted); font-size: 10px; line-height: 1.5; }.resume-attached { display: flex; align-items: center; gap: 7px; margin-top: 20px; padding-top: 13px; border-top: 1px solid var(--line); color: var(--ink); font-size: 10px; }.resume-attached span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }.panel-note { margin: 22px 0 0; padding-top: 12px; border-top: 1px solid var(--line); color: var(--muted); font: 10px/1.6 var(--mono); }
+</style>

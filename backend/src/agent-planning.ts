@@ -69,6 +69,7 @@ function text(row: Row, key: string): string { return String(row[key]) }
 function nullable(row: Row, key: string): string | null { return row[key] == null ? null : String(row[key]) }
 function number(row: Row, key: string): number { return Number(row[key]) }
 function json<T>(value: unknown, fallback: T): T { if (typeof value !== 'string') return fallback; try { return JSON.parse(value) as T } catch { return fallback } }
+function resumeText(db: Database.Database, sessionId: string): string | null { const row = db.prepare('SELECT extracted_text FROM planning_resume_attachments WHERE planning_session_id = ? ORDER BY updated_at DESC LIMIT 1').get(sessionId) as Row | undefined; return row?.extracted_text == null ? null : String(row.extracted_text) }
 
 export class DeepSeekPlanningAgent implements PlanningProvider {
   readonly providerName = 'deepseek'
@@ -196,9 +197,9 @@ export class AgentPlanningService {
     })
     transaction(); await send({ type: 'accepted', invocationId, sessionId })
     try {
-      const messages = this.getSession(learnerId, sessionId).messages; const topics = this.topics(sessionId); let assistant = ''
-      assistant = await this.provider.stream({ goal: text(current, 'goal'), messages, requiredTopics: topics }, async (delta) => { await send({ type: 'assistant_delta', invocationId, delta }) })
-      const delta = await this.provider.interpret({ userMessage: content, assistantMessage: assistant, messages, resumeText: null }); const snapshotId = this.saveProfile(learnerId, sessionId, delta, content)
+      const messages = this.getSession(learnerId, sessionId).messages; const topics = this.topics(sessionId); const attachedResumeText = resumeText(this.db, sessionId); let assistant = ''
+      assistant = await this.provider.stream({ goal: text(current, 'goal'), messages, requiredTopics: topics, resumeText: attachedResumeText }, async (delta) => { await send({ type: 'assistant_delta', invocationId, delta }) })
+      const delta = await this.provider.interpret({ userMessage: content, assistantMessage: assistant, messages, resumeText: attachedResumeText }); const snapshotId = this.saveProfile(learnerId, sessionId, delta, content)
       const completedTopics = new Set(delta.coveredTopics.filter((key) => REQUIRED_TOPICS.some(([topic]) => topic === key))); const updateTopic = this.db.prepare('UPDATE planning_required_topics SET status = ?, evidence_refs_json = ?, updated_at = ? WHERE session_id = ? AND topic_key = ?')
       for (const [key] of REQUIRED_TOPICS) if (completedTopics.has(key)) updateTopic.run('covered', JSON.stringify(delta.evidence.filter((item) => item.topicKey === key).map((item) => item.sourceId)), now, sessionId, key)
       const next = this.nextQuestion(sessionId, delta.followUpTopic ?? null); const sequence = this.db.prepare('SELECT COALESCE(MAX(sequence), 0) + 1 AS sequence FROM planning_messages WHERE session_id = ?').get(sessionId) as Row
