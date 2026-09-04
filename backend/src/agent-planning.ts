@@ -6,6 +6,7 @@ import { TEMPLATE_NODES, type TemplateNode } from './planning.js'
 import { ProductRepository } from './product-repository.js'
 import type { LabConfig } from './config.js'
 import type { SourceItem } from './product-types.js'
+import { PlanningContextCompiler, type PlanningContextPacket } from './planning-context.js'
 import { ZhihuOpenApiClient, ZhihuOpenApiError } from './zhihu-openapi.js'
 
 type Row = Record<string, unknown>
@@ -47,8 +48,8 @@ export interface AgentPlanningSession { id: string; learnerId: string; goal: str
 export interface PlanningProvider {
   readonly providerName: string
   readonly modelName: string
-  stream(input: { goal: string; messages: AgentPlanningMessage[]; requiredTopics: AgentPlanningTopic[]; resumeText?: string | null }, onDelta: (delta: string) => Promise<void> | void): Promise<string>
-  interpret(input: { userMessage: string; assistantMessage: string; messages: AgentPlanningMessage[]; resumeText?: string | null }): Promise<ProfileDelta>
+  stream(input: { goal: string; messages: AgentPlanningMessage[]; requiredTopics: AgentPlanningTopic[]; resumeText?: string | null; context?: PlanningContextPacket | null }, onDelta: (delta: string) => Promise<void> | void): Promise<string>
+  interpret(input: { userMessage: string; assistantMessage: string; messages: AgentPlanningMessage[]; resumeText?: string | null; context?: PlanningContextPacket | null }): Promise<ProfileDelta>
 }
 
 export class PlanningAgentError extends Error {
@@ -90,11 +91,13 @@ export class DeepSeekPlanningAgent implements PlanningProvider {
     } finally { clearTimeout(timer) }
   }
 
-  async stream(input: { goal: string; messages: AgentPlanningMessage[]; requiredTopics: AgentPlanningTopic[]; resumeText?: string | null }, onDelta: (delta: string) => Promise<void> | void): Promise<string> {
+  async stream(input: { goal: string; messages: AgentPlanningMessage[]; requiredTopics: AgentPlanningTopic[]; resumeText?: string | null; context?: PlanningContextPacket | null }, onDelta: (delta: string) => Promise<void> | void): Promise<string> {
+    const conversation = input.messages.slice(-8).map((message) => ({ role: message.role, content: message.content }))
     const response = await this.call({ stream: true, temperature: 0.35, messages: [
       { role: 'system', content: '你是知行 Planner。用自然中文与用户讨论学习目标、经历、职责、能力、时间和产出。每次只提出一个最有价值的追问，也可以确认目前共识。不要展示思维过程、不要输出 JSON、不要假装已经理解用户未说过的内容。用户可以随时要求生成路线，未覆盖的信息只标记为待验证。' },
-      ...input.messages.map((message) => ({ role: message.role, content: message.content })),
-      { role: 'user', content: JSON.stringify({ goal: input.goal, requiredTopics: input.requiredTopics.map((topic) => ({ key: topic.key, label: topic.label, status: topic.status })), resume: input.resumeText ? input.resumeText.slice(0, 12000) : null }) },
+      ...(input.context ? [{ role: 'system' as const, content: `这是当前已编译的规划上下文，只能把 explicitFacts 视为用户明确提供的信息，hypotheses 必须继续验证：${JSON.stringify(input.context)}` }] : []),
+      ...conversation,
+      { role: 'user', content: JSON.stringify({ goal: input.goal, requiredTopics: input.requiredTopics.map((topic) => ({ key: topic.key, label: topic.label, status: topic.status })), resume: input.context ? undefined : input.resumeText ? input.resumeText.slice(0, 12000) : null }) },
     ] })
     let result = ''
     if (response.body && response.headers.get('content-type')?.toLowerCase().includes('text/event-stream')) {
@@ -115,10 +118,10 @@ export class DeepSeekPlanningAgent implements PlanningProvider {
     return result.trim()
   }
 
-  async interpret(input: { userMessage: string; assistantMessage: string; messages: AgentPlanningMessage[]; resumeText?: string | null }): Promise<ProfileDelta> {
+  async interpret(input: { userMessage: string; assistantMessage: string; messages: AgentPlanningMessage[]; resumeText?: string | null; context?: PlanningContextPacket | null }): Promise<ProfileDelta> {
     const response = await this.call({ stream: false, temperature: 0, response_format: { type: 'json_object' }, messages: [
       { role: 'system', content: '你是学习画像解释器。只返回 JSON，不写解释。根据用户原话提取结构化增量，不把阅读或模型推测写成已掌握。格式：{"coveredTopics":string[],"dimensions":[{"key":string,"level":"unknown|exposed|applied|independent|advanced","confidence":number,"summary":string,"nextValidation":string}],"evidence":[{"topicKey":string|null,"sourceType":"user_message|resume|reading|concept|lab","sourceId":string,"excerpt":string}],"followUpTopic":string|null}。只能引用输入中存在的用户消息或简历。' },
-      { role: 'user', content: JSON.stringify({ userMessage: input.userMessage, assistantMessage: input.assistantMessage, messages: input.messages.slice(-12), resume: input.resumeText?.slice(0, 12000) ?? null }) },
+      { role: 'user', content: JSON.stringify({ userMessage: input.userMessage, assistantMessage: input.assistantMessage, context: input.context, messages: input.messages.slice(-12), resume: input.context ? undefined : input.resumeText?.slice(0, 12000) ?? null }) },
     ] })
     let value: unknown
     try { value = JSON.parse(stripThinking(contentFrom(await response.json()).replace(/^```json\s*/i, '').replace(/\s*```$/, ''))) } catch { throw new PlanningAgentError('profile_invalid_json', '画像解释器返回的 JSON 无效') }
@@ -129,7 +132,9 @@ export class DeepSeekPlanningAgent implements PlanningProvider {
 
 export class AgentPlanningService {
   private get db(): Database.Database { return this.repository.db }
-  constructor(private readonly repository: ProductRepository, private readonly provider: PlanningProvider, private readonly config?: Pick<LabConfig, 'modelName'>, private readonly zhihu?: ZhihuOpenApiClient) {}
+  private readonly contextCompiler: PlanningContextCompiler
+  private readonly contextLocks = new Map<string, Promise<void>>()
+  constructor(private readonly repository: ProductRepository, private readonly provider: PlanningProvider, private readonly config?: Pick<LabConfig, 'modelName'>, private readonly zhihu?: ZhihuOpenApiClient) { this.contextCompiler = new PlanningContextCompiler(this.db) }
 
   private sessionRow(learnerId: string, sessionId: string): Row {
     const row = this.db.prepare("SELECT * FROM planning_sessions WHERE id = ? AND learner_id = ? AND mode = 'agent'").get(sessionId, learnerId) as Row | undefined
@@ -197,9 +202,12 @@ export class AgentPlanningService {
     })
     transaction(); await send({ type: 'accepted', invocationId, sessionId })
     try {
-      const messages = this.getSession(learnerId, sessionId).messages; const topics = this.topics(sessionId); const attachedResumeText = resumeText(this.db, sessionId); let assistant = ''
-      assistant = await this.provider.stream({ goal: text(current, 'goal'), messages, requiredTopics: topics, resumeText: attachedResumeText }, async (delta) => { await send({ type: 'assistant_delta', invocationId, delta }) })
-      const delta = await this.provider.interpret({ userMessage: content, assistantMessage: assistant, messages, resumeText: attachedResumeText }); const snapshotId = this.saveProfile(learnerId, sessionId, delta, content)
+      const messages = this.getSession(learnerId, sessionId).messages; const topics = this.topics(sessionId); const attachedResumeText = resumeText(this.db, sessionId); const context = this.contextCompiler.current(learnerId, sessionId); let assistant = ''
+      assistant = await this.provider.stream({ goal: text(current, 'goal'), messages, requiredTopics: topics, resumeText: attachedResumeText, context }, async (delta) => { await send({ type: 'assistant_delta', invocationId, delta }) })
+      const delta = await this.provider.interpret({ userMessage: content, assistantMessage: assistant, messages, resumeText: attachedResumeText, context }); const snapshotId = this.saveProfile(learnerId, sessionId, delta, content)
+      const messageRow = this.db.prepare('SELECT id FROM planning_messages WHERE session_id = ? AND client_request_id = ? AND role = \'user\' ORDER BY sequence DESC LIMIT 1').get(sessionId, clientRequestId) as Row | undefined ?? (suppressUserMessage ? this.db.prepare("SELECT id FROM planning_messages WHERE session_id = ? AND role = 'user' ORDER BY sequence DESC LIMIT 1").get(sessionId) as Row | undefined : undefined)
+      const contextInput = { learnerId, sessionId, goal: text(current, 'goal'), messageId: messageRow ? text(messageRow, 'id') : null, clientRequestId, delta, resumeText: attachedResumeText }
+      await this.updateContext(contextInput)
       const completedTopics = new Set(delta.coveredTopics.filter((key) => REQUIRED_TOPICS.some(([topic]) => topic === key))); const updateTopic = this.db.prepare('UPDATE planning_required_topics SET status = ?, evidence_refs_json = ?, updated_at = ? WHERE session_id = ? AND topic_key = ?')
       for (const [key] of REQUIRED_TOPICS) if (completedTopics.has(key)) updateTopic.run('covered', JSON.stringify(delta.evidence.filter((item) => item.topicKey === key).map((item) => item.sourceId)), now, sessionId, key)
       const next = this.nextQuestion(sessionId, delta.followUpTopic ?? null); const sequence = this.db.prepare('SELECT COALESCE(MAX(sequence), 0) + 1 AS sequence FROM planning_messages WHERE session_id = ?').get(sessionId) as Row
@@ -213,6 +221,13 @@ export class AgentPlanningService {
       this.db.prepare("UPDATE planning_sessions SET agent_status = 'failed', updated_at = ? WHERE id = ?").run(new Date().toISOString(), sessionId)
       await send({ type: 'failed', invocationId, code: failure.code, message: failure.message, retryable: failure.retryable })
     }
+  }
+
+  private async updateContext(input: Parameters<PlanningContextCompiler['update']>[0]): Promise<PlanningContextPacket> {
+    const key = `${input.learnerId}:${input.sessionId}`; const previous = this.contextLocks.get(key) ?? Promise.resolve(); let release!: () => void
+    const gate = new Promise<void>((resolve) => { release = resolve }); const queued = previous.then(() => gate); this.contextLocks.set(key, queued)
+    await previous
+    try { return this.contextCompiler.update(input) } finally { release(); if (this.contextLocks.get(key) === queued) this.contextLocks.delete(key) }
   }
 
   private saveProfile(learnerId: string, sessionId: string, delta: ProfileDelta, message: string): string {
@@ -237,7 +252,7 @@ export class AgentPlanningService {
   }
 
   async generateRoadmap(learnerId: string, sessionId: string, clientRequestId: string): Promise<{ id: string; status: string; phase: string; roadmapId: string | null }> {
-    const session = this.sessionRow(learnerId, sessionId); const inputFingerprint = fingerprint({ sessionId, messages: this.getSession(learnerId, sessionId).messages.map((item) => [item.role, item.content]), profile: session.profile_snapshot_id }); const existing = this.db.prepare('SELECT * FROM roadmap_generation_runs WHERE learner_id = ? AND input_fingerprint = ?').get(learnerId, inputFingerprint) as Row | undefined
+    const session = this.sessionRow(learnerId, sessionId); const context = this.contextCompiler.current(learnerId, sessionId); const inputFingerprint = fingerprint({ sessionId, contextSnapshotId: context?.snapshotId ?? null, messages: this.getSession(learnerId, sessionId).messages.map((item) => [item.role, item.content]), profile: session.profile_snapshot_id }); const existing = this.db.prepare('SELECT * FROM roadmap_generation_runs WHERE learner_id = ? AND input_fingerprint = ?').get(learnerId, inputFingerprint) as Row | undefined
     if (existing) return { id: text(existing, 'id'), status: text(existing, 'status'), phase: text(existing, 'phase'), roadmapId: nullable(existing, 'roadmap_id') }
     const id = randomUUID(); const now = new Date().toISOString(); this.db.prepare("INSERT INTO roadmap_generation_runs(id, learner_id, planning_session_id, input_fingerprint, phase, status, attempt_count, created_at, updated_at) VALUES (?, ?, ?, ?, 'domain', 'queued', 0, ?, ?)").run(id, learnerId, sessionId, inputFingerprint, now, now)
     void this.buildRoadmap(learnerId, sessionId, id, inputFingerprint).catch(() => undefined)
@@ -271,9 +286,9 @@ export class AgentPlanningService {
   private async buildRoadmap(learnerId: string, sessionId: string, generationId: string, inputFingerprint: string): Promise<void> {
     const now = new Date().toISOString(); this.db.prepare("UPDATE roadmap_generation_runs SET status = 'running', phase = 'domain', attempt_count = attempt_count + 1, updated_at = ? WHERE id = ? AND status = 'queued'").run(now, generationId)
     try {
-      const session = this.getSession(learnerId, sessionId); const answers = { priority_domain: session.goal.toLowerCase().includes('ai') ? 'AI 应用工程' : '后端系统能力', mastered_node_keys: [] }; const roadmapId = randomUUID();
+      const session = this.getSession(learnerId, sessionId); const context = this.contextCompiler.current(learnerId, sessionId); const contextText = context ? [...context.explicitFacts, ...context.hypotheses].map((item) => item.content).join(' ') : ''; const answers = { priority_domain: `${session.goal} ${contextText}`.toLowerCase().includes('ai') ? 'AI 应用工程' : '后端系统能力', mastered_node_keys: [] }; const roadmapId = randomUUID();
       const tx = this.db.transaction(() => {
-        this.db.prepare("INSERT INTO learning_roadmaps(id, learner_id, template_key, goal, status, revision, input_snapshot_json, based_on_roadmap_id, created_at, updated_at) VALUES (?, ?, 'senior-backend-ai-v1', ?, 'draft', 1, ?, NULL, ?, ?)").run(roadmapId, learnerId, session.goal, JSON.stringify({ sessionId, profileSnapshotId: session.profile?.id ?? null, mode: 'agent', inputFingerprint }), now, now)
+        this.db.prepare("INSERT INTO learning_roadmaps(id, learner_id, template_key, goal, status, revision, input_snapshot_json, based_on_roadmap_id, created_at, updated_at) VALUES (?, ?, 'senior-backend-ai-v1', ?, 'draft', 1, ?, NULL, ?, ?)").run(roadmapId, learnerId, session.goal, JSON.stringify({ sessionId, profileSnapshotId: session.profile?.id ?? null, contextSnapshotId: context?.snapshotId ?? null, mode: 'agent', inputFingerprint }), now, now)
         const ids = new Map<string, string>(); const insertNode = this.db.prepare('INSERT INTO roadmap_nodes(id, roadmap_id, parent_id, node_key, node_type, title, summary, knowledge_card_json, completion_standard, estimated_minutes, priority, position, learning_mode, case_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
         const ordered = [...TEMPLATE_NODES].sort((a, b) => (a.parentKey ? 1 : 0) - (b.parentKey ? 1 : 0)); for (const node of ordered) { const nodeId = randomUUID(); ids.set(node.key, nodeId); insertNode.run(nodeId, roadmapId, node.parentKey ? ids.get(node.parentKey) ?? null : null, node.key, node.type, node.title, node.summary, JSON.stringify({ keyPoints: node.points }), node.standard, node.minutes, node.priority, TEMPLATE_NODES.indexOf(node) + 1, node.mode, node.caseId ?? null, now) }
         const preferred = answers.priority_domain.includes('AI') ? 'model-structured' : 'data-performance'; const insertProgress = this.db.prepare('INSERT INTO roadmap_node_progress(roadmap_id, node_id, status, source, completed_at, verified_at, revision, updated_at) VALUES (?, ?, ?, \'rule\', NULL, NULL, 1, ?)')
@@ -286,11 +301,11 @@ export class AgentPlanningService {
   isAgentRoadmap(learnerId: string, roadmapId: string): boolean { return Boolean(this.db.prepare("SELECT 1 FROM learning_roadmaps WHERE id = ? AND learner_id = ? AND json_extract(input_snapshot_json, '$.mode') = 'agent'").get(roadmapId, learnerId)) }
 
   async knowledgeRoute(learnerId: string, roadmapId: string, nodeId: string, refresh = false): Promise<unknown> {
-    const node = this.db.prepare('SELECT n.*, r.goal FROM roadmap_nodes n INNER JOIN learning_roadmaps r ON r.id = n.roadmap_id WHERE n.id = ? AND n.roadmap_id = ? AND r.learner_id = ?').get(nodeId, roadmapId, learnerId) as Row | undefined; if (!node) throw new LabError('roadmap_node_not_found', '路线节点不存在', 404)
-    const profileId = (this.db.prepare("SELECT profile_snapshot_id FROM planning_sessions WHERE learner_id = ? AND mode = 'agent' ORDER BY updated_at DESC LIMIT 1").get(learnerId) as Row | undefined)?.profile_snapshot_id as string | undefined; const queryFingerprint = fingerprint({ nodeId, profileId, title: text(node, 'title') }); const existing = refresh ? undefined : this.db.prepare('SELECT * FROM knowledge_route_sets WHERE roadmap_node_id = ? AND query_fingerprint = ? AND status = \'ready\' ORDER BY updated_at DESC LIMIT 1').get(nodeId, queryFingerprint) as Row | undefined
+    const node = this.db.prepare('SELECT n.*, r.goal, r.input_snapshot_json FROM roadmap_nodes n INNER JOIN learning_roadmaps r ON r.id = n.roadmap_id WHERE n.id = ? AND n.roadmap_id = ? AND r.learner_id = ?').get(nodeId, roadmapId, learnerId) as Row | undefined; if (!node) throw new LabError('roadmap_node_not_found', '路线节点不存在', 404)
+    const profileId = (this.db.prepare("SELECT profile_snapshot_id FROM planning_sessions WHERE learner_id = ? AND mode = 'agent' ORDER BY updated_at DESC LIMIT 1").get(learnerId) as Row | undefined)?.profile_snapshot_id as string | undefined; const roadmapInput = json<{ sessionId?: string }>(node.input_snapshot_json, {}); const context = roadmapInput.sessionId ? this.contextCompiler.current(learnerId, roadmapInput.sessionId) : this.contextCompiler.latestForLearner(learnerId); const profileSummary = context ? JSON.stringify({ goal: context.goal, currentFocus: context.currentFocus, explicitFacts: context.explicitFacts, hypotheses: context.hypotheses, constraints: context.constraints, openQuestions: context.openQuestions }) : ''; const queryFingerprint = fingerprint({ nodeId, profileId, contextSnapshotId: context?.snapshotId ?? null, title: text(node, 'title') }); const existing = refresh ? undefined : this.db.prepare('SELECT * FROM knowledge_route_sets WHERE roadmap_node_id = ? AND query_fingerprint = ? AND status = \'ready\' ORDER BY updated_at DESC LIMIT 1').get(nodeId, queryFingerprint) as Row | undefined
     if (existing) return this.routeFrom(existing)
     if (!this.zhihu?.configured) throw new LabError('zhihu_not_configured', '知乎知识路径尚未配置', 503, true)
-    const research = await this.zhihu.research({ goal: text(node, 'goal'), profileSummary: profileId ?? '', nodeTitle: text(node, 'title') }); const queries = research.split(/[\n。；;]/).map((item) => item.replace(/^[-*\d.、\s]+/, '').trim()).filter((item) => item.length > 4).slice(0, 3); const candidates = (await Promise.all((queries.length > 0 ? queries : [text(node, 'title')]).map((query) => this.zhihu!.search(query, 5)))).flat(); const unique = [...new Map(candidates.map((item) => [item.url, item])).values()].slice(0, 3); if (unique.length === 0) throw new LabError('zhihu_empty_result', '知乎没有返回可用材料', 503, true)
+    const research = await this.zhihu.research({ goal: text(node, 'goal'), profileSummary, nodeTitle: text(node, 'title') }); const queries = research.split(/[\n。；;]/).map((item) => item.replace(/^[-*\d.、\s]+/, '').trim()).filter((item) => item.length > 4).slice(0, 3); const candidates = (await Promise.all((queries.length > 0 ? queries : [text(node, 'title')]).map((query) => this.zhihu!.search(query, 5)))).flat(); const unique = [...new Map(candidates.map((item) => [item.url, item])).values()].slice(0, 3); if (unique.length === 0) throw new LabError('zhihu_empty_result', '知乎没有返回可用材料', 503, true)
     const setId = randomUUID(); const now = new Date().toISOString(); const tx = this.db.transaction(() => { this.db.prepare("INSERT INTO knowledge_route_sets(id, learner_id, roadmap_node_id, profile_snapshot_id, query_fingerprint, status, research_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 'ready', ?, ?, ?)").run(setId, learnerId, nodeId, profileId ?? null, queryFingerprint, JSON.stringify({ research, queries }), now, now); const insert = this.db.prepare('INSERT INTO knowledge_route_items(id, route_set_id, source_item_id, position, role, reason, learning_question) VALUES (?, ?, ?, ?, ?, ?, ?)'); unique.forEach((item, index) => { const saved = this.repository.saveSource(item); insert.run(randomUUID(), setId, saved.id, index + 1, index === 0 ? 'foundation' : index === 1 ? 'case' : 'extension', `与“${text(node, 'title')}”相关`, `读完后，尝试说明它如何帮助你理解${text(node, 'title')}。`) }) }); tx(); return this.routeFrom(this.db.prepare('SELECT * FROM knowledge_route_sets WHERE id = ?').get(setId) as Row)
   }
 

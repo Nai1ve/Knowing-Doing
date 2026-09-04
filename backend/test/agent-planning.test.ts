@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { AgentPlanningService, type PlanningProvider } from '../src/agent-planning.js'
+import { PlanningContextCompiler } from '../src/planning-context.js'
 import { applyProductMigrations } from '../src/product-migrate.js'
 import { ProductRepository } from '../src/product-repository.js'
 
@@ -46,5 +47,17 @@ describe('AgentPlanningService', () => {
     service.feedback('feedback-learner', routeSetId, sourceId, 'read')
     expect(repository.db.prepare('SELECT COUNT(*) AS count FROM knowledge_route_feedback').get()).toMatchObject({ count: 1 })
     expect(() => service.feedback('feedback-learner', routeSetId, randomUUID(), 'read')).toThrow('材料不属于当前知识路径')
+  }))
+
+  it('accumulates sourced facts and closes covered questions across context versions', async () => withService(async (service, repository) => {
+    const learnerId = 'context-learner'; const session = service.createSession(learnerId, { message: '我想成为高级后端工程师', clientRequestId: 'context-1' }); const compiler = new PlanningContextCompiler(repository.db)
+    const firstMessage = repository.db.prepare("SELECT id FROM planning_messages WHERE session_id = ? AND role = 'user'").get(session.id) as { id: string }
+    const first = compiler.update({ learnerId, sessionId: session.id, goal: session.goal, messageId: firstMessage.id, clientRequestId: 'context-1', resumeText: null, delta: { evidence: [{ topicKey: 'projects', sourceType: 'user_message', sourceId: firstMessage.id, excerpt: '参与过支付服务开发' }], dimensions: [], coveredTopics: ['projects'], followUpTopic: 'responsibility' } })
+    repository.db.prepare("INSERT INTO planning_messages(id, session_id, sequence, role, content, metadata_json, client_request_id, created_at) VALUES (?, ?, 2, 'user', '我负责服务边界和发布决策', '{}', 'context-2', ?)").run(randomUUID(), session.id, new Date().toISOString())
+    const secondMessage = repository.db.prepare("SELECT id FROM planning_messages WHERE session_id = ? AND client_request_id = 'context-2'").get(session.id) as { id: string }
+    const second = compiler.update({ learnerId, sessionId: session.id, goal: session.goal, messageId: secondMessage.id, clientRequestId: 'context-2', resumeText: null, delta: { evidence: [{ topicKey: 'responsibility', sourceType: 'user_message', sourceId: secondMessage.id, excerpt: '负责服务边界和发布决策' }], dimensions: [], coveredTopics: ['responsibility'], followUpTopic: null } })
+    expect(first.version).toBe(1); expect(second.version).toBe(2); expect(second.explicitFacts.map((item) => item.content)).toEqual(expect.arrayContaining(['参与过支付服务开发', '负责服务边界和发布决策']))
+    expect(second.openQuestions).toHaveLength(0)
+    expect(repository.db.prepare('SELECT COUNT(*) AS count FROM planning_context_snapshots WHERE session_id = ?').get(session.id)).toMatchObject({ count: 2 })
   }))
 })
