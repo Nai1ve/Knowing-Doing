@@ -25,7 +25,7 @@ const STEPS = [
   { key: 'summary', prompt: '请确认：这条路线会从你选择的优先方向开始，逐步连接后端、AI 和交付能力。', options: ['确认路线草案'] },
 ] as const
 
-interface TemplateNode {
+export interface TemplateNode {
   key: string
   parentKey: string | null
   type: RoadmapNode['nodeType']
@@ -39,7 +39,7 @@ interface TemplateNode {
   caseId?: string
 }
 
-const TEMPLATE_NODES: TemplateNode[] = [
+export const TEMPLATE_NODES: TemplateNode[] = [
   { key: 'backend-system', parentKey: null, type: 'domain', title: '后端系统能力', summary: '把业务问题转成可运行、可观测、可演进的服务。', points: ['服务边界', '数据流', '运行反馈'], standard: '能解释一个服务的边界、关键数据流和主要运行风险。', minutes: 120, priority: 1, mode: 'knowledge' },
   { key: 'service-design', parentKey: 'backend-system', type: 'capability', title: '服务设计', summary: '从接口、边界和数据流开始组织服务。', points: ['接口契约', '领域边界', '演进方式'], standard: '能为一个真实需求写出服务边界和接口契约。', minutes: 180, priority: 1, mode: 'knowledge' },
   { key: 'api-boundaries', parentKey: 'service-design', type: 'concept', title: '接口与服务边界', summary: '理解接口设计如何影响协作、演进和故障定位。', points: ['输入输出', '兼容性', '错误边界'], standard: '能用一个具体接口说明输入、输出、错误和兼容策略。', minutes: 90, priority: 1, mode: 'knowledge' },

@@ -35,6 +35,8 @@ export interface LabConfig {
   resumeStoragePath: string
   resumeMaxBytes: number
   zhihuCliPath: string
+  zhihuAccessSecret: string
+  zhihuApiBaseUrl: string
   retrievalTimeoutMs: number
   retrievalCacheTtlMs: number
   caseIds: CaseId[]
@@ -72,6 +74,8 @@ export function loadConfig(): LabConfig {
     resumeStoragePath: process.env.ZHIXING_RESUME_STORAGE_PATH ?? path.resolve(process.cwd(), 'data/resumes'),
     resumeMaxBytes: numberEnv('ZHIXING_RESUME_MAX_BYTES', 10 * 1024 * 1024),
     zhihuCliPath: process.env.ZHIXING_ZHIHU_CLI_PATH ?? '',
+    zhihuAccessSecret: process.env.ZHIXING_ZHIHU_ACCESS_SECRET ?? '',
+    zhihuApiBaseUrl: process.env.ZHIXING_ZHIHU_API_BASE_URL ?? 'https://developer.zhihu.com',
     retrievalTimeoutMs: numberEnv('ZHIXING_RETRIEVAL_TIMEOUT_MS', 15_000),
     retrievalCacheTtlMs: numberEnv('ZHIXING_RETRIEVAL_CACHE_TTL_MS', 24 * 60 * 60 * 1000),
     caseIds: [

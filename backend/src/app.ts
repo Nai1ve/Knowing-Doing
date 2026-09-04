@@ -14,6 +14,7 @@ import { PracticeService, ProductNotFoundError, type TutorStreamEvent } from './
 import { TutorProviderError } from './tutor.js'
 import { WritingConflictError, WritingNotFoundError, WritingService } from './writing-service.js'
 import { PlanningService } from './planning.js'
+import { AgentPlanningService, PlanningAgentError, type PlanningStreamEvent } from './agent-planning.js'
 
 type Body = Record<string, unknown>
 
@@ -46,6 +47,7 @@ export interface AppDependencies {
   practiceServiceFactory?: (scheduler: LabScheduler) => PracticeService
   writingServiceFactory?: () => WritingService
   planningServiceFactory?: () => PlanningService
+  agentPlanningServiceFactory?: () => AgentPlanningService
   runtimeStatus?: () => Promise<Record<string, unknown>>
 }
 
@@ -61,6 +63,7 @@ export function buildApp(dependencies: AppDependencies): { app: FastifyInstance;
     if (error instanceof ProductNotFoundError || error instanceof WritingNotFoundError) return reply.code(404).send({ error: { code: 'not_found', message: error.message, retryable: false } })
     if (error instanceof WritingConflictError) return reply.code(409).send({ error: { code: 'writing_conflict', message: error.message, retryable: false } })
     if (error instanceof TutorProviderError) return reply.code(error.statusCode ?? 503).send({ error: { code: error.code, message: error.message, retryable: error.retryable } })
+    if (error instanceof PlanningAgentError) return reply.code(error.retryable ? 503 : 503).send({ error: { code: error.code, message: error.message, retryable: error.retryable } })
     if (error && typeof error === 'object' && 'code' in error && (error as { code?: unknown }).code === 'FST_REQ_FILE_TOO_LARGE') return reply.code(422).send({ error: { code: 'resume_too_large', message: `简历不能超过 ${Math.floor(dependencies.config.resumeMaxBytes / 1024 / 1024)} MB`, retryable: false } })
     const response = errorResponse(error)
     reply.code(response.statusCode).send(response.body)
@@ -150,18 +153,18 @@ export function buildApp(dependencies: AppDependencies): { app: FastifyInstance;
   })
 
   if (dependencies.practiceServiceFactory) registerProductRoutes(app, dependencies.practiceServiceFactory(scheduler), dependencies.writingServiceFactory?.())
-  if (dependencies.planningServiceFactory) registerPlanningRoutes(app, dependencies.planningServiceFactory())
+  if (dependencies.planningServiceFactory) registerPlanningRoutes(app, dependencies.planningServiceFactory(), dependencies.agentPlanningServiceFactory?.())
 
   return { app, scheduler }
 }
 
-function registerPlanningRoutes(app: FastifyInstance, service: PlanningService): void {
+function registerPlanningRoutes(app: FastifyInstance, service: PlanningService, agent?: AgentPlanningService): void {
   app.post('/api/product/planning-sessions', async (request, reply) => {
     const body = productBody(request)
     reply.code(201).send(service.createSession(learnerId(request), { goal: optionalString(body, 'goal') ?? undefined, clientRequestId: optionalString(body, 'clientRequestId') }))
   })
   app.get('/api/product/planning-sessions/:sessionId', async (request, reply) => {
-    reply.send(service.getSession(learnerId(request), String((request.params as { sessionId: string }).sessionId)))
+    const id = String((request.params as { sessionId: string }).sessionId); reply.send(agent?.isAgentSession(learnerId(request), id) ? agent.getSession(learnerId(request), id) : service.getSession(learnerId(request), id))
   })
   app.post('/api/product/planning-sessions/:sessionId/turns', async (request, reply) => {
     const body = productBody(request)
@@ -185,7 +188,11 @@ function registerPlanningRoutes(app: FastifyInstance, service: PlanningService):
     reply.send(service.getDraftForLearner(learnerId(request), String((request.params as { roadmapId: string }).roadmapId)))
   })
   app.post('/api/product/roadmap-drafts/:roadmapId/confirm', async (request, reply) => {
-    reply.send(service.confirm(learnerId(request), String((request.params as { roadmapId: string }).roadmapId), numberField(productBody(request), 'revision')))
+    const id = String((request.params as { roadmapId: string }).roadmapId); const learner = learnerId(request)
+    if (agent?.isAgentRoadmap(learner, id)) {
+      const plan = service.confirm(learner, id, numberField(productBody(request), 'revision')); const snapshot = service.getDraftForLearner(learner, id); agent.markRoadmapConfirmed(learner, snapshot.planningSessionId); return reply.send(plan)
+    }
+    reply.send(service.confirm(learner, id, numberField(productBody(request), 'revision')))
   })
   app.get('/api/product/roadmaps/current', async (request, reply) => {
     reply.send(service.current(learnerId(request)))
@@ -200,6 +207,25 @@ function registerPlanningRoutes(app: FastifyInstance, service: PlanningService):
     const body = productBody(request); const status = body.status == null ? undefined : body.status === 'self_reported' || body.status === 'completed' ? body.status : (() => { throw new LabError('invalid_request', 'status 不受支持', 400) })()
     reply.send(service.completeNode(learnerId(request), String((request.params as { roadmapId: string }).roadmapId), String((request.params as { nodeId: string }).nodeId), { revision: numberField(body, 'revision'), status }))
   })
+
+  if (agent) registerAgentPlanningRoutes(app, agent)
+}
+
+function registerAgentPlanningRoutes(app: FastifyInstance, service: AgentPlanningService): void {
+  const stream = async (request: FastifyRequest, reply: FastifyReply, action: (send: (event: PlanningStreamEvent) => Promise<void>) => Promise<void>) => {
+    reply.hijack(); reply.raw.writeHead(200, { 'Content-Type': 'text/event-stream; charset=utf-8', 'Cache-Control': 'no-cache, no-transform', Connection: 'keep-alive', 'X-Accel-Buffering': 'no' })
+    const send = async (event: PlanningStreamEvent) => { if (!reply.raw.destroyed && !reply.raw.writableEnded) reply.raw.write(`event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`) }
+    try { await action(send) } catch (error) { if (!reply.raw.destroyed && !reply.raw.writableEnded) await send({ type: 'failed', invocationId: 'unknown', code: error instanceof Error ? error.name : 'planning_failed', message: error instanceof Error ? error.message : '规划调用失败', retryable: true }) } finally { if (!reply.raw.writableEnded) reply.raw.end() }
+  }
+  app.post('/api/product/planning-sessions/stream', async (request, reply) => { const body = productBody(request); const message = stringField(body, 'message'); const requestId = optionalString(body, 'clientRequestId') ?? randomUUID(); await stream(request, reply, (send) => service.createAndStream(learnerId(request), message, requestId, send)) })
+  app.post('/api/product/planning-sessions/:sessionId/messages/stream', async (request, reply) => { const body = productBody(request); const sessionId = String((request.params as { sessionId: string }).sessionId); const message = stringField(body, 'message'); const requestId = optionalString(body, 'clientRequestId') ?? randomUUID(); await stream(request, reply, (send) => service.streamMessage(learnerId(request), sessionId, message, requestId, send)) })
+  app.post('/api/product/planning-invocations/:invocationId/retry', async (request, reply) => { const invocationId = String((request.params as { invocationId: string }).invocationId); await stream(request, reply, (send) => service.retryInvocation(learnerId(request), invocationId, send)) })
+  app.post('/api/product/planning-sessions/:sessionId/roadmap-generations', async (request, reply) => { const body = productBody(request); const result = await service.generateRoadmap(learnerId(request), String((request.params as { sessionId: string }).sessionId), optionalString(body, 'clientRequestId') ?? randomUUID()); reply.code(202).send(result) })
+  app.get('/api/product/roadmap-generation-runs/:id', async (request, reply) => reply.send(service.getRoadmapGeneration(learnerId(request), String((request.params as { id: string }).id))))
+  app.post('/api/product/roadmap-generation-runs/:id/retry', async (request, reply) => { const id = String((request.params as { id: string }).id); reply.code(202).send(await service.retryRoadmap(learnerId(request), id)) })
+  app.post('/api/product/roadmaps/:roadmapId/nodes/:nodeId/knowledge-route', async (request, reply) => { const params = request.params as { roadmapId: string; nodeId: string }; const refresh = Boolean((productBody(request) as { refresh?: unknown }).refresh); reply.send(await service.knowledgeRoute(learnerId(request), params.roadmapId, params.nodeId, refresh)) })
+  app.get('/api/product/roadmaps/:roadmapId/nodes/:nodeId/knowledge-route', async (request, reply) => { const params = request.params as { roadmapId: string; nodeId: string }; reply.send(await service.knowledgeRoute(learnerId(request), params.roadmapId, params.nodeId)) })
+  app.post('/api/product/knowledge-routes/:routeSetId/feedback', async (request, reply) => { const body = productBody(request); const feedback = stringField(body, 'feedback'); if (!['read', 'too_hard', 'too_easy', 'irrelevant', 'helpful'].includes(feedback)) throw new LabError('invalid_request', '反馈类型不受支持', 400); service.feedback(learnerId(request), String((request.params as { routeSetId: string }).routeSetId), stringField(body, 'sourceItemId'), feedback as 'read' | 'too_hard' | 'too_easy' | 'irrelevant' | 'helpful'); reply.code(204).send() })
 }
 
 function learnerId(request: FastifyRequest): string {
