@@ -296,5 +296,11 @@ export class AgentPlanningService {
 
   private routeFrom(row: Row): unknown { const items = (this.db.prepare('SELECT k.*, s.title, s.author, s.url, s.excerpt, s.retrieved_at FROM knowledge_route_items k INNER JOIN source_items s ON s.id = k.source_item_id WHERE k.route_set_id = ? ORDER BY k.position').all(text(row, 'id')) as Row[]).map((item) => ({ id: text(item, 'id'), sourceItemId: text(item, 'source_item_id'), position: number(item, 'position'), role: text(item, 'role'), reason: text(item, 'reason'), learningQuestion: text(item, 'learning_question'), source: { title: text(item, 'title'), author: nullable(item, 'author'), url: text(item, 'url'), excerpt: text(item, 'excerpt'), retrievedAt: text(item, 'retrieved_at') } })); return { id: text(row, 'id'), roadmapNodeId: text(row, 'roadmap_node_id'), status: text(row, 'status'), research: json(row.research_json, {}), items } }
 
-  feedback(learnerId: string, routeSetId: string, sourceItemId: string, value: 'read' | 'too_hard' | 'too_easy' | 'irrelevant' | 'helpful'): void { const owner = this.db.prepare('SELECT id FROM knowledge_route_sets WHERE id = ? AND learner_id = ?').get(routeSetId, learnerId); if (!owner) throw new LabError('knowledge_route_not_found', '知识路径不存在', 404); this.db.prepare('INSERT OR IGNORE INTO knowledge_route_feedback(id, learner_id, route_set_id, source_item_id, feedback, created_at) VALUES (?, ?, ?, ?, ?, ?)').run(randomUUID(), learnerId, routeSetId, sourceItemId, value, new Date().toISOString()) }
+  feedback(learnerId: string, routeSetId: string, sourceItemId: string, value: 'read' | 'too_hard' | 'too_easy' | 'irrelevant' | 'helpful'): void {
+    const owner = this.db.prepare('SELECT id FROM knowledge_route_sets WHERE id = ? AND learner_id = ?').get(routeSetId, learnerId)
+    if (!owner) throw new LabError('knowledge_route_not_found', '知识路径不存在', 404)
+    const item = this.db.prepare('SELECT id FROM knowledge_route_items WHERE route_set_id = ? AND source_item_id = ?').get(routeSetId, sourceItemId)
+    if (!item) throw new LabError('knowledge_source_not_found', '材料不属于当前知识路径', 404)
+    this.db.prepare('INSERT OR IGNORE INTO knowledge_route_feedback(id, learner_id, route_set_id, source_item_id, feedback, created_at) VALUES (?, ?, ?, ?, ?, ?)').run(randomUUID(), learnerId, routeSetId, sourceItemId, value, new Date().toISOString())
+  }
 }

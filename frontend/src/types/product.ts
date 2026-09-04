@@ -88,3 +88,4 @@ export type PlanningStreamEvent =
   | { type: 'next_question'; invocationId: string; question: string; topicKey: string | null; canGenerateRoadmap: boolean }
   | { type: 'completed'; invocationId: string; session: AgentPlanningSession }
   | { type: 'failed'; invocationId: string; code: string; message: string; retryable: boolean }
+export interface KnowledgeRoute { id: string; roadmapNodeId: string; status: 'ready' | 'queued' | 'running' | 'failed'; research: Record<string, unknown>; items: Array<{ id: string; sourceItemId: string; position: number; role: 'foundation' | 'case' | 'extension'; reason: string; learningQuestion: string; source: { title: string; author: string | null; url: string; excerpt: string; retrievedAt: string } }> }

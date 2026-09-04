@@ -1,4 +1,5 @@
 import { mkdtempSync } from 'node:fs'
+import { randomUUID } from 'node:crypto'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { describe, expect, it } from 'vitest'
@@ -31,5 +32,19 @@ describe('AgentPlanningService', () => {
     const invocation = repository.db.prepare("SELECT id FROM planning_agent_invocations WHERE session_id = ? AND kind = 'planner'").get(first.id) as { id: string }
     await service.retryInvocation('retry-learner', invocation.id, async () => undefined)
     expect(repository.db.prepare("SELECT COUNT(*) AS count FROM planning_messages WHERE session_id = ? AND role = 'user'").get(first.id)).toMatchObject({ count: 1 })
+  }))
+
+  it('accepts feedback only for materials in the owned route', async () => withService(async (service, repository) => {
+    repository.ensureLearner('feedback-learner')
+    const roadmapId = randomUUID(); const nodeId = randomUUID(); const routeSetId = randomUUID(); const sourceId = randomUUID(); const now = new Date().toISOString()
+    repository.db.prepare("INSERT INTO learning_roadmaps(id, learner_id, template_key, goal, status, revision, input_snapshot_json, created_at, updated_at) VALUES (?, ?, 'senior-backend-ai-v1', 'feedback', 'active', 1, '{}', ?, ?)").run(roadmapId, 'feedback-learner', now, now)
+    repository.db.prepare("INSERT INTO roadmap_nodes(id, roadmap_id, parent_id, node_key, node_type, title, summary, knowledge_card_json, completion_standard, estimated_minutes, priority, position, learning_mode, case_id, created_at) VALUES (?, ?, NULL, 'feedback-node', 'concept', '反馈节点', '', '{}', '', 10, 1, 1, 'knowledge', NULL, ?)").run(nodeId, roadmapId, now)
+    repository.db.prepare("INSERT INTO knowledge_route_sets(id, learner_id, roadmap_node_id, profile_snapshot_id, query_fingerprint, status, research_json, created_at, updated_at) VALUES (?, ?, ?, NULL, 'feedback-fingerprint', 'ready', '{}', ?, ?)").run(routeSetId, 'feedback-learner', nodeId, now, now)
+    repository.db.prepare("INSERT INTO source_items(id, provider, external_id, title, author, url, excerpt, query, retrieved_at, metadata_json) VALUES (?, 'zhihu', ?, '材料', NULL, 'https://www.zhihu.com/a', '', NULL, ?, '{}')").run(sourceId, sourceId, now)
+    repository.db.prepare("INSERT INTO knowledge_route_items(id, route_set_id, source_item_id, position, role, reason, learning_question) VALUES (?, ?, ?, 1, 'foundation', '', '')").run(randomUUID(), routeSetId, sourceId)
+
+    service.feedback('feedback-learner', routeSetId, sourceId, 'read')
+    expect(repository.db.prepare('SELECT COUNT(*) AS count FROM knowledge_route_feedback').get()).toMatchObject({ count: 1 })
+    expect(() => service.feedback('feedback-learner', routeSetId, randomUUID(), 'read')).toThrow('材料不属于当前知识路径')
   }))
 })

@@ -1,5 +1,5 @@
 import { apiClient } from './client'
-import type { AgentPlanningSession, AgentRoadmapGeneration, CurrentRoadmapResponse, PlanningSession, PlanningStreamEvent, ProductResumeAttachment, RoadmapDraft, RoadmapNode, RoadmapNodePage } from '@/types/product'
+import type { AgentPlanningSession, AgentRoadmapGeneration, CurrentRoadmapResponse, KnowledgeRoute, PlanningSession, PlanningStreamEvent, ProductResumeAttachment, RoadmapDraft, RoadmapNode, RoadmapNodePage } from '@/types/product'
 
 const learnerKey = 'zhixing.learner.id'
 function learnerId(): string {
@@ -33,6 +33,11 @@ export function getAgentPlanningSession(sessionId: string): Promise<AgentPlannin
 export function createAgentRoadmap(sessionId: string, clientRequestId: string): Promise<AgentRoadmapGeneration> { return request<AgentRoadmapGeneration>(`/product/planning-sessions/${sessionId}/roadmap-generations`, { method: 'POST', body: JSON.stringify({ clientRequestId }) }) }
 export function getAgentRoadmapGeneration(id: string): Promise<AgentRoadmapGeneration> { return request<AgentRoadmapGeneration>(`/product/roadmap-generation-runs/${id}`) }
 export function retryAgentInvocation(id: string, onEvent: (event: PlanningStreamEvent) => void): Promise<void> { return streamRequest(`/product/planning-invocations/${id}/retry`, {}, onEvent) }
+export function getKnowledgeRoute(roadmapId: string, nodeId: string, refresh = false): Promise<KnowledgeRoute> {
+  const path = `/product/roadmaps/${roadmapId}/nodes/${nodeId}/knowledge-route`
+  return request<KnowledgeRoute>(path, refresh ? { method: 'POST', body: JSON.stringify({ refresh: true }) } : {})
+}
+export function sendKnowledgeFeedback(routeSetId: string, sourceItemId: string, feedback: 'read' | 'too_hard' | 'too_easy' | 'irrelevant' | 'helpful'): Promise<void> { return request<void>(`/product/knowledge-routes/${routeSetId}/feedback`, { method: 'POST', body: JSON.stringify({ sourceItemId, feedback }) }) }
 
 export function createPlanningSession(goal?: string): Promise<PlanningSession> { return request<PlanningSession>('/product/planning-sessions', { method: 'POST', body: JSON.stringify({ goal, clientRequestId: crypto.randomUUID() }) }) }
 export function getPlanningSession(id: string): Promise<PlanningSession> { return request<PlanningSession>(`/product/planning-sessions/${id}`) }
