@@ -1,0 +1,19 @@
+[Unit]
+Description=Knowing-Doing API
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/Knowing-Doing/backend
+EnvironmentFile=-/etc/knowing-doing/backend.env
+ExecStart=/usr/bin/node /home/ubuntu/Knowing-Doing/backend/dist/server.js
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=15
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
