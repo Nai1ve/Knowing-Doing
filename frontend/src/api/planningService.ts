@@ -1,5 +1,7 @@
 import { apiClient } from './client'
+import { completeMockRoadmapNode, createMockPlanningSession, createMockResume, createMockRoadmapGeneration, getMockAgentPlanningSession, getMockCurrentRoadmap, getMockKnowledgeRoute, getMockPlanningSession, getMockRoadmapDraft, getMockRoadmapNodes, streamMockPlanning } from '@/data/mockProduct'
 import type { AgentPlanningSession, AgentRoadmapGeneration, CurrentRoadmapResponse, KnowledgeRoute, PlanningSession, PlanningStreamEvent, ProductResumeAttachment, RoadmapDraft, RoadmapNode, RoadmapNodePage } from '@/types/product'
+import { useMockApi } from './mode'
 
 const learnerKey = 'zhixing.learner.id'
 function learnerId(): string {
@@ -10,6 +12,13 @@ function learnerId(): string {
 function request<T>(path: string, init: RequestInit = {}): Promise<T> { const headers = new Headers(init.headers); headers.set('X-Learner-Id', learnerId()); return apiClient.request<T>(path, { ...init, headers }) }
 
 async function streamRequest(path: string, body: Record<string, unknown>, onEvent: (event: PlanningStreamEvent) => void): Promise<void> {
+  if (useMockApi) {
+    const initial = path.endsWith('/planning-sessions/stream')
+    const sessionId = path.match(/planning-sessions\/([^/]+)\/messages/)?.[1] ?? 'demo-agent-session'
+    const message = typeof body.message === 'string' ? body.message : ''
+    await streamMockPlanning(initial ? message : '', sessionId, initial ? '' : message, onEvent)
+    return
+  }
   const response = await fetch(`${import.meta.env.VITE_API_BASE_URL ?? '/api'}${path}`, { method: 'POST', headers: { Accept: 'text/event-stream', 'Content-Type': 'application/json', 'X-Learner-Id': learnerId() }, body: JSON.stringify(body) })
   if (!response.ok) throw new Error(`规划请求失败：${response.status}`)
   if (!response.body) throw new Error('规划服务没有返回事件流')
@@ -29,23 +38,24 @@ async function streamRequest(path: string, body: Record<string, unknown>, onEven
 
 export function createAgentPlanningSession(message: string, clientRequestId: string, onEvent: (event: PlanningStreamEvent) => void): Promise<void> { return streamRequest('/product/planning-sessions/stream', { message, clientRequestId }, onEvent) }
 export function sendAgentPlanningMessage(sessionId: string, message: string, clientRequestId: string, onEvent: (event: PlanningStreamEvent) => void): Promise<void> { return streamRequest(`/product/planning-sessions/${sessionId}/messages/stream`, { message, clientRequestId }, onEvent) }
-export function getAgentPlanningSession(sessionId: string): Promise<AgentPlanningSession> { return request<AgentPlanningSession>(`/product/planning-sessions/${sessionId}`) }
-export function createAgentRoadmap(sessionId: string, clientRequestId: string): Promise<AgentRoadmapGeneration> { return request<AgentRoadmapGeneration>(`/product/planning-sessions/${sessionId}/roadmap-generations`, { method: 'POST', body: JSON.stringify({ clientRequestId }) }) }
-export function getAgentRoadmapGeneration(id: string): Promise<AgentRoadmapGeneration> { return request<AgentRoadmapGeneration>(`/product/roadmap-generation-runs/${id}`) }
+export function getAgentPlanningSession(sessionId: string): Promise<AgentPlanningSession> { return useMockApi ? Promise.resolve(getMockAgentPlanningSession(sessionId)) : request<AgentPlanningSession>(`/product/planning-sessions/${sessionId}`) }
+export function createAgentRoadmap(sessionId: string, clientRequestId: string): Promise<AgentRoadmapGeneration> { return useMockApi ? Promise.resolve(createMockRoadmapGeneration()) : request<AgentRoadmapGeneration>(`/product/planning-sessions/${sessionId}/roadmap-generations`, { method: 'POST', body: JSON.stringify({ clientRequestId }) }) }
+export function getAgentRoadmapGeneration(id: string): Promise<AgentRoadmapGeneration> { return useMockApi ? Promise.resolve(createMockRoadmapGeneration(id)) : request<AgentRoadmapGeneration>(`/product/roadmap-generation-runs/${id}`) }
 export function retryAgentInvocation(id: string, onEvent: (event: PlanningStreamEvent) => void): Promise<void> { return streamRequest(`/product/planning-invocations/${id}/retry`, {}, onEvent) }
 export function getKnowledgeRoute(roadmapId: string, nodeId: string, refresh = false): Promise<KnowledgeRoute> {
   const path = `/product/roadmaps/${roadmapId}/nodes/${nodeId}/knowledge-route`
+  if (useMockApi) return Promise.resolve(getMockKnowledgeRoute(nodeId))
   return request<KnowledgeRoute>(path, refresh ? { method: 'POST', body: JSON.stringify({ refresh: true }) } : {})
 }
-export function sendKnowledgeFeedback(routeSetId: string, sourceItemId: string, feedback: 'read' | 'too_hard' | 'too_easy' | 'irrelevant' | 'helpful'): Promise<void> { return request<void>(`/product/knowledge-routes/${routeSetId}/feedback`, { method: 'POST', body: JSON.stringify({ sourceItemId, feedback }) }) }
+export function sendKnowledgeFeedback(routeSetId: string, sourceItemId: string, feedback: 'read' | 'too_hard' | 'too_easy' | 'irrelevant' | 'helpful'): Promise<void> { return useMockApi ? Promise.resolve() : request<void>(`/product/knowledge-routes/${routeSetId}/feedback`, { method: 'POST', body: JSON.stringify({ sourceItemId, feedback }) }) }
 
-export function createPlanningSession(goal?: string): Promise<PlanningSession> { return request<PlanningSession>('/product/planning-sessions', { method: 'POST', body: JSON.stringify({ goal, clientRequestId: crypto.randomUUID() }) }) }
-export function getPlanningSession(id: string): Promise<PlanningSession> { return request<PlanningSession>(`/product/planning-sessions/${id}`) }
-export function uploadPlanningResume(sessionId: string, file: File): Promise<ProductResumeAttachment> { const body = new FormData(); body.append('resume', file, file.name); return request<ProductResumeAttachment>(`/product/planning-sessions/${sessionId}/resume`, { method: 'POST', body }) }
-export function addPlanningTurn(id: string, input: { revision: number; stepKey: string; answer: string; structuredValue?: unknown }): Promise<PlanningSession> { return request<PlanningSession>(`/product/planning-sessions/${id}/turns`, { method: 'POST', body: JSON.stringify(input) }) }
-export function adjustPlanning(id: string, input: { revision: number; weeklyMinutes?: number; priorityDomain?: string; masteredNodeKeys?: string[] }): Promise<RoadmapDraft> { return request<RoadmapDraft>(`/product/planning-sessions/${id}/adjustments`, { method: 'POST', body: JSON.stringify(input) }) }
-export function getRoadmapDraft(id: string): Promise<RoadmapDraft> { return request<RoadmapDraft>(`/product/roadmap-drafts/${id}`) }
-export function confirmRoadmap(id: string, revision: number): Promise<unknown> { return request<unknown>(`/product/roadmap-drafts/${id}/confirm`, { method: 'POST', body: JSON.stringify({ revision }) }) }
-export function getCurrentRoadmap(): Promise<CurrentRoadmapResponse> { return request<CurrentRoadmapResponse>('/product/roadmaps/current') }
-export function getRoadmapNodes(id: string, parentId: string | null): Promise<RoadmapNodePage> { const suffix = parentId ? `?parentId=${encodeURIComponent(parentId)}&depth=1` : '?depth=1'; return request<RoadmapNodePage>(`/product/roadmaps/${id}/nodes${suffix}`) }
-export function completeRoadmapNode(roadmapId: string, nodeId: string, revision: number, status: 'completed' | 'self_reported' = 'completed'): Promise<RoadmapNode> { return request<RoadmapNode>(`/product/roadmaps/${roadmapId}/nodes/${nodeId}/complete`, { method: 'POST', body: JSON.stringify({ revision, status }) }) }
+export function createPlanningSession(goal?: string): Promise<PlanningSession> { return useMockApi ? Promise.resolve(createMockPlanningSession(goal)) : request<PlanningSession>('/product/planning-sessions', { method: 'POST', body: JSON.stringify({ goal, clientRequestId: crypto.randomUUID() }) }) }
+export function getPlanningSession(id: string): Promise<PlanningSession> { return useMockApi ? Promise.resolve(getMockPlanningSession(id)) : request<PlanningSession>(`/product/planning-sessions/${id}`) }
+export function uploadPlanningResume(sessionId: string, file: File): Promise<ProductResumeAttachment> { if (useMockApi) return Promise.resolve(createMockResume(sessionId, file)); const body = new FormData(); body.append('resume', file, file.name); return request<ProductResumeAttachment>(`/product/planning-sessions/${sessionId}/resume`, { method: 'POST', body }) }
+export function addPlanningTurn(id: string, input: { revision: number; stepKey: string; answer: string; structuredValue?: unknown }): Promise<PlanningSession> { return useMockApi ? Promise.resolve(getMockPlanningSession(id)) : request<PlanningSession>(`/product/planning-sessions/${id}/turns`, { method: 'POST', body: JSON.stringify(input) }) }
+export function adjustPlanning(id: string, input: { revision: number; weeklyMinutes?: number; priorityDomain?: string; masteredNodeKeys?: string[] }): Promise<RoadmapDraft> { return useMockApi ? Promise.resolve(getMockRoadmapDraft('demo-roadmap-001')) : request<RoadmapDraft>(`/product/planning-sessions/${id}/adjustments`, { method: 'POST', body: JSON.stringify(input) }) }
+export function getRoadmapDraft(id: string): Promise<RoadmapDraft> { return useMockApi ? Promise.resolve(getMockRoadmapDraft(id)) : request<RoadmapDraft>(`/product/roadmap-drafts/${id}`) }
+export function confirmRoadmap(id: string, revision: number): Promise<unknown> { return useMockApi ? Promise.resolve({ confirmed: true, roadmapId: id }) : request<unknown>(`/product/roadmap-drafts/${id}/confirm`, { method: 'POST', body: JSON.stringify({ revision }) }) }
+export function getCurrentRoadmap(): Promise<CurrentRoadmapResponse> { return useMockApi ? Promise.resolve(getMockCurrentRoadmap()) : request<CurrentRoadmapResponse>('/product/roadmaps/current') }
+export function getRoadmapNodes(id: string, parentId: string | null): Promise<RoadmapNodePage> { if (useMockApi) return Promise.resolve(getMockRoadmapNodes(id, parentId)); const suffix = parentId ? `?parentId=${encodeURIComponent(parentId)}&depth=1` : '?depth=1'; return request<RoadmapNodePage>(`/product/roadmaps/${id}/nodes${suffix}`) }
+export function completeRoadmapNode(roadmapId: string, nodeId: string, revision: number, status: 'completed' | 'self_reported' = 'completed'): Promise<RoadmapNode> { return useMockApi ? Promise.resolve(completeMockRoadmapNode(roadmapId, nodeId, status)) : request<RoadmapNode>(`/product/roadmaps/${roadmapId}/nodes/${nodeId}/complete`, { method: 'POST', body: JSON.stringify({ revision, status }) }) }
