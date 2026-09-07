@@ -5,6 +5,7 @@ import { createProductPin, deleteProductPin, executeProductLab, getProductLabAcc
 import type { LabCaseId, LabExecutionResult } from '@/types/lab'
 import type { ProductPracticeCompletion, ProductPracticeHistoryItem, ProductPracticePin, ProductPracticeRun, ProductPracticeStart, ProductSnapshot, ProductTutorMessage, ProductTutorResponse, ProductTutorSource, ProductTutorStreamEvent } from '@/types/product'
 import { useLabStore } from './lab'
+import { createClientId } from '@/utils/client-id'
 
 export const usePracticeStore = defineStore('practice', () => {
   const activePracticeKey = 'zhixing.active.practice.id'
@@ -165,7 +166,7 @@ export const usePracticeStore = defineStore('practice', () => {
       if (run.value?.status === 'resolved') error.value = '本次实践已完成，Tutor 对话已收束。'
       return
     }
-    await streamTutor(run.value.id, message, crypto.randomUUID())
+    await streamTutor(run.value.id, message, createClientId())
   }
 
   function applyTutorEvent(event: ProductTutorStreamEvent) {
@@ -183,7 +184,7 @@ export const usePracticeStore = defineStore('practice', () => {
 
   async function streamTutor(runId: string, message: string, requestId: string) {
     tutorLoading.value = true; error.value = null; tutorFailure.value = null; sources.value = []
-    messages.value.push({ id: `local-${crypto.randomUUID()}`, role: 'user', content: message })
+    messages.value.push({ id: `local-${createClientId()}`, role: 'user', content: message })
     try { await streamProductTutor(runId, message, requestId, applyTutorEvent); await loadHistory() } catch (cause) { if (!tutorFailure.value) error.value = cause instanceof Error ? cause.message : 'Tutor 暂时不可用' } finally { tutorLoading.value = false }
   }
 
@@ -222,7 +223,7 @@ export const usePracticeStore = defineStore('practice', () => {
     }
     labStore.executing = true; error.value = null
     try {
-      const result = await executeProductLab(run.value.id, labStore.accessToken, { revision: labStore.run.revision, sessionId: labStore.sessionId, statement: labStore.sql, clientRequestId: crypto.randomUUID() })
+      const result = await executeProductLab(run.value.id, labStore.accessToken, { revision: labStore.run.revision, sessionId: labStore.sessionId, statement: labStore.sql, clientRequestId: createClientId() })
       labStore.latestResult = result.execution as LabExecutionResult
       run.value = result.run; hydrate(result.snapshot)
     } catch (cause) {

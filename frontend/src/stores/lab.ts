@@ -23,6 +23,7 @@ import {
   type LabQueueTicket,
   type LabRun,
 } from '@/types/lab'
+import { createClientId } from '@/utils/client-id'
 
 export const DEFAULT_SLOW_SQL = `EXPLAIN SELECT id, user_id, status, total_amount, created_at
 FROM orders
@@ -254,7 +255,7 @@ export const useLabStore = defineStore('lab', () => {
       error.value = 'SQL 不能为空'
       return
     }
-    const requestId = pendingRequestId ?? crypto.randomUUID()
+    const requestId = pendingRequestId ?? createClientId()
     pendingRequestId = requestId
     executing.value = true
     error.value = null

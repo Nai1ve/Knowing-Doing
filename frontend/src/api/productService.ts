@@ -1,13 +1,14 @@
 import { ApiError, apiClient } from './client'
 import type { LabCaseId, LabExecutionResult } from '@/types/lab'
 import type { ProductArtifact, ProductIntake, ProductLabAccess, ProductLabExecution, ProductMemory, ProductPlan, ProductPracticeCompletion, ProductPracticeHistoryPage, ProductPracticePin, ProductPracticeRun, ProductPracticeStart, ProductSnapshot, ProductTutorResponse, ProductTutorStreamEvent, ProductWritingBlockEvidence, ProductWritingCluster, ProductWritingClusterDetail, ProductWritingClusterOverview, ProductWritingDraftRun, ProductWritingGenerationJob, ProductWritingProject, ProductWritingDocument, ProductWritingWorkspace } from '@/types/product'
+import { createClientId } from '@/utils/client-id'
 
 const learnerStorageKey = 'zhixing.learner.id'
 function learnerId(): string {
   if (typeof window === 'undefined') return 'anonymous-web'
   const existing = window.localStorage.getItem(learnerStorageKey)
   if (existing) return existing
-  const value = crypto.randomUUID(); window.localStorage.setItem(learnerStorageKey, value); return value
+  const value = createClientId(); window.localStorage.setItem(learnerStorageKey, value); return value
 }
 
 function product<T>(path: string, init: RequestInit = {}, token?: string): Promise<T> {
@@ -27,7 +28,7 @@ export function deleteProductPin(runId: string, pinId: string): Promise<void> { 
 export function getProductLabAccess(runId: string): Promise<ProductLabAccess> { return product(`/practice-runs/${runId}/lab`) }
 export function getProductPracticeHistory(cursor?: string, limit = 20): Promise<ProductPracticeHistoryPage> { return product(`/practice-runs?limit=${limit}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`) }
 export function reopenProductLab(runId: string): Promise<ProductPracticeStart> { return product(`/practice-runs/${runId}/reopen-lab`, { method: 'POST' }) }
-export function sendProductTutor(runId: string, message: string): Promise<{ run: ProductPracticeRun; tutor: ProductTutorResponse; snapshot: ProductSnapshot }> { return product(`/practice-runs/${runId}/messages`, { method: 'POST', body: JSON.stringify({ message, clientRequestId: crypto.randomUUID() }) }) }
+export function sendProductTutor(runId: string, message: string): Promise<{ run: ProductPracticeRun; tutor: ProductTutorResponse; snapshot: ProductSnapshot }> { return product(`/practice-runs/${runId}/messages`, { method: 'POST', body: JSON.stringify({ message, clientRequestId: createClientId() }) }) }
 
 async function streamTutorRequest(path: string, body: Record<string, unknown>, onEvent: (event: ProductTutorStreamEvent) => void): Promise<void> {
   const headers = new Headers({ Accept: 'text/event-stream' }); headers.set('Content-Type', 'application/json'); headers.set('X-Learner-Id', learnerId())
@@ -81,7 +82,7 @@ export function initializeWriting(runId: string): Promise<ProductWritingProject>
 export function getWriting(runId: string): Promise<ProductWritingProject> { return product(`/practice-runs/${runId}/writing`) }
 export function getWritingWorkspace(runId: string): Promise<ProductWritingWorkspace> { return product(`/practice-runs/${runId}/writing/workspace`) }
 export function retryWritingDraft(runId: string, draftId: string): Promise<ProductWritingDraftRun> { return product(`/practice-runs/${runId}/writing/draft-runs/${draftId}/retry`, { method: 'POST' }) }
-export function regenerateWritingDraft(runId: string, clientRequestId = crypto.randomUUID()): Promise<ProductWritingDraftRun> { return product(`/practice-runs/${runId}/writing/regenerate`, { method: 'POST', body: JSON.stringify({ clientRequestId }) }) }
+export function regenerateWritingDraft(runId: string, clientRequestId = createClientId()): Promise<ProductWritingDraftRun> { return product(`/practice-runs/${runId}/writing/regenerate`, { method: 'POST', body: JSON.stringify({ clientRequestId }) }) }
 export function editWritingBlock(runId: string, documentId: string, blockId: string, revision: number, content: string): Promise<ProductWritingDocument> { return product(`/practice-runs/${runId}/writing/documents/${documentId}/blocks/${blockId}`, { method: 'PATCH', body: JSON.stringify({ revision, content }) }) }
 export function getWritingBlockEvidence(runId: string, documentId: string, blockId: string): Promise<ProductWritingBlockEvidence> { return product(`/practice-runs/${runId}/writing/documents/${documentId}/blocks/${blockId}/evidence`) }
 export function getWritingCurationOverview(runId: string): Promise<ProductWritingClusterOverview> { return product(`/practice-runs/${runId}/writing/overview`) }
@@ -99,7 +100,7 @@ export function selectWritingMaterial(runId: string, materialId: string, selecte
 }
 export function generateWritingOutline(runId: string): Promise<ProductWritingProject> { return product(`/practice-runs/${runId}/writing/outline`, { method: 'POST' }) }
 export function generateWritingArticle(runId: string): Promise<ProductWritingProject> { return product(`/practice-runs/${runId}/writing/article`, { method: 'POST' }) }
-export function startWritingGeneration(runId: string, kind: 'outline' | 'article', clientRequestId = crypto.randomUUID()): Promise<ProductWritingGenerationJob> { return product(`/practice-runs/${runId}/writing/generations`, { method: 'POST', body: JSON.stringify({ kind, clientRequestId }) }) }
+export function startWritingGeneration(runId: string, kind: 'outline' | 'article', clientRequestId = createClientId()): Promise<ProductWritingGenerationJob> { return product(`/practice-runs/${runId}/writing/generations`, { method: 'POST', body: JSON.stringify({ kind, clientRequestId }) }) }
 export function getWritingGenerationJob(runId: string, jobId: string): Promise<ProductWritingGenerationJob> { return product(`/practice-runs/${runId}/writing/generation-jobs/${jobId}`) }
 export function retryWritingGeneration(runId: string, jobId: string): Promise<ProductWritingGenerationJob> { return product(`/practice-runs/${runId}/writing/generation-jobs/${jobId}/retry`, { method: 'POST' }) }
 export function confirmWritingOutline(runId: string, documentId: string): Promise<ProductWritingDocument> { return product(`/practice-runs/${runId}/writing/documents/${documentId}/confirm`, { method: 'POST' }) }

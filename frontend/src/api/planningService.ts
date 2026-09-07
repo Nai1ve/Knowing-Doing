@@ -1,11 +1,12 @@
 import { apiClient } from './client'
 import type { AgentPlanningSession, AgentRoadmapGeneration, CurrentRoadmapResponse, KnowledgeRoute, PlanningSession, PlanningStreamEvent, ProductResumeAttachment, RoadmapDraft, RoadmapNode, RoadmapNodePage } from '@/types/product'
+import { createClientId } from '@/utils/client-id'
 
 const learnerKey = 'zhixing.learner.id'
 function learnerId(): string {
   if (typeof window === 'undefined') return 'anonymous-web'
   const current = localStorage.getItem(learnerKey); if (current) return current
-  const value = crypto.randomUUID(); localStorage.setItem(learnerKey, value); return value
+  const value = createClientId(); localStorage.setItem(learnerKey, value); return value
 }
 function request<T>(path: string, init: RequestInit = {}): Promise<T> { const headers = new Headers(init.headers); headers.set('X-Learner-Id', learnerId()); return apiClient.request<T>(path, { ...init, headers }) }
 
@@ -39,7 +40,7 @@ export function getKnowledgeRoute(roadmapId: string, nodeId: string, refresh = f
 }
 export function sendKnowledgeFeedback(routeSetId: string, sourceItemId: string, feedback: 'read' | 'too_hard' | 'too_easy' | 'irrelevant' | 'helpful'): Promise<void> { return request<void>(`/product/knowledge-routes/${routeSetId}/feedback`, { method: 'POST', body: JSON.stringify({ sourceItemId, feedback }) }) }
 
-export function createPlanningSession(goal?: string): Promise<PlanningSession> { return request<PlanningSession>('/product/planning-sessions', { method: 'POST', body: JSON.stringify({ goal, clientRequestId: crypto.randomUUID() }) }) }
+export function createPlanningSession(goal?: string): Promise<PlanningSession> { return request<PlanningSession>('/product/planning-sessions', { method: 'POST', body: JSON.stringify({ goal, clientRequestId: createClientId() }) }) }
 export function getPlanningSession(id: string): Promise<PlanningSession> { return request<PlanningSession>(`/product/planning-sessions/${id}`) }
 export function uploadPlanningResume(sessionId: string, file: File): Promise<ProductResumeAttachment> { const body = new FormData(); body.append('resume', file, file.name); return request<ProductResumeAttachment>(`/product/planning-sessions/${sessionId}/resume`, { method: 'POST', body }) }
 export function addPlanningTurn(id: string, input: { revision: number; stepKey: string; answer: string; structuredValue?: unknown }): Promise<PlanningSession> { return request<PlanningSession>(`/product/planning-sessions/${id}/turns`, { method: 'POST', body: JSON.stringify(input) }) }

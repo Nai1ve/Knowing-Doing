@@ -1,12 +1,13 @@
 import { apiClient } from './client'
 import type { DiagnosticTargetKey, ProductDiagnosticSession, ProductOnboardingState, ProductPlan, ProductPlanProposal } from '@/types/product'
+import { createClientId } from '@/utils/client-id'
 
 const learnerStorageKey = 'zhixing.learner.id'
 function learnerId(): string {
   if (typeof window === 'undefined') return 'anonymous-web'
   const existing = window.localStorage.getItem(learnerStorageKey)
   if (existing) return existing
-  const value = crypto.randomUUID(); window.localStorage.setItem(learnerStorageKey, value); return value
+  const value = createClientId(); window.localStorage.setItem(learnerStorageKey, value); return value
 }
 
 function request<T>(path: string, init: RequestInit = {}): Promise<T> {

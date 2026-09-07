@@ -2,6 +2,7 @@ import { defineStore } from 'pinia'
 import { ref } from 'vue'
 import { createDiagnosticSession, getOnboardingState, regeneratePlan } from '@/api/onboardingService'
 import type { DiagnosticTargetKey, ProductOnboardingState } from '@/types/product'
+import { createClientId } from '@/utils/client-id'
 
 export const useOnboardingStore = defineStore('onboarding', () => {
   const state = ref<ProductOnboardingState | null>(null)
@@ -19,7 +20,7 @@ export const useOnboardingStore = defineStore('onboarding', () => {
   async function start(targetKey: DiagnosticTargetKey, goal: string) {
     loading.value = true; error.value = null
     try {
-      const session = await createDiagnosticSession({ targetKey, goal, clientRequestId: crypto.randomUUID() })
+      const session = await createDiagnosticSession({ targetKey, goal, clientRequestId: createClientId() })
       state.value = { status: 'diagnostic_in_progress', currentPlan: null, diagnosticSession: { id: session.id, status: session.status, revision: session.revision, updatedAt: session.updatedAt }, proposal: null }
       return session
     } catch (cause) { error.value = cause instanceof Error ? cause.message : '诊断创建失败'; throw cause }
@@ -29,7 +30,7 @@ export const useOnboardingStore = defineStore('onboarding', () => {
   async function regenerate() {
     loading.value = true; error.value = null
     try {
-      const session = await regeneratePlan(crypto.randomUUID())
+      const session = await regeneratePlan(createClientId())
       state.value = { status: 'diagnostic_in_progress', currentPlan: null, diagnosticSession: { id: session.id, status: session.status, revision: session.revision, updatedAt: session.updatedAt }, proposal: null }
       return session
     } catch (cause) { error.value = cause instanceof Error ? cause.message : '重新生成计划失败'; throw cause }
