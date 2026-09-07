@@ -9,7 +9,8 @@ data_root="${ZHIXING_DATA_ROOT:-/home/ubuntu/knowing-doing-data}"
 release_dir="$release_root/$commit"
 
 mkdir -p "$release_root" "$data_root"
-git -C "$repo_root" fetch --quiet origin "$commit"
+git -C "$repo_root" fetch --quiet origin main
+git -C "$repo_root" cat-file -e "$commit^{commit}"
 
 if [ ! -d "$release_dir" ]; then
   mkdir -p "$release_dir"
