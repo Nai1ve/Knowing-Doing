@@ -52,7 +52,7 @@ export function loadConfig(): LabConfig {
     host: process.env.LAB_MYSQL_HOST ?? '127.0.0.1',
     port: Number(process.env.LAB_MYSQL_PORT ?? 3306),
     apiHost: process.env.LAB_API_HOST ?? '127.0.0.1',
-    apiPort: Number(process.env.LAB_API_PORT ?? 3000),
+    apiPort: Number(process.env.LAB_API_PORT ?? 3001),
     corsOrigin: process.env.LAB_CORS_ORIGIN ?? 'http://localhost:4175',
     runnerUser: process.env.LAB_MYSQL_RUNNER_USER ?? 'zhixing_lab_runner',
     runnerPassword: process.env.LAB_MYSQL_RUNNER_PASSWORD ?? '',
