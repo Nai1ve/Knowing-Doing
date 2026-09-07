@@ -1,0 +1,19 @@
+[Unit]
+Description=Knowing-Doing API
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/knowing-doing-current/backend
+EnvironmentFile=/etc/knowing-doing/backend.env
+ExecStart=/usr/bin/node /home/ubuntu/knowing-doing-current/backend/dist/src/server.js
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=15
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,21 @@
+services:
+  mysql:
+    image: mysql:8.4
+    container_name: zhixing-lab-mysql
+    restart: unless-stopped
+    env_file:
+      - /home/ubuntu/knowing-doing-data/mysql.env
+    ports:
+      - "127.0.0.1:13306:3306"
+    volumes:
+      - zhixing-lab-mysql-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -p\"$$MYSQL_ROOT_PASSWORD\" --silent"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+
+volumes:
+  zhixing-lab-mysql-data:
+    name: zhixing-lab-mysql-data

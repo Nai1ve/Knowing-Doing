@@ -1,7 +1,6 @@
 import { ref } from 'vue'
 import { defineStore } from 'pinia'
 import { disconnectOAuth, getConnections, getOAuthAuthorizationUrl } from '@/api/oauthService'
-import { useMockApi } from '@/api/mode'
 import type { OAuthConnection } from '@/types/domain'
 
 export const useAuthStore = defineStore('auth', () => {
@@ -15,7 +14,6 @@ export const useAuthStore = defineStore('auth', () => {
   }
 
   function authorize(provider: OAuthConnection['provider']): boolean {
-    if (useMockApi) return false
     window.location.href = getOAuthAuthorizationUrl(provider)
     return true
   }
