@@ -50,7 +50,8 @@ const RoadmapPlanSchema = z.object({
 })
 type RoadmapPlan = z.infer<typeof RoadmapPlanSchema>
 type RoadmapPhase = 'domain' | 'module' | 'unit' | 'critic'
-type RoadmapPhaseCallback = (phase: RoadmapPhase) => Promise<void> | void
+type RoadmapPhaseEvent = { phase: RoadmapPhase; status: 'started' | 'succeeded'; output?: unknown }
+type RoadmapPhaseCallback = (event: RoadmapPhaseEvent) => Promise<void> | void
 export type ProfileDelta = z.infer<typeof ProfileDeltaSchema>
 
 export type PlanningStreamEvent =
@@ -66,10 +67,11 @@ export interface AgentPlanningMessage { id: string; sequence: number; role: 'use
 export interface AgentPlanningTopic { key: string; label: string; priority: number; status: 'unknown' | 'covered' | 'needs_follow_up'; evidenceRefs: string[] }
 export interface AgentProfileDimension { key: string; level: ProfileDelta['dimensions'][number]['level']; confidence: number; summary: string; nextValidation: string }
 export interface AgentProfile { id: string; version: number; summary: Record<string, unknown>; dimensions: AgentProfileDimension[]; evidence: Array<{ id: string; topicKey: string | null; sourceType: string; sourceId: string; excerpt: string; createdAt: string }> }
-export interface AgentPlanningSession { id: string; learnerId: string; goal: string; status: string; mode: 'agent'; agentStatus: string; revision: number; messages: AgentPlanningMessage[]; requiredTopics: AgentPlanningTopic[]; profile: AgentProfile | null; resume: unknown; roadmapId: string | null; createdAt: string; updatedAt: string }
+export interface AgentRoadmapGeneration { id: string; status: 'queued' | 'running' | 'succeeded' | 'failed' | 'interrupted'; phase: RoadmapPhase | 'completed' | 'failed'; attemptCount: number; roadmapId: string | null; failureCode: string | null; failureMessage: string | null; updatedAt: string }
+export interface AgentPlanningSession { id: string; learnerId: string; goal: string; status: string; mode: 'agent'; agentStatus: string; revision: number; messages: AgentPlanningMessage[]; requiredTopics: AgentPlanningTopic[]; profile: AgentProfile | null; resume: unknown; roadmapId: string | null; roadmapGeneration: AgentRoadmapGeneration | null; createdAt: string; updatedAt: string }
 export interface AgentPlanningState {
   session: { id: string; goal: string; status: string; agentStatus: string; revision: number; roadmapId: string | null; updatedAt: string } | null
-  generation: { id: string; status: string; phase: string; roadmapId: string | null; failureCode: string | null; failureMessage: string | null } | null
+  generation: AgentRoadmapGeneration | null
   currentPlan: { id: string; title: string; goal: string; status: string; planState: string; roadmapId: string | null } | null
 }
 
@@ -82,7 +84,7 @@ export interface PlanningProvider {
 }
 
 export class PlanningAgentError extends Error {
-  constructor(public readonly code: string, message: string, public readonly retryable = true) { super(message); this.name = 'PlanningAgentError' }
+  constructor(public readonly code: string, message: string, public readonly retryable = true, public readonly details: Record<string, unknown> = {}) { super(message); this.name = 'PlanningAgentError' }
 }
 
 function contentFrom(payload: unknown): string {
@@ -100,6 +102,16 @@ function nullable(row: Row, key: string): string | null { return row[key] == nul
 function number(row: Row, key: string): number { return Number(row[key]) }
 function json<T>(value: unknown, fallback: T): T { if (typeof value !== 'string') return fallback; try { return JSON.parse(value) as T } catch { return fallback } }
 function resumeText(db: Database.Database, sessionId: string): string | null { const row = db.prepare('SELECT extracted_text FROM planning_resume_attachments WHERE planning_session_id = ? ORDER BY updated_at DESC LIMIT 1').get(sessionId) as Row | undefined; return row?.extracted_text == null ? null : String(row.extracted_text) }
+function generationFrom(row: Row | undefined): AgentRoadmapGeneration | null {
+  if (!row) return null
+  return { id: text(row, 'id'), status: text(row, 'status') as AgentRoadmapGeneration['status'], phase: text(row, 'phase') as AgentRoadmapGeneration['phase'], attemptCount: number(row, 'attempt_count'), roadmapId: nullable(row, 'roadmap_id'), failureCode: nullable(row, 'failure_code'), failureMessage: nullable(row, 'failure_message'), updatedAt: text(row, 'updated_at') }
+}
+
+const ROADMAP_JSON_CONTRACT = JSON.stringify({
+  nodes: [{ key: 'domain-key', parentKey: null, type: 'domain', title: '能力域', summary: '说明当前能力域与目标的关系', points: ['关键点'], standard: '可观察的完成标准', minutes: 120, priority: 1, mode: 'knowledge', caseIntent: null, contextKeys: ['goal'] }],
+  unitKeys: ['domain-key'],
+  dependencies: [{ nodeKey: 'child-key', dependsOnKey: 'domain-key' }],
+})
 
 export class DeepSeekPlanningAgent implements PlanningProvider {
   readonly providerName = 'deepseek'
@@ -147,28 +159,43 @@ export class DeepSeekPlanningAgent implements PlanningProvider {
     return result.trim()
   }
 
-  private async structured(messages: Array<{ role: 'system' | 'user'; content: string }>): Promise<unknown> {
+  private async structured(messages: Array<{ role: 'system' | 'user'; content: string }>): Promise<{ value: unknown; raw: string; parseError?: string }> {
     const response = await this.call({ stream: false, temperature: 0.1, response_format: { type: 'json_object' }, messages })
     const raw = stripThinking(contentFrom(await response.json()).replace(/^```json\s*/i, '').replace(/\s*```$/, ''))
-    try { return JSON.parse(raw) as unknown } catch { throw new PlanningAgentError('roadmap_invalid_json', '路线规划器返回的 JSON 无效') }
+    try { return { value: JSON.parse(raw) as unknown, raw } } catch { return { value: null, raw, parseError: 'invalid_json' } }
   }
 
   async generateRoadmap(input: { goal: string; messages: AgentPlanningMessage[]; context: PlanningContextPacket | null; onPhase: RoadmapPhaseCallback }): Promise<RoadmapPlan> {
     const context = JSON.stringify({ goal: input.goal, context: input.context, messages: input.messages.slice(-10) })
-    const phase = async (name: RoadmapPhase, instruction: string, previous: unknown): Promise<unknown> => {
-      await input.onPhase(name)
-      return this.structured([
+    const phase = async (name: RoadmapPhase, instruction: string, previous: unknown): Promise<{ value: unknown; raw: string; parseError?: string }> => {
+      await input.onPhase({ phase: name, status: 'started' })
+      const result = await this.structured([
         { role: 'system', content: `你是知行路线规划器，当前阶段是 ${name}。${instruction} 只返回 JSON，不输出解释。路线必须基于输入中的用户目标和明确事实，未明确的内容可以作为通用学习建议，但不能声称用户已经掌握。${name === 'critic' ? '最终输出必须符合 nodes、unitKeys、dependencies 结构。' : ''}` },
         { role: 'user', content: JSON.stringify({ context, previous }) },
       ])
+      await input.onPhase({ phase: name, status: 'succeeded', output: result.parseError ? { raw: result.raw, parseError: result.parseError } : result.value })
+      return result
     }
     const domains = await phase('domain', '提炼与当前目标相关的能力域，保留 2 到 6 个相互独立的方向。', null)
-    const modules = await phase('module', '在能力域下生成有父子关系的能力模块，内容要响应用户对话中的重点。', domains)
-    const units = await phase('unit', '从能力域和模块中选择未来一到两周最值得推进的 1 到 6 个学习单元。若用户明确要学 MySQL 慢查询、EXPLAIN 或索引优化，必须包含一个对应的实验单元，并将 caseIntent 写为 mysql.slow-query-index。', { domains, modules })
-    const final = await phase('critic', '检查路线依赖、时间负荷和对话一致性，必要时调整节点。节点字段必须包含 key、parentKey、type、title、summary、points、standard、minutes、priority、mode、caseIntent、contextKeys；unitKeys 必须引用 nodes 中的节点。', { domains, modules, units })
-    const parsed = RoadmapPlanSchema.safeParse(final)
-    if (!parsed.success) throw new PlanningAgentError('roadmap_invalid_output', '路线规划器返回的结构不完整')
-    return parsed.data
+    const modules = await phase('module', '在能力域下生成有父子关系的能力模块，内容要响应用户对话中的重点。', domains.value)
+    const units = await phase('unit', '从能力域和模块中选择未来一到两周最值得推进的 1 到 6 个学习单元。若用户明确要学 MySQL 慢查询、EXPLAIN 或索引优化，必须包含一个对应的实验单元，并将 caseIntent 写为 mysql.slow-query-index。', { domains: domains.value, modules: modules.value })
+    const previous = { domains: domains.value, modules: modules.value, units: units.value }
+    const final = await phase('critic', `检查路线依赖、时间负荷和对话一致性，必要时调整节点。最终只能返回符合以下完整结构的 JSON：${ROADMAP_JSON_CONTRACT}`, previous)
+    const parsed = RoadmapPlanSchema.safeParse(final.value)
+    if (parsed.success) return parsed.data
+
+    const validationIssues = parsed.error.issues.map((issue) => ({ path: issue.path.join('.'), code: issue.code, message: issue.message }))
+    const repair = await this.structured([
+      { role: 'system', content: `你是知行路线规划器的 JSON 修复器。只返回完整 JSON，不输出解释。修复草稿时不得改变用户目标，不得添加输入中不存在的用户经历。必须严格符合这个结构：${ROADMAP_JSON_CONTRACT}` },
+      { role: 'user', content: JSON.stringify({ context, previous, draft: final.raw, parseError: final.parseError ?? null, validationIssues, contract: ROADMAP_JSON_CONTRACT }) },
+    ])
+    await input.onPhase({ phase: 'critic', status: 'succeeded', output: { initial: final.parseError ? { raw: final.raw, parseError: final.parseError } : final.value, validationIssues, repaired: repair.parseError ? { raw: repair.raw, parseError: repair.parseError } : repair.value } })
+    const repaired = RoadmapPlanSchema.safeParse(repair.value)
+    if (!repaired.success) {
+      const repairIssues = repaired.error.issues.map((issue) => ({ path: issue.path.join('.'), code: issue.code, message: issue.message }))
+      throw new PlanningAgentError('roadmap_invalid_output', '路线规划器返回的结构不完整，自动修复也未通过校验', true, { validationIssues, repairIssues, repairAttempted: true, initialOutput: final.raw, repairedOutput: repair.raw, repairParseError: repair.parseError ?? null })
+    }
+    return repaired.data
   }
 
   async interpret(input: { userMessage: string; assistantMessage: string; messages: AgentPlanningMessage[]; resumeText?: string | null; context?: PlanningContextPacket | null }): Promise<ProfileDelta> {
@@ -211,8 +238,8 @@ export class AgentPlanningService {
   private sessionFrom(row: Row): AgentPlanningSession {
     const id = text(row, 'id'); const profileSnapshotId = nullable(row, 'profile_snapshot_id')
     const messages = (this.db.prepare('SELECT * FROM planning_messages WHERE session_id = ? ORDER BY sequence ASC').all(id) as Row[]).map((item) => ({ id: text(item, 'id'), sequence: number(item, 'sequence'), role: text(item, 'role') as AgentPlanningMessage['role'], content: text(item, 'content'), metadata: json(item.metadata_json, {}), createdAt: text(item, 'created_at') }))
-    const roadmap = this.db.prepare("SELECT roadmap_id FROM roadmap_generation_runs WHERE planning_session_id = ? AND status = 'succeeded' ORDER BY created_at DESC LIMIT 1").get(id) as Row | undefined
-    return { id, learnerId: text(row, 'learner_id'), goal: text(row, 'goal'), status: text(row, 'status'), mode: 'agent', agentStatus: text(row, 'agent_status'), revision: number(row, 'revision'), messages, requiredTopics: this.topics(id), profile: this.profile(profileSnapshotId), resume: this.repository.getPlanningResumeAttachment(id, text(row, 'learner_id')), roadmapId: roadmap ? nullable(roadmap, 'roadmap_id') : null, createdAt: text(row, 'created_at'), updatedAt: text(row, 'updated_at') }
+    const generation = generationFrom(this.db.prepare('SELECT id, status, phase, attempt_count, roadmap_id, failure_code, failure_message, updated_at FROM roadmap_generation_runs WHERE planning_session_id = ? ORDER BY created_at DESC, id DESC LIMIT 1').get(id) as Row | undefined)
+    return { id, learnerId: text(row, 'learner_id'), goal: text(row, 'goal'), status: text(row, 'status'), mode: 'agent', agentStatus: text(row, 'agent_status'), revision: number(row, 'revision'), messages, requiredTopics: this.topics(id), profile: this.profile(profileSnapshotId), resume: this.repository.getPlanningResumeAttachment(id, text(row, 'learner_id')), roadmapId: generation?.status === 'succeeded' ? generation.roadmapId : null, roadmapGeneration: generation, createdAt: text(row, 'created_at'), updatedAt: text(row, 'updated_at') }
   }
 
   createSession(learnerId: string, input: { message: string; clientRequestId: string }): AgentPlanningSession {
@@ -255,14 +282,14 @@ export class AgentPlanningService {
     const invocationId = retryInvocationId ?? (existing ? text(existing, 'id') : randomUUID()); const now = new Date().toISOString(); const started = Date.now()
     const hasMessage = suppressUserMessage || Boolean(this.db.prepare('SELECT 1 FROM planning_messages WHERE session_id = ? AND client_request_id = ?').get(sessionId, clientRequestId))
     const transaction = this.db.transaction(() => {
+      const claimed = this.db.prepare("UPDATE planning_sessions SET revision = revision + 1, updated_at = ?, agent_status = 'running' WHERE id = ? AND learner_id = ? AND mode = 'agent' AND agent_status NOT IN ('running', 'generating')").run(now, sessionId, learnerId)
+      if (claimed.changes === 0) throw new LabError('planning_busy', '当前规划会话正在处理上一条消息，请稍后重试', 409, true)
       if (!existing) this.db.prepare('INSERT INTO planning_agent_invocations(id, session_id, learner_id, client_request_id, kind, provider, model, status, input_fingerprint, created_at) VALUES (?, ?, ?, ?, \'planner\', ?, ?, \'running\', ?, ?)').run(invocationId, sessionId, learnerId, clientRequestId, this.provider.providerName, this.provider.modelName, fingerprint({ sessionId, content }), now)
       else this.db.prepare("UPDATE planning_agent_invocations SET status = 'running', failure_code = NULL, failure_message = NULL, completed_at = NULL WHERE id = ?").run(invocationId)
       if (!hasMessage) {
         const next = this.db.prepare('SELECT COALESCE(MAX(sequence), 0) + 1 AS sequence FROM planning_messages WHERE session_id = ?').get(sessionId) as Row
         this.db.prepare('INSERT INTO planning_messages(id, session_id, sequence, role, content, metadata_json, client_request_id, created_at) VALUES (?, ?, ?, \'user\', ?, \'{}\', ?, ?)').run(randomUUID(), sessionId, number(next, 'sequence'), content, clientRequestId, now)
       }
-      const claimed = this.db.prepare("UPDATE planning_sessions SET revision = revision + 1, updated_at = ?, agent_status = 'running' WHERE id = ? AND learner_id = ? AND mode = 'agent' AND agent_status <> 'running'").run(now, sessionId, learnerId)
-      if (claimed.changes === 0) throw new LabError('planning_busy', '当前规划会话正在处理上一条消息，请稍后重试', 409, true)
     })
     transaction(); await send({ type: 'accepted', invocationId, sessionId })
     try {
@@ -315,38 +342,66 @@ export class AgentPlanningService {
     return { topicKey: selected.key, question: questions[selected.key] ?? `关于${selected.label}，你还愿意补充一个具体例子吗？` }
   }
 
-  async generateRoadmap(learnerId: string, sessionId: string, clientRequestId: string): Promise<{ id: string; status: string; phase: string; roadmapId: string | null }> {
+  async generateRoadmap(learnerId: string, sessionId: string, clientRequestId: string): Promise<AgentRoadmapGeneration> {
     const session = this.sessionRow(learnerId, sessionId); const context = this.contextCompiler.current(learnerId, sessionId); const inputFingerprint = fingerprint({ generatorVersion: 'agent-roadmap-v2', sessionId, contextSnapshotId: context?.snapshotId ?? null, messages: this.getSession(learnerId, sessionId).messages.map((item) => [item.role, item.content]), profile: session.profile_snapshot_id }); const existing = this.db.prepare('SELECT * FROM roadmap_generation_runs WHERE learner_id = ? AND (client_request_id = ? OR input_fingerprint = ?) ORDER BY created_at DESC LIMIT 1').get(learnerId, clientRequestId, inputFingerprint) as Row | undefined
-    if (existing) return { id: text(existing, 'id'), status: text(existing, 'status'), phase: text(existing, 'phase'), roadmapId: nullable(existing, 'roadmap_id') }
+    if (existing) return generationFrom(existing)!
     const running = this.db.prepare("SELECT * FROM roadmap_generation_runs WHERE learner_id = ? AND planning_session_id = ? AND status IN ('queued', 'running') ORDER BY created_at DESC LIMIT 1").get(learnerId, sessionId) as Row | undefined
-    if (running) return { id: text(running, 'id'), status: text(running, 'status'), phase: text(running, 'phase'), roadmapId: nullable(running, 'roadmap_id') }
-    const claimed = this.db.prepare("UPDATE planning_sessions SET agent_status = 'generating', updated_at = ? WHERE id = ? AND learner_id = ? AND mode = 'agent' AND agent_status <> 'generating'").run(new Date().toISOString(), sessionId, learnerId)
-    if (claimed.changes === 0) {
-      const concurrent = this.db.prepare("SELECT * FROM roadmap_generation_runs WHERE learner_id = ? AND planning_session_id = ? AND status IN ('queued', 'running') ORDER BY created_at DESC LIMIT 1").get(learnerId, sessionId) as Row | undefined
-      if (concurrent) return { id: text(concurrent, 'id'), status: text(concurrent, 'status'), phase: text(concurrent, 'phase'), roadmapId: nullable(concurrent, 'roadmap_id') }
-      throw new LabError('planning_busy', '当前规划会话正在生成路线，请稍后重试', 409, true)
-    }
+    if (running) return generationFrom(running)!
     const id = randomUUID(); const now = new Date().toISOString()
-    try { this.db.prepare("INSERT INTO roadmap_generation_runs(id, learner_id, planning_session_id, input_fingerprint, client_request_id, phase, status, attempt_count, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 'domain', 'queued', 0, ?, ?)").run(id, learnerId, sessionId, inputFingerprint, clientRequestId, now, now) } catch (error) {
+    try {
+      const created = this.db.transaction(() => {
+        const claimed = this.db.prepare("UPDATE planning_sessions SET agent_status = 'generating', updated_at = ? WHERE id = ? AND learner_id = ? AND mode = 'agent' AND agent_status NOT IN ('running', 'generating')").run(now, sessionId, learnerId)
+        if (claimed.changes === 0) return false
+        this.db.prepare("INSERT INTO roadmap_generation_runs(id, learner_id, planning_session_id, input_fingerprint, client_request_id, phase, status, attempt_count, diagnostics_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 'domain', 'queued', 0, '{}', ?, ?)").run(id, learnerId, sessionId, inputFingerprint, clientRequestId, now, now)
+        return true
+      })()
+      if (!created) {
+        const concurrent = this.db.prepare("SELECT * FROM roadmap_generation_runs WHERE learner_id = ? AND planning_session_id = ? AND status IN ('queued', 'running') ORDER BY created_at DESC LIMIT 1").get(learnerId, sessionId) as Row | undefined
+        if (concurrent) return generationFrom(concurrent)!
+        throw new LabError('planning_busy', '当前规划会话正在处理上一条消息，请稍后重试', 409, true)
+      }
+    } catch (error) {
       const concurrent = this.db.prepare('SELECT * FROM roadmap_generation_runs WHERE learner_id = ? AND (client_request_id = ? OR input_fingerprint = ?) ORDER BY created_at DESC LIMIT 1').get(learnerId, clientRequestId, inputFingerprint) as Row | undefined
-      if (concurrent) return { id: text(concurrent, 'id'), status: text(concurrent, 'status'), phase: text(concurrent, 'phase'), roadmapId: nullable(concurrent, 'roadmap_id') }
+      if (concurrent) return generationFrom(concurrent)!
       throw error
     }
-    void this.buildRoadmap(learnerId, sessionId, id, inputFingerprint).catch(() => undefined)
-    return { id, status: 'queued', phase: 'domain', roadmapId: null }
+    void this.buildRoadmap(learnerId, sessionId, id, inputFingerprint).catch((error) => console.error('[zhixing-planning] roadmap_worker_unhandled', { generationId: id, sessionId, error: error instanceof Error ? error.message : String(error) }))
+    return generationFrom(this.db.prepare('SELECT * FROM roadmap_generation_runs WHERE id = ?').get(id) as Row)!
   }
 
-  getRoadmapGeneration(learnerId: string, id: string): Row {
-    const row = this.db.prepare('SELECT * FROM roadmap_generation_runs WHERE id = ? AND learner_id = ?').get(id, learnerId) as Row | undefined; if (!row) throw new LabError('roadmap_generation_not_found', '路线生成任务不存在', 404); return { id: text(row, 'id'), status: text(row, 'status'), phase: text(row, 'phase'), roadmapId: nullable(row, 'roadmap_id'), failureCode: nullable(row, 'failure_code'), failureMessage: nullable(row, 'failure_message') }
+  getRoadmapGeneration(learnerId: string, id: string): AgentRoadmapGeneration {
+    const row = this.db.prepare('SELECT * FROM roadmap_generation_runs WHERE id = ? AND learner_id = ?').get(id, learnerId) as Row | undefined; if (!row) throw new LabError('roadmap_generation_not_found', '路线生成任务不存在', 404); return generationFrom(row)!
   }
 
-  async retryRoadmap(learnerId: string, id: string): Promise<Row> {
+  async retryRoadmap(learnerId: string, id: string): Promise<AgentRoadmapGeneration> {
     const row = this.db.prepare('SELECT * FROM roadmap_generation_runs WHERE id = ? AND learner_id = ?').get(id, learnerId) as Row | undefined
     if (!row) throw new LabError('roadmap_generation_not_found', '路线生成任务不存在', 404)
-    if (text(row, 'status') !== 'failed') throw new LabError('invalid_request', '只有失败的路线任务可以重试', 409)
-    this.db.prepare("UPDATE roadmap_generation_runs SET status = 'queued', phase = 'domain', failure_code = NULL, failure_message = NULL, updated_at = ? WHERE id = ? AND learner_id = ?").run(new Date().toISOString(), id, learnerId)
-    void this.buildRoadmap(learnerId, text(row, 'planning_session_id'), id, text(row, 'input_fingerprint')).catch(() => undefined)
+    if (!['failed', 'interrupted'].includes(text(row, 'status'))) {
+      if (['queued', 'running'].includes(text(row, 'status'))) return generationFrom(row)!
+      throw new LabError('invalid_request', '只有失败或中断的路线任务可以重试', 409)
+    }
+    const sessionId = text(row, 'planning_session_id'); const now = new Date().toISOString()
+    const claimed = this.db.transaction(() => {
+      const updated = this.db.prepare("UPDATE roadmap_generation_runs SET status = 'queued', phase = 'domain', failure_code = NULL, failure_message = NULL, diagnostics_json = '{}', completed_at = NULL, updated_at = ? WHERE id = ? AND learner_id = ? AND status IN ('failed', 'interrupted')").run(now, id, learnerId)
+      if (updated.changes === 0) return false
+      const sessionUpdated = this.db.prepare("UPDATE planning_sessions SET agent_status = 'generating', updated_at = ? WHERE id = ? AND learner_id = ? AND mode = 'agent' AND agent_status NOT IN ('running', 'generating')").run(now, sessionId, learnerId)
+      if (sessionUpdated.changes === 0) throw new LabError('planning_busy', '当前规划会话正在处理上一条消息，请稍后重试', 409, true)
+      return true
+    })()
+    if (claimed) void this.buildRoadmap(learnerId, sessionId, id, text(row, 'input_fingerprint')).catch((error) => console.error('[zhixing-planning] roadmap_worker_unhandled', { generationId: id, sessionId, error: error instanceof Error ? error.message : String(error) }))
     return this.getRoadmapGeneration(learnerId, id)
+  }
+
+  recoverRoadmapGenerations(): void {
+    const now = new Date().toISOString()
+    const interrupted = this.db.prepare("SELECT id, planning_session_id FROM roadmap_generation_runs WHERE status IN ('queued', 'running')").all() as Row[]
+    if (interrupted.length === 0) return
+    this.db.transaction(() => {
+      this.db.prepare("UPDATE roadmap_generation_runs SET status = 'interrupted', phase = 'failed', failure_code = 'worker_interrupted', failure_message = '服务重启，中断了上一次路线生成，请重试', diagnostics_json = ?, updated_at = ?, completed_at = ? WHERE status IN ('queued', 'running')").run(JSON.stringify({ reason: 'process_restart' }), now, now)
+      const updateSession = this.db.prepare("UPDATE planning_sessions SET agent_status = 'failed', updated_at = ? WHERE id = ? AND agent_status = 'generating'")
+      for (const row of interrupted) updateSession.run(now, text(row, 'planning_session_id'))
+    })()
+    console.warn('[zhixing-planning] roadmap_workers_interrupted', { count: interrupted.length })
   }
 
   isAgentSession(learnerId: string, id: string): boolean { return Boolean(this.db.prepare("SELECT 1 FROM planning_sessions WHERE id = ? AND learner_id = ? AND mode = 'agent'").get(id, learnerId)) }
@@ -354,11 +409,11 @@ export class AgentPlanningService {
   planningState(learnerId: string): AgentPlanningState {
     this.repository.ensureLearner(learnerId)
     const session = this.db.prepare("SELECT id, goal, status, agent_status, revision, updated_at FROM planning_sessions WHERE learner_id = ? AND mode = 'agent' AND status IN ('draft', 'ready', 'proposed') ORDER BY updated_at DESC, id DESC LIMIT 1").get(learnerId) as Row | undefined
-    const generation = this.db.prepare('SELECT id, status, phase, roadmap_id, failure_code, failure_message FROM roadmap_generation_runs WHERE learner_id = ? ORDER BY created_at DESC, id DESC LIMIT 1').get(learnerId) as Row | undefined
+    const generation = session ? this.db.prepare('SELECT id, status, phase, attempt_count, roadmap_id, failure_code, failure_message, updated_at FROM roadmap_generation_runs WHERE planning_session_id = ? ORDER BY created_at DESC, id DESC LIMIT 1').get(text(session, 'id')) as Row | undefined : undefined
     const plan = this.repository.getActivePlan(learnerId)
     return {
       session: session ? { id: text(session, 'id'), goal: text(session, 'goal'), status: text(session, 'status'), agentStatus: text(session, 'agent_status'), revision: number(session, 'revision'), roadmapId: nullable(session, 'roadmap_id'), updatedAt: text(session, 'updated_at') } : null,
-      generation: generation ? { id: text(generation, 'id'), status: text(generation, 'status'), phase: text(generation, 'phase'), roadmapId: nullable(generation, 'roadmap_id'), failureCode: nullable(generation, 'failure_code'), failureMessage: nullable(generation, 'failure_message') } : null,
+      generation: generationFrom(generation),
       currentPlan: plan ? { id: plan.id, title: plan.title, goal: plan.goal, status: plan.status, planState: plan.planState, roadmapId: plan.roadmapId ?? null } : null,
     }
   }
@@ -412,24 +467,31 @@ export class AgentPlanningService {
   }
 
   private async buildRoadmap(learnerId: string, sessionId: string, generationId: string, inputFingerprint: string): Promise<void> {
-    const now = new Date().toISOString(); this.db.prepare("UPDATE roadmap_generation_runs SET status = 'running', phase = 'domain', attempt_count = attempt_count + 1, updated_at = ? WHERE id = ? AND status = 'queued'").run(now, generationId)
+    const now = new Date().toISOString(); const claimed = this.db.prepare("UPDATE roadmap_generation_runs SET status = 'running', phase = 'domain', attempt_count = attempt_count + 1, updated_at = ? WHERE id = ? AND status = 'queued'").run(now, generationId)
+    if (claimed.changes === 0) return
+    const attemptRow = this.db.prepare('SELECT attempt_count FROM roadmap_generation_runs WHERE id = ?').get(generationId) as Row
+    const attemptCount = number(attemptRow, 'attempt_count')
+    const startedAt = Date.now()
     let currentPhase: RoadmapPhase | null = null
-    const recordPhase = (phase: RoadmapPhase) => {
+    const recordPhase = (event: RoadmapPhaseEvent) => {
       const timestamp = new Date().toISOString()
-      if (currentPhase) this.db.prepare("UPDATE roadmap_generation_steps SET status = 'succeeded', updated_at = ? WHERE generation_run_id = ? AND phase = ?").run(timestamp, generationId, currentPhase)
-      this.db.prepare("INSERT INTO roadmap_generation_steps(id, generation_run_id, phase, input_fingerprint, status, output_json, created_at, updated_at) VALUES (?, ?, ?, ?, 'running', '{}', ?, ?) ON CONFLICT(generation_run_id, phase) DO UPDATE SET status = 'running', input_fingerprint = excluded.input_fingerprint, updated_at = excluded.updated_at").run(randomUUID(), generationId, phase, fingerprint({ inputFingerprint, phase }), timestamp, timestamp)
-      this.db.prepare('UPDATE roadmap_generation_runs SET phase = ?, updated_at = ? WHERE id = ?').run(phase, timestamp, generationId); currentPhase = phase
+      if (event.status === 'started') {
+        this.db.prepare("INSERT INTO roadmap_generation_steps(id, generation_run_id, phase, input_fingerprint, status, output_json, created_at, updated_at) VALUES (?, ?, ?, ?, 'running', '{}', ?, ?) ON CONFLICT(generation_run_id, phase) DO UPDATE SET status = 'running', input_fingerprint = excluded.input_fingerprint, output_json = '{}', failure_message = NULL, updated_at = excluded.updated_at").run(randomUUID(), generationId, event.phase, fingerprint({ inputFingerprint, phase: event.phase, attemptCount }), timestamp, timestamp)
+        this.db.prepare("UPDATE roadmap_generation_runs SET phase = ?, updated_at = ? WHERE id = ? AND status = 'running' AND attempt_count = ?").run(event.phase, timestamp, generationId, attemptCount)
+        currentPhase = event.phase
+      } else {
+        this.db.prepare("UPDATE roadmap_generation_steps SET status = 'succeeded', output_json = ?, updated_at = ? WHERE generation_run_id = ? AND phase = ?").run(JSON.stringify(event.output ?? {}), timestamp, generationId, event.phase)
+      }
     }
     try {
       const session = this.getSession(learnerId, sessionId); const context = this.contextCompiler.current(learnerId, sessionId)
       let generated: RoadmapPlan
       if (this.provider.generateRoadmap) generated = await this.provider.generateRoadmap({ goal: session.goal, messages: session.messages, context, onPhase: recordPhase })
       else {
-        for (const phase of ['domain', 'module', 'unit', 'critic'] as const) recordPhase(phase)
+        for (const phase of ['domain', 'module', 'unit', 'critic'] as const) { recordPhase({ phase, status: 'started' }); recordPhase({ phase, status: 'succeeded', output: {} }) }
         generated = this.localRoadmap(session, context)
       }
       const plan = this.normalizeRoadmap(generated, session, context)
-      if (currentPhase) this.db.prepare("UPDATE roadmap_generation_steps SET status = 'succeeded', output_json = ?, updated_at = ? WHERE generation_run_id = ? AND phase = ?").run(JSON.stringify({ nodeCount: plan.nodes.length, unitCount: plan.unitKeys.length }), new Date().toISOString(), generationId, currentPhase)
       const roadmapId = randomUUID(); const generatedAt = new Date().toISOString(); const tx = this.db.transaction(() => {
         this.db.prepare("INSERT INTO learning_roadmaps(id, learner_id, template_key, goal, status, revision, input_snapshot_json, based_on_roadmap_id, created_at, updated_at) VALUES (?, ?, 'agent-roadmap-v2', ?, 'draft', 1, ?, NULL, ?, ?)").run(roadmapId, learnerId, session.goal, JSON.stringify({ sessionId, profileSnapshotId: session.profile?.id ?? null, contextSnapshotId: context?.snapshotId ?? null, mode: 'agent', generatorVersion: 'agent-roadmap-v2', inputFingerprint, unitKeys: plan.unitKeys }), generatedAt, generatedAt)
         const ids = new Map<string, string>(); const remaining = new Map(plan.nodes.map((node, index) => [node.key, { node, index }])); const ordered: Array<{ node: RoadmapPlan['nodes'][number]; index: number }> = []
@@ -443,9 +505,20 @@ export class AgentPlanningService {
         const insertEvidence = this.db.prepare('INSERT OR IGNORE INTO roadmap_node_evidence(id, roadmap_id, node_id, source_type, source_id, excerpt, position, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
         for (const item of ordered) { const contextKeys = new Set(item.node.contextKeys); if (item.node.key === 'goal') contextKeys.add('goal'); const evidence = (context?.explicitFacts ?? []).filter((fact) => contextKeys.has(fact.key)); evidence.forEach((fact, position) => { insertEvidence.run(randomUUID(), roadmapId, ids.get(item.node.key), 'planning_context', fact.id, fact.content.slice(0, 2000), position + 1, generatedAt) }) }
         this.db.prepare("UPDATE planning_sessions SET status = 'proposed', agent_status = 'ready', updated_at = ? WHERE id = ? AND learner_id = ?").run(generatedAt, sessionId, learnerId)
-        this.db.prepare("UPDATE roadmap_generation_runs SET status = 'succeeded', phase = 'completed', roadmap_id = ?, input_snapshot_json = ?, updated_at = ?, completed_at = ? WHERE id = ?").run(roadmapId, JSON.stringify({ sessionId, unitKeys: plan.unitKeys }), generatedAt, generatedAt, generationId)
+        this.db.prepare("UPDATE roadmap_generation_runs SET status = 'succeeded', phase = 'completed', roadmap_id = ?, input_snapshot_json = ?, diagnostics_json = ?, updated_at = ?, completed_at = ? WHERE id = ? AND status = 'running' AND attempt_count = ?").run(roadmapId, JSON.stringify({ sessionId, unitKeys: plan.unitKeys }), JSON.stringify({ provider: this.provider.providerName, model: this.provider.modelName, phase: currentPhase, attemptCount, elapsedMs: Date.now() - startedAt, nodeCount: plan.nodes.length, unitCount: plan.unitKeys.length }), generatedAt, generatedAt, generationId, attemptCount)
       }); tx()
-    } catch (error) { const message = error instanceof Error ? error.message : '路线生成失败'; this.db.prepare("UPDATE roadmap_generation_steps SET status = 'failed', failure_message = ?, updated_at = ? WHERE generation_run_id = ? AND phase = ?").run(message, new Date().toISOString(), generationId, currentPhase ?? 'domain'); this.db.prepare("UPDATE roadmap_generation_runs SET status = 'failed', phase = 'failed', failure_code = ?, failure_message = ?, updated_at = ? WHERE id = ?").run(error instanceof PlanningAgentError ? error.code : 'roadmap_generation_failed', message, new Date().toISOString(), generationId) }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '路线生成失败'; const code = error instanceof PlanningAgentError ? error.code : 'roadmap_generation_failed'; const details = error instanceof PlanningAgentError ? error.details : {}
+      const outputHashes = [details.initialOutput, details.repairedOutput].filter((value): value is string => typeof value === 'string').map((value) => fingerprint(value))
+      const diagnostics = { generationId, sessionId, provider: this.provider.providerName, model: this.provider.modelName, phase: currentPhase ?? 'domain', attemptCount, elapsedMs: Date.now() - startedAt, code, message, responseHashes: outputHashes, details, failedAt: new Date().toISOString() }
+      const failedAt = new Date().toISOString()
+      this.db.transaction(() => {
+        this.db.prepare("UPDATE roadmap_generation_steps SET status = 'failed', failure_message = ?, output_json = CASE WHEN ? = '{}' THEN output_json ELSE ? END, updated_at = ? WHERE generation_run_id = ? AND phase = ?").run(message, JSON.stringify(details), JSON.stringify(details), failedAt, generationId, currentPhase ?? 'domain')
+        this.db.prepare("UPDATE roadmap_generation_runs SET status = 'failed', phase = 'failed', failure_code = ?, failure_message = ?, diagnostics_json = ?, updated_at = ?, completed_at = ? WHERE id = ? AND status = 'running' AND attempt_count = ?").run(code, message, JSON.stringify(diagnostics), failedAt, failedAt, generationId, attemptCount)
+        this.db.prepare("UPDATE planning_sessions SET agent_status = 'failed', updated_at = ? WHERE id = ? AND learner_id = ? AND agent_status = 'generating'").run(failedAt, sessionId, learnerId)
+      })()
+      console.warn('[zhixing-planning] roadmap_generation_failed', { generationId, sessionId, phase: currentPhase ?? 'domain', attemptCount, code, message, validationIssues: (details.validationIssues as unknown[]) ?? (details.repairIssues as unknown[]) ?? [] })
+    }
   }
 
   isAgentRoadmap(learnerId: string, roadmapId: string): boolean { return Boolean(this.db.prepare("SELECT 1 FROM learning_roadmaps WHERE id = ? AND learner_id = ? AND json_extract(input_snapshot_json, '$.mode') = 'agent'").get(roadmapId, learnerId)) }

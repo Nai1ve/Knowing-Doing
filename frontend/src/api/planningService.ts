@@ -34,6 +34,7 @@ export function getAgentPlanningSession(sessionId: string): Promise<AgentPlannin
 export function getAgentPlanningState(): Promise<AgentPlanningState> { return request<AgentPlanningState>('/product/planning/state') }
 export function createAgentRoadmap(sessionId: string, clientRequestId: string): Promise<AgentRoadmapGeneration> { return request<AgentRoadmapGeneration>(`/product/planning-sessions/${sessionId}/roadmap-generations`, { method: 'POST', body: JSON.stringify({ clientRequestId }) }) }
 export function getAgentRoadmapGeneration(id: string): Promise<AgentRoadmapGeneration> { return request<AgentRoadmapGeneration>(`/product/roadmap-generation-runs/${id}`) }
+export function retryAgentRoadmap(id: string): Promise<AgentRoadmapGeneration> { return request<AgentRoadmapGeneration>(`/product/roadmap-generation-runs/${id}/retry`, { method: 'POST' }) }
 export function retryAgentInvocation(id: string, onEvent: (event: PlanningStreamEvent) => void): Promise<void> { return streamRequest(`/product/planning-invocations/${id}/retry`, {}, onEvent) }
 export function getKnowledgeRoute(roadmapId: string, nodeId: string, refresh = false): Promise<KnowledgeRoute> {
   const path = `/product/roadmaps/${roadmapId}/nodes/${nodeId}/knowledge-route`

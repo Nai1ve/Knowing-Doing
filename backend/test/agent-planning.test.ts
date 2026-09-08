@@ -2,18 +2,22 @@ import { mkdtempSync } from 'node:fs'
 import { randomUUID } from 'node:crypto'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
-import { describe, expect, it } from 'vitest'
-import { AgentPlanningService, type PlanningProvider } from '../src/agent-planning.js'
+import { describe, expect, it, vi } from 'vitest'
+import { AgentPlanningService, DeepSeekPlanningAgent, PlanningAgentError, type PlanningProvider } from '../src/agent-planning.js'
 import { PlanningContextCompiler } from '../src/planning-context.js'
 import { applyProductMigrations } from '../src/product-migrate.js'
 import { ProductRepository } from '../src/product-repository.js'
 import { PlanningService } from '../src/planning.js'
 
-function withService<T>(callback: (service: AgentPlanningService, repository: ProductRepository) => Promise<T> | T): Promise<T> {
+function withService<T>(callback: (service: AgentPlanningService, repository: ProductRepository) => Promise<T> | T, providerOverride?: PlanningProvider): Promise<T> {
   const directory = mkdtempSync(path.join(tmpdir(), 'zhixing-agent-planning-')); const dbPath = path.join(directory, 'product.db'); applyProductMigrations(dbPath); const repository = new ProductRepository(dbPath)
   const provider: PlanningProvider = { providerName: 'test', modelName: 'test-model', async stream(_input, onDelta) { await onDelta('我先确认你的目标。'); return '我先确认你的目标。' }, async interpret() { return { coveredTopics: ['goal_deadline'], dimensions: [{ key: 'backend', level: 'applied', confidence: 0.7, summary: '有实践线索', nextValidation: '完成一个真实单元' }], evidence: [], followUpTopic: 'projects' } } }
-  try { return Promise.resolve(callback(new AgentPlanningService(repository, provider), repository)).finally(() => repository.close()) } catch (error) { repository.close(); throw error }
+  try { return Promise.resolve(callback(new AgentPlanningService(repository, providerOverride ?? provider), repository)).finally(() => repository.close()) } catch (error) { repository.close(); throw error }
 }
+
+const validRoadmap = { nodes: [{ key: 'root', parentKey: null, type: 'domain', title: '后端能力', summary: '围绕当前目标组织学习。', points: ['目标'], standard: '能够说明目标和下一步。', minutes: 60, priority: 1, mode: 'knowledge', caseIntent: null, contextKeys: [] }], unitKeys: ['root'], dependencies: [] }
+
+function modelResponse(value: unknown): Response { return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify(value) } }] }), { headers: { 'content-type': 'application/json' } }) }
 
 describe('AgentPlanningService', () => {
   it('stores arbitrary messages, required topics and profile increments without duplicate requests', async () => withService(async (service, repository) => {
@@ -44,7 +48,50 @@ describe('AgentPlanningService', () => {
     expect(state.generation?.id).toBe(first.id)
     expect(state.generation?.status).toBe('succeeded')
     expect(repository.db.prepare('SELECT COUNT(*) AS count FROM roadmap_generation_runs WHERE planning_session_id = ?').get(session.id)).toMatchObject({ count: 1 })
+    const plan = repository.db.prepare('EXPLAIN QUERY PLAN SELECT id FROM roadmap_generation_runs WHERE planning_session_id = ? ORDER BY created_at DESC LIMIT 1').all(session.id) as Array<{ detail: string }>
+    expect(plan.some((row) => row.detail.includes('idx_roadmap_generation_session_created'))).toBe(true)
   }))
+
+  it('repairs one invalid critic response before returning a roadmap', async () => {
+    const responses = [{ domains: [] }, { modules: [] }, { units: [] }, { malformed: true }, validRoadmap]
+    const fetchMock = vi.fn(async () => modelResponse(responses.shift() ?? validRoadmap))
+    vi.stubGlobal('fetch', fetchMock)
+    try {
+      const agent = new DeepSeekPlanningAgent({ modelBaseUrl: 'https://model.test', modelApiKey: 'test-key', modelName: 'test-model', modelTimeoutMs: 1000 })
+      const phases: Array<{ phase: string; status: string }> = []
+      const plan = await agent.generateRoadmap({ goal: '成为后端工程师', messages: [], context: null, onPhase: (event) => { phases.push(event) } })
+      expect(plan).toEqual(validRoadmap)
+      expect(fetchMock).toHaveBeenCalledTimes(5)
+      expect(phases.filter((event) => event.phase === 'critic' && event.status === 'succeeded')).toHaveLength(2)
+    } finally { vi.unstubAllGlobals() }
+  })
+
+  it('fails transparently after the critic repair is also invalid', async () => {
+    const responses = [{ domains: [] }, { modules: [] }, { units: [] }, { malformed: true }, { stillMalformed: true }]
+    vi.stubGlobal('fetch', vi.fn(async () => modelResponse(responses.shift() ?? {})))
+    try {
+      const agent = new DeepSeekPlanningAgent({ modelBaseUrl: 'https://model.test', modelApiKey: 'test-key', modelName: 'test-model', modelTimeoutMs: 1000 })
+      await expect(agent.generateRoadmap({ goal: '成为后端工程师', messages: [], context: null, onPhase: () => undefined })).rejects.toMatchObject({ code: 'roadmap_invalid_output' })
+    } finally { vi.unstubAllGlobals() }
+  })
+
+  it('marks the session failed while retaining messages when roadmap generation fails', async () => {
+    const failingProvider: PlanningProvider = {
+      providerName: 'test-failure', modelName: 'test-model',
+      async stream(_input, onDelta) { await onDelta('我先确认你的目标。'); return '我先确认你的目标。' },
+      async interpret() { return { coveredTopics: [], dimensions: [], evidence: [], followUpTopic: null } },
+      async generateRoadmap({ onPhase }) { onPhase({ phase: 'domain', status: 'started' }); throw new PlanningAgentError('roadmap_invalid_output', '路线 JSON 无效', true, { validationIssues: [{ path: 'nodes', code: 'too_small' }] }) },
+    }
+    await withService(async (service) => {
+      const session = service.createSession('failed-generation-learner', { message: '我想学习后端系统设计', clientRequestId: 'failed-start' })
+      const generation = await service.generateRoadmap('failed-generation-learner', session.id, 'failed-roadmap')
+      await new Promise((resolve) => setTimeout(resolve, 20))
+      expect(service.getRoadmapGeneration('failed-generation-learner', generation.id)).toMatchObject({ status: 'failed', failureCode: 'roadmap_invalid_output' })
+      const restored = service.getSession('failed-generation-learner', session.id)
+      expect(restored.agentStatus).toBe('failed')
+      expect(restored.messages.filter((message) => message.role === 'user')).toHaveLength(1)
+    }, failingProvider)
+  })
 
   it('does not append the original user message during invocation retry', async () => withService(async (service, repository) => {
     const first = service.createSession('retry-learner', { message: '我想系统学习后端', clientRequestId: 'start-2' })
