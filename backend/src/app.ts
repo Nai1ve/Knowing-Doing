@@ -15,6 +15,7 @@ import { TutorProviderError } from './tutor.js'
 import { WritingConflictError, WritingNotFoundError, WritingService } from './writing-service.js'
 import { PlanningService } from './planning.js'
 import { AgentPlanningService, PlanningAgentError, type PlanningStreamEvent } from './agent-planning.js'
+import { CaseWorkspaceService } from './case-workspace-service.js'
 
 type Body = Record<string, unknown>
 
@@ -48,6 +49,7 @@ export interface AppDependencies {
   writingServiceFactory?: () => WritingService
   planningServiceFactory?: () => PlanningService
   agentPlanningServiceFactory?: () => AgentPlanningService
+  caseWorkspaceServiceFactory?: () => CaseWorkspaceService
   runtimeStatus?: () => Promise<Record<string, unknown>>
 }
 
@@ -158,6 +160,7 @@ export function buildApp(dependencies: AppDependencies): { app: FastifyInstance;
 
   if (dependencies.practiceServiceFactory) registerProductRoutes(app, dependencies.practiceServiceFactory(scheduler), dependencies.writingServiceFactory?.())
   if (dependencies.planningServiceFactory) registerPlanningRoutes(app, dependencies.planningServiceFactory(), dependencies.agentPlanningServiceFactory?.())
+  if (dependencies.caseWorkspaceServiceFactory) registerCaseWorkspaceRoutes(app, dependencies.caseWorkspaceServiceFactory())
 
   return { app, scheduler }
 }
@@ -236,6 +239,41 @@ function registerAgentPlanningRoutes(app: FastifyInstance, service: AgentPlannin
 function learnerId(request: FastifyRequest): string {
   const value = request.headers['x-learner-id']
   return typeof value === 'string' && value.trim() ? value.trim().slice(0, 120) : 'anonymous-web'
+}
+
+function workspaceId(request: FastifyRequest): string { return String((request.params as { workspaceRunId: string }).workspaceRunId) }
+
+function registerCaseWorkspaceRoutes(app: FastifyInstance, service: CaseWorkspaceService): void {
+  app.post('/api/product/roadmap-nodes/:nodeId/case-requests', async (request, reply) => {
+    const body = productBody(request); const params = request.params as { nodeId: string }
+    reply.code(202).send(service.createCaseRequest(learnerId(request), { ...body, roadmapNodeId: params.nodeId }))
+  })
+  app.get('/api/product/case-generation-jobs/:jobId', async (request, reply) => {
+    reply.send(service.getCaseGenerationJob(learnerId(request), String((request.params as { jobId: string }).jobId)))
+  })
+  app.post('/api/product/case-generation-jobs/:jobId/retry', async (request, reply) => {
+    reply.code(202).send(service.retryCaseGeneration(learnerId(request), String((request.params as { jobId: string }).jobId)))
+  })
+  app.post('/api/product/learning-cases/:caseId/practice', async (request, reply) => {
+    reply.code(201).send(await service.startPractice(learnerId(request), String((request.params as { caseId: string }).caseId)))
+  })
+  app.get('/api/product/workspace-runs/:workspaceRunId', async (request, reply) => reply.send(service.getWorkspace(learnerId(request), workspaceId(request))))
+  app.get('/api/product/workspace-runs/:workspaceRunId/files/:path', async (request, reply) => {
+    const params = request.params as { workspaceRunId: string; path: string }
+    reply.send(service.getFile(learnerId(request), params.workspaceRunId, params.path))
+  })
+  app.patch('/api/product/workspace-runs/:workspaceRunId/files/:path', async (request, reply) => {
+    const body = productBody(request); const params = request.params as { workspaceRunId: string; path: string }
+    reply.send(await service.saveFile(learnerId(request), params.workspaceRunId, params.path, stringField(body, 'content'), numberField(body, 'expectedRevision')))
+  })
+  app.post('/api/product/workspace-runs/:workspaceRunId/executions', async (request, reply) => {
+    const body = productBody(request); const result = await service.execute(learnerId(request), workspaceId(request), stringField(body, 'command'), stringField(body, 'clientRequestId'))
+    if (result.execution.status === 'timed_out') return reply.code(504).send(result)
+    if (result.execution.status === 'failed' || result.execution.status === 'rejected') return reply.code(422).send(result)
+    reply.send(result)
+  })
+  app.post('/api/product/workspace-runs/:workspaceRunId/reset', async (request, reply) => reply.send(await service.reset(learnerId(request), workspaceId(request))))
+  app.post('/api/product/workspace-runs/:workspaceRunId/end', async (request, reply) => reply.send(await service.end(learnerId(request), workspaceId(request))))
 }
 
 function productBody(request: FastifyRequest): Body {

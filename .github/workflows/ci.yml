@@ -47,12 +47,29 @@ jobs:
           cache: npm
           cache-dependency-path: backend/package-lock.json
       - run: npm ci
-      - run: npm test
       - run: npm run build
+      - run: npm test
+
+  workspace-runner:
+    name: Workspace runner checks
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: workspace-runner
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.x
+          cache: npm
+          cache-dependency-path: workspace-runner/package-lock.json
+      - run: npm ci
+      - run: npm run build
+      - run: npm test
 
   deploy:
     name: Deploy to server
-    needs: [frontend, backend]
+    needs: [frontend, backend, workspace-runner]
     if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
     runs-on: ubuntu-latest
     env:
@@ -86,6 +103,7 @@ jobs:
           ZHIXING_MODEL_API_KEY: ${{ secrets.ZHIXING_MODEL_API_KEY }}
           ZHIXING_MODEL_NAME: ${{ secrets.ZHIXING_MODEL_NAME || 'deepseek-v4-flash' }}
           ZHIXING_ZHIHU_ACCESS_SECRET: ${{ secrets.ZHIXING_ZHIHU_ACCESS_SECRET }}
+          WORKSPACE_RUNNER_TOKEN: ${{ secrets.WORKSPACE_RUNNER_TOKEN }}
         run: |
           set -Eeuo pipefail
           test -n "$LAB_TOKEN_SECRET" || { echo 'Missing required secret: LAB_TOKEN_SECRET' >&2; exit 1; }
@@ -119,9 +137,13 @@ jobs:
           ZHIXING_ZHIHU_API_BASE_URL=https://developer.zhihu.com
           ZHIXING_RETRIEVAL_TIMEOUT_MS=15000
           ZHIXING_RETRIEVAL_CACHE_TTL_MS=86400000
+          WORKSPACE_RUNNER_URL=http://127.0.0.1:3101
+          WORKSPACE_RUNNER_TOKEN=$WORKSPACE_RUNNER_TOKEN
           ZHIXING_IDENTITY_MODE=shared_demo
           ZHIXING_DEMO_LEARNER_ID=demo-learner
           EOF
+          test -n "$WORKSPACE_RUNNER_TOKEN" || { echo 'Missing required secret: WORKSPACE_RUNNER_TOKEN' >&2; exit 1; }
+          printf 'WORKSPACE_RUNNER_TOKEN=%s\n' "$WORKSPACE_RUNNER_TOKEN" | ssh -p "$DEPLOY_PORT" "$DEPLOY_USER@$DEPLOY_HOST" "sudo -n install -d -m 0755 /home/ubuntu/knowing-doing-data && sudo -n install -o root -g root -m 0600 /dev/stdin /home/ubuntu/knowing-doing-data/workspace-runner.env"
       - name: Deploy immutable release
         if: env.DEPLOY_SSH_KEY != ''
         env:

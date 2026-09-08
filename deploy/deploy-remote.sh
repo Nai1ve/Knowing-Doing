@@ -23,6 +23,10 @@ npm run build
 cd "$release_dir/frontend"
 npm ci --ignore-scripts
 npm run build
+cd "$release_dir/workspace-runner"
+npm ci --ignore-scripts
+npm run build
+WORKSPACE_PYTHON_IMAGE=zhixing-python-pytest-v1:local ./build-template.sh
 
 if [ ! -f "$data_root/zhixing-product.db" ]; then
   echo "Missing product database: $data_root/zhixing-product.db" >&2
@@ -31,6 +35,9 @@ fi
 
 cd "$release_dir/backend"
 NODE_ENV=production ZHIXING_PRODUCT_DB_PATH="$data_root/zhixing-product.db" npm run db:migrate
+
+cd "$release_dir/deploy"
+docker compose -f docker-compose.production.yml up -d --build workspace-runner
 
 ln -sfn "$release_dir" "$current_link"
 

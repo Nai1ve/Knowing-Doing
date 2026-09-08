@@ -11,6 +11,9 @@ import { WritingService } from './writing-service.js'
 import { CurationService, ModelCurationSummarizer } from './curation-service.js'
 import { DeepSeekWritingAgent } from './writing-agent.js'
 import { PlanningService } from './planning.js'
+import { CaseWorkspaceService } from './case-workspace-service.js'
+import { FixtureCaseBuilder } from './case-builder.js'
+import { FakeWorkspaceRunnerClient, HttpWorkspaceRunnerClient } from './workspace-runner-client.js'
 
 const config = loadConfig()
 const productRepository = new ProductRepository(config.productDbPath)
@@ -24,12 +27,19 @@ const planningService = new PlanningService(productRepository, { resumeStoragePa
 const zhihuOpenApi = new ZhihuOpenApiClient({ accessSecret: config.zhihuAccessSecret, baseUrl: config.zhihuApiBaseUrl, timeoutMs: config.retrievalTimeoutMs })
 const agentPlanningService = new AgentPlanningService(productRepository, new DeepSeekPlanningAgent(config), { modelName: config.modelName }, zhihuOpenApi)
 agentPlanningService.recoverRoadmapGenerations()
+const workspaceRunner = config.workspaceRunnerFake
+  ? new FakeWorkspaceRunnerClient()
+  : new HttpWorkspaceRunnerClient(config.workspaceRunnerUrl, config.workspaceRunnerToken, config.workspaceRunnerTimeoutMs)
+const caseWorkspaceService = new CaseWorkspaceService(productRepository, new FixtureCaseBuilder(), workspaceRunner)
+caseWorkspaceService.resumeCaseJobs()
+await caseWorkspaceService.resumeWorkspaces()
 const { app, scheduler } = buildApp({
   config,
   practiceServiceFactory: (labScheduler) => new PracticeService(productRepository, labScheduler, new TutorEngine(config), retrieval, curation, (runId) => { planningService.markLabVerified(runId); writingService.enqueueAutoDraft(runId) }),
   writingServiceFactory: () => writingService,
   planningServiceFactory: () => planningService,
   agentPlanningServiceFactory: () => agentPlanningService,
+  caseWorkspaceServiceFactory: () => caseWorkspaceService,
   runtimeStatus: async () => ({ model: { configured: Boolean(config.modelBaseUrl && config.modelApiKey), name: config.modelName }, zhihu: { configured: Boolean(config.zhihuAccessSecret), executable: Boolean(config.zhihuAccessSecret), lastRetrieval: null } }),
 })
 

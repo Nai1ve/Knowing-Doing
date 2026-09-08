@@ -42,6 +42,10 @@ export interface LabConfig {
   caseIds: CaseId[]
   identityMode: 'client' | 'shared_demo'
   demoLearnerId: string
+  workspaceRunnerUrl: string
+  workspaceRunnerToken: string
+  workspaceRunnerTimeoutMs: number
+  workspaceRunnerFake: boolean
 }
 
 export function loadConfig(): LabConfig {
@@ -82,6 +86,10 @@ export function loadConfig(): LabConfig {
     retrievalCacheTtlMs: numberEnv('ZHIXING_RETRIEVAL_CACHE_TTL_MS', 24 * 60 * 60 * 1000),
     identityMode: process.env.ZHIXING_IDENTITY_MODE === 'shared_demo' || process.env.NODE_ENV === 'production' ? 'shared_demo' : 'client',
     demoLearnerId: process.env.ZHIXING_DEMO_LEARNER_ID ?? 'demo-learner',
+    workspaceRunnerUrl: process.env.WORKSPACE_RUNNER_URL ?? 'http://127.0.0.1:3101',
+    workspaceRunnerToken: process.env.WORKSPACE_RUNNER_TOKEN ?? 'development-workspace-runner-token',
+    workspaceRunnerTimeoutMs: numberEnv('WORKSPACE_RUNNER_TIMEOUT_MS', 35_000),
+    workspaceRunnerFake: process.env.WORKSPACE_RUNNER_FAKE === 'true',
     caseIds: [
       'mysql-order-list-index-001',
       'mysql-deadlock-lock-order-001',

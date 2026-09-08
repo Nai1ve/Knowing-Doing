@@ -8,7 +8,7 @@ import type { ProductRepository } from './product-repository.js'
 import type { Artifact, CaseStage, DiagnosticSession, DiagnosticTargetKey, Intake, LabSegment, MemoryItem, PlanProposal, PlanUnit, PracticeEvent, PracticeHistoryPage, PracticePin, PracticeRun, PracticeSnapshot, SourceItem, TutorInvocation, TutorResponse, TutorSource } from './product-types.js'
 import { RetrievalService } from './retrieval.js'
 import { TutorEngine, TutorProviderError, tutorResponseFromGenerated } from './tutor.js'
-import { getManifest } from './fixtures.js'
+import { getManifest, isCaseId } from './fixtures.js'
 import { validateStatement } from './sql-policy.js'
 import { LabError } from './errors.js'
 import type { CurationService } from './curation-service.js'
@@ -279,6 +279,7 @@ export class PracticeService {
 
   async startPractice(input: { learnerId: string; planUnitId?: string | null; caseId: PracticeRun['caseId'] }) {
     this.repository.ensureLearner(input.learnerId)
+    if (!isCaseId(input.caseId)) throw new LabError('case_not_found', 'MySQL 案例不存在', 404)
     const lab = await this.scheduler.createRun(input.caseId)
     if (lab.kind === 'queued') {
       try {
@@ -334,8 +335,10 @@ export class PracticeService {
 
   private async reopenLabUnsafe(runId: string): Promise<{ practice: PracticeRun; lab?: { run: unknown; accessToken: string }; queue?: unknown }> {
     const practice = this.run(runId)
+    if (practice.practiceKind && practice.practiceKind !== 'mysql_lab') throw new LabError('workspace_run_required', '该实践使用代码工作区，不能重新开启 MySQL Lab', 409)
     if (practice.status === 'resolved') throw new LabError('practice_resolved', '该实践已经完成，请从历史中回看', 409)
     if (practice.labRunId && this.scheduler.isRunActive(practice.labRunId)) throw new LabError('lab_already_active', '当前实践已有可用 Lab', 409, true)
+    if (!isCaseId(practice.caseId)) throw new LabError('case_not_found', 'MySQL 案例不存在', 404)
     const result = await this.scheduler.createRun(practice.caseId)
     if (result.kind === 'queued') {
       this.pendingQueues.set(runId, result.ticket.ticketId)
@@ -499,8 +502,10 @@ export class PracticeService {
 
   async executeLab(input: { runId: string; token: string; revision: number; sessionId: string; statement: string; clientRequestId: string }): Promise<{ execution: LabExecutionResult; run: PracticeRun; snapshot: PracticeSnapshot }> {
     const run = this.run(input.runId)
+    if (run.practiceKind && run.practiceKind !== 'mysql_lab') throw new LabError('workspace_run_required', '该实践使用代码工作区，请在工作区执行命令', 409)
     if (run.status === 'resolved') throw new LabError('practice_resolved', '该实践已经完成，不能继续执行实验', 409)
     if (!run.labRunId) throw new LabError('lab_run_not_ready', '当前实践尚未获得可执行的 Lab 运行', 409, true)
+    if (!isCaseId(run.caseId)) throw new LabError('case_not_found', 'MySQL 案例不存在', 404)
     validateStatement(input.statement, getManifest(run.caseId))
     const existingEvidence = this.repository.findEventByClientRequestId(run.id, `${input.clientRequestId}:evidence`)
     if (existingEvidence) {

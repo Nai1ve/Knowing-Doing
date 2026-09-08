@@ -2,7 +2,7 @@ import type { CaseId } from './domain.js'
 
 export type CaseStage = 'observe' | 'hypothesize' | 'inspect' | 'attempt' | 'verify' | 'resolved'
 export type PracticeStatus = 'active' | 'ready_to_close' | 'resolved' | 'ended'
-export type EventActor = 'system' | 'user' | 'tutor' | 'lab' | 'rule'
+export type EventActor = 'system' | 'user' | 'tutor' | 'lab' | 'workspace' | 'rule'
 export type EventType =
   | 'case_presented'
   | 'user_message'
@@ -19,6 +19,12 @@ export type EventType =
   | 'writing_section_edited'
   | 'tutor_failed'
   | 'lab_reopened'
+  | 'workspace_created'
+  | 'workspace_file_saved'
+  | 'workspace_execution_started'
+  | 'workspace_execution_finished'
+  | 'workspace_reset'
+  | 'workspace_ended'
 
 export type WritingStatus = 'materials_ready' | 'outline_review' | 'article_review' | 'ready_for_preview'
 export type WritingDocumentKind = 'outline' | 'article'
@@ -36,8 +42,8 @@ export type WritingGenerationStatus = 'queued' | 'running' | 'succeeded' | 'fail
 export type WritingDraftPhase = 'indexing' | 'outlining' | 'drafting' | 'humanizing' | 'checking' | 'ready' | 'failed'
 export type WritingDraftStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'interrupted'
 
-export type ArtifactKind = 'user_message' | 'sql' | 'explain' | 'benchmark' | 'result_set' | 'error' | 'external_text' | 'tutor_reply' | 'source_excerpt' | 'note_outline' | 'article_draft'
-export type ArtifactSourceKind = 'user' | 'lab' | 'tutor' | 'zhihu' | 'global_search' | 'system'
+export type ArtifactKind = 'user_message' | 'sql' | 'explain' | 'benchmark' | 'result_set' | 'error' | 'external_text' | 'tutor_reply' | 'source_excerpt' | 'note_outline' | 'article_draft' | 'workspace_file' | 'workspace_command' | 'workspace_output' | 'workspace_error'
+export type ArtifactSourceKind = 'user' | 'lab' | 'workspace' | 'tutor' | 'zhihu' | 'global_search' | 'system'
 export type VerificationStatus = 'verified_lab' | 'external_unverified' | 'model_generated' | 'source_verified' | 'not_applicable'
 
 export interface Learner {
@@ -70,7 +76,116 @@ export interface Intake {
 export type DiagnosticTargetKey = 'mysql_performance' | 'general'
 export type DiagnosticSessionStatus = 'draft' | 'ready' | 'proposed' | 'confirmed' | 'superseded'
 export type PlanProposalStatus = 'ready' | 'confirmed' | 'superseded'
-export type LearningMode = 'lab' | 'knowledge' | 'unavailable'
+export type LearningMode = 'lab' | 'workspace' | 'knowledge' | 'unavailable'
+
+export type CaseInputKind = 'brief' | 'zhihu_article'
+export type CaseDifficulty = 'introductory' | 'applied' | 'advanced'
+export type CaseGenerationStatus = 'generating' | 'ready' | 'failed' | 'archived'
+export type CaseGenerationJobStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'interrupted'
+export type WorkspaceRunStatus = 'provisioning' | 'active' | 'executing' | 'failed' | 'ended' | 'expired'
+export type WorkspaceExecutionStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'timed_out' | 'rejected'
+export type PracticeKind = 'mysql_lab' | 'code_workspace'
+
+export interface CaseRequest {
+  roadmapNodeId: string
+  input: { kind: CaseInputKind; brief?: string; sourceItemId?: string }
+  desiredOutcome?: string
+  difficulty?: CaseDifficulty
+  clientRequestId: string
+}
+
+export interface CaseSpec {
+  title: string
+  scenario: string
+  learningGoal: string
+  difficulty: CaseDifficulty
+  environment: { templateKey: 'python-pytest-v1'; services: string[] }
+  starterFiles: Array<{ path: string; content: string }>
+  tasks: Array<{ key: string; instruction: string; recommendedCommands: string[]; expectedObservation: string }>
+  verification: { commands: string[]; successSignals: string[] }
+  tutorContext: { concepts: string[]; likelyMisconceptions: string[]; evidenceToNotice: string[] }
+}
+
+export interface LearningCase {
+  id: string
+  learnerId: string
+  roadmapNodeId: string
+  capabilityKey: string
+  templateKey: string
+  inputKind: CaseInputKind
+  inputSnapshot: Record<string, unknown>
+  inputFingerprint: string
+  provider: 'fixture' | 'model'
+  version: number
+  status: CaseGenerationStatus
+  spec: CaseSpec | null
+  failureCode: string | null
+  failureMessage: string | null
+  createdAt: string
+  updatedAt: string
+}
+
+export interface CaseGenerationJob {
+  id: string
+  learnerId: string
+  learningCaseId: string
+  clientRequestId: string
+  inputFingerprint: string
+  provider: 'fixture' | 'model'
+  status: CaseGenerationJobStatus
+  attemptCount: number
+  failureCode: string | null
+  failureMessage: string | null
+  createdAt: string
+  updatedAt: string
+  startedAt: string | null
+  completedAt: string | null
+}
+
+export interface WorkspaceRun {
+  id: string
+  learnerId: string
+  practiceRunId: string
+  learningCaseId: string
+  runnerRunId: string | null
+  templateKey: string
+  status: WorkspaceRunStatus
+  revision: number
+  leaseExpiresAt: string | null
+  lastHeartbeatAt: string | null
+  endedReason: string | null
+  createdAt: string
+  updatedAt: string
+  endedAt: string | null
+}
+
+export interface WorkspaceFile {
+  id: string
+  workspaceRunId: string
+  path: string
+  content: string
+  checksum: string
+  revision: number
+  createdAt: string
+  updatedAt: string
+}
+
+export interface WorkspaceExecution {
+  id: string
+  workspaceRunId: string
+  sequence: number
+  clientRequestId: string
+  runnerExecutionId: string | null
+  command: string
+  status: WorkspaceExecutionStatus
+  stdout: string
+  stderr: string
+  exitCode: number | null
+  durationMs: number | null
+  startedAt: string | null
+  completedAt: string | null
+  createdAt: string
+}
 
 export interface DiagnosticTurn {
   id: string
@@ -196,7 +311,9 @@ export interface PracticeRun {
   id: string
   learnerId: string
   planUnitId: string | null
-  caseId: CaseId
+  caseId: string
+  practiceKind?: PracticeKind
+  learningCaseId?: string | null
   labRunId: string | null
   stage: CaseStage
   hintLevel: number
@@ -358,7 +475,7 @@ export interface PracticeSnapshot {
 
 export interface PracticeHistoryItem {
   id: string
-  caseId: CaseId
+  caseId: string
   stage: CaseStage
   status: PracticeStatus
   createdAt: string

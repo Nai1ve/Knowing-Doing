@@ -16,6 +16,27 @@ services:
       retries: 30
       start_period: 30s
 
+  workspace-runner:
+    build:
+      context: ../workspace-runner
+      dockerfile: Dockerfile
+    container_name: zhixing-workspace-runner
+    restart: unless-stopped
+    env_file:
+      - /home/ubuntu/knowing-doing-data/workspace-runner.env
+    environment:
+      WORKSPACE_RUNNER_PORT: 3101
+      WORKSPACE_PYTHON_IMAGE: zhixing-python-pytest-v1:local
+    ports:
+      - "127.0.0.1:3101:3101"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3101/health').then(() => process.exit(0)).catch(() => process.exit(1))"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
 volumes:
   zhixing-lab-mysql-data:
     name: zhixing-lab-mysql-data

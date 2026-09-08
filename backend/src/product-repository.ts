@@ -3,9 +3,9 @@ import Database from 'better-sqlite3'
 import { assertProductMigrations, openProductDatabase } from './product-migrate.js'
 import { evaluatePracticeCompletion } from './coach.js'
 import type {
-  Artifact, ArtifactKind, ArtifactSourceKind, CaseStage, DiagnosticSession, DiagnosticSessionStatus, DiagnosticTargetKey, DiagnosticTurn, EventActor, EventType, Intake, LearningPlan,
+  Artifact, ArtifactKind, ArtifactSourceKind, CaseGenerationJob, CaseGenerationJobStatus, CaseInputKind, CaseSpec, CaseStage, DiagnosticSession, DiagnosticSessionStatus, DiagnosticTargetKey, DiagnosticTurn, EventActor, EventType, Intake, LearningCase, LearningPlan,
   LabSegment, Learner, MemoryItem, PathNode, PlanProposal, PlanProposalStatus, PlanProposalUnit, PlanUnit, PracticeEvent, PracticePin, PracticeRun, PracticeSnapshot, ProfileEvidence, ResumeAttachment, SourceItem,
-  StageMemory, TutorInvocation, TutorInvocationStatus, VerificationStatus, WritingBlockEvidence, WritingEvidenceReference, WritingCapsuleMember, WritingClusterCapsule, WritingClaim, WritingCluster, WritingClusterDetail, WritingClusterKey, WritingClusterMember, WritingClusterMemberRole, WritingClusterOverview, WritingClusterStatus, WritingClusterSummaryStatus, WritingDocument, WritingDocumentBlock, WritingEvidenceItem, WritingEvidencePack, WritingGenerationJob, WritingGenerationKind, WritingGenerationStatus, WritingMaterial, WritingProject, WritingReviewItem, WritingSection, WritingSectionBlock, WritingDraftRun, WritingDraftPhase, WritingDraftStatus,
+  StageMemory, TutorInvocation, TutorInvocationStatus, VerificationStatus, WorkspaceExecution, WorkspaceExecutionStatus, WorkspaceFile, WorkspaceRun, WorkspaceRunStatus, WritingBlockEvidence, WritingEvidenceReference, WritingCapsuleMember, WritingClusterCapsule, WritingClaim, WritingCluster, WritingClusterDetail, WritingClusterKey, WritingClusterMember, WritingClusterMemberRole, WritingClusterOverview, WritingClusterStatus, WritingClusterSummaryStatus, WritingDocument, WritingDocumentBlock, WritingEvidenceItem, WritingEvidencePack, WritingGenerationJob, WritingGenerationKind, WritingGenerationStatus, WritingMaterial, WritingProject, WritingReviewItem, WritingSection, WritingSectionBlock, WritingDraftRun, WritingDraftPhase, WritingDraftStatus,
 } from './product-types.js'
 
 type Row = Record<string, unknown>
@@ -107,8 +107,50 @@ function runFrom(row: Row): PracticeRun {
   return {
     id: text(row, 'id'), learnerId: text(row, 'learner_id'), planUnitId: nullableText(row, 'plan_unit_id'),
     caseId: text(row, 'case_id') as PracticeRun['caseId'], labRunId: nullableText(row, 'lab_run_id'),
+    practiceKind: (nullableText(row, 'practice_kind') ?? 'mysql_lab') as PracticeRun['practiceKind'], learningCaseId: nullableText(row, 'learning_case_id'),
     stage: text(row, 'stage') as CaseStage, hintLevel: number(row, 'hint_level'), noProgressCount: number(row, 'no_progress_count'),
     status: text(row, 'status') as PracticeRun['status'], createdAt: text(row, 'created_at'), updatedAt: text(row, 'updated_at'),
+  }
+}
+
+function learningCaseFrom(row: Row): LearningCase {
+  return {
+    id: text(row, 'id'), learnerId: text(row, 'learner_id'), roadmapNodeId: text(row, 'roadmap_node_id'), capabilityKey: text(row, 'capability_key'),
+    templateKey: text(row, 'template_key'), inputKind: text(row, 'input_kind') as CaseInputKind, inputSnapshot: json<Record<string, unknown>>(row.input_snapshot_json, {}),
+    inputFingerprint: text(row, 'input_fingerprint'), provider: text(row, 'provider') as LearningCase['provider'], version: number(row, 'version'),
+    status: text(row, 'status') as LearningCase['status'], spec: row.case_spec_json === '{}' ? null : json<CaseSpec | null>(row.case_spec_json, null),
+    failureCode: nullableText(row, 'failure_code'), failureMessage: nullableText(row, 'failure_message'), createdAt: text(row, 'created_at'), updatedAt: text(row, 'updated_at'),
+  }
+}
+
+function caseGenerationJobFrom(row: Row): CaseGenerationJob {
+  return {
+    id: text(row, 'id'), learnerId: text(row, 'learner_id'), learningCaseId: text(row, 'learning_case_id'), clientRequestId: text(row, 'client_request_id'),
+    inputFingerprint: text(row, 'input_fingerprint'), provider: text(row, 'provider') as CaseGenerationJob['provider'], status: text(row, 'status') as CaseGenerationJobStatus,
+    attemptCount: number(row, 'attempt_count'), failureCode: nullableText(row, 'failure_code'), failureMessage: nullableText(row, 'failure_message'),
+    createdAt: text(row, 'created_at'), updatedAt: text(row, 'updated_at'), startedAt: nullableText(row, 'started_at'), completedAt: nullableText(row, 'completed_at'),
+  }
+}
+
+function workspaceRunFrom(row: Row): WorkspaceRun {
+  return {
+    id: text(row, 'id'), learnerId: text(row, 'learner_id'), practiceRunId: text(row, 'practice_run_id'), learningCaseId: text(row, 'learning_case_id'),
+    runnerRunId: nullableText(row, 'runner_run_id'), templateKey: text(row, 'template_key'), status: text(row, 'status') as WorkspaceRunStatus,
+    revision: number(row, 'revision'), leaseExpiresAt: nullableText(row, 'lease_expires_at'), lastHeartbeatAt: nullableText(row, 'last_heartbeat_at'),
+    endedReason: nullableText(row, 'ended_reason'), createdAt: text(row, 'created_at'), updatedAt: text(row, 'updated_at'), endedAt: nullableText(row, 'ended_at'),
+  }
+}
+
+function workspaceFileFrom(row: Row): WorkspaceFile {
+  return { id: text(row, 'id'), workspaceRunId: text(row, 'workspace_run_id'), path: text(row, 'path'), content: text(row, 'content'), checksum: text(row, 'checksum'), revision: number(row, 'revision'), createdAt: text(row, 'created_at'), updatedAt: text(row, 'updated_at') }
+}
+
+function workspaceExecutionFrom(row: Row): WorkspaceExecution {
+  return {
+    id: text(row, 'id'), workspaceRunId: text(row, 'workspace_run_id'), sequence: number(row, 'sequence'), clientRequestId: text(row, 'client_request_id'),
+    runnerExecutionId: nullableText(row, 'runner_execution_id'), command: text(row, 'command'), status: text(row, 'status') as WorkspaceExecutionStatus,
+    stdout: text(row, 'stdout'), stderr: text(row, 'stderr'), exitCode: row.exit_code == null ? null : number(row, 'exit_code'), durationMs: row.duration_ms == null ? null : number(row, 'duration_ms'),
+    startedAt: nullableText(row, 'started_at'), completedAt: nullableText(row, 'completed_at'), createdAt: text(row, 'created_at'),
   }
 }
 
@@ -656,14 +698,14 @@ export class ProductRepository {
     return row ? runFrom(row) : null
   }
 
-  startPlanUnitPractice(input: { learnerId: string; planId: string; planUnitId: string; caseId: PracticeRun['caseId']; labRunId?: string | null }): PracticeRun {
+  startPlanUnitPractice(input: { learnerId: string; planId: string; planUnitId: string; caseId: PracticeRun['caseId']; labRunId?: string | null; practiceKind?: PracticeRun['practiceKind']; learningCaseId?: string | null }): PracticeRun {
     const existing = this.findActivePracticeForUnit(input.learnerId, input.planUnitId)
     if (existing) return existing
     const unit = this.db.prepare(`SELECT u.* FROM plan_units u INNER JOIN learning_plans p ON p.id = u.plan_id WHERE u.id = ? AND u.plan_id = ? AND p.learner_id = ? AND p.status IN ('confirmed', 'active')`).get(input.planUnitId, input.planId, input.learnerId) as Row | undefined
     if (!unit) throw new Error('PLAN_UNIT_NOT_FOUND')
     const id = randomUUID(); const now = new Date().toISOString()
-    this.db.prepare(`INSERT INTO practice_runs(id, learner_id, plan_unit_id, case_id, lab_run_id, stage, status, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, 'observe', 'active', ?, ?)`).run(id, input.learnerId, input.planUnitId, input.caseId, input.labRunId ?? null, now, now)
+    this.db.prepare(`INSERT INTO practice_runs(id, learner_id, plan_unit_id, case_id, lab_run_id, practice_kind, learning_case_id, stage, status, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, 'observe', 'active', ?, ?)`).run(id, input.learnerId, input.planUnitId, input.caseId, input.labRunId ?? null, input.practiceKind ?? 'mysql_lab', input.learningCaseId ?? null, now, now)
     return this.getPracticeRun(id)
   }
 
@@ -687,10 +729,10 @@ export class ProductRepository {
     return this.getPlanForLearner(text(this.db.prepare('SELECT plan_id FROM plan_units WHERE id = ?').get(run.planUnitId) as Row, 'plan_id'), run.learnerId)
   }
 
-  createPracticeRun(input: { learnerId: string; planUnitId?: string | null; caseId: PracticeRun['caseId']; labRunId?: string | null }): PracticeRun {
+  createPracticeRun(input: { learnerId: string; planUnitId?: string | null; caseId: PracticeRun['caseId']; labRunId?: string | null; practiceKind?: PracticeRun['practiceKind']; learningCaseId?: string | null }): PracticeRun {
     const id = randomUUID(); const now = new Date().toISOString()
-    this.db.prepare(`INSERT INTO practice_runs(id, learner_id, plan_unit_id, case_id, lab_run_id, stage, status, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, 'observe', 'active', ?, ?)`).run(id, input.learnerId, input.planUnitId ?? null, input.caseId, input.labRunId ?? null, now, now)
+    this.db.prepare(`INSERT INTO practice_runs(id, learner_id, plan_unit_id, case_id, lab_run_id, practice_kind, learning_case_id, stage, status, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, 'observe', 'active', ?, ?)`).run(id, input.learnerId, input.planUnitId ?? null, input.caseId, input.labRunId ?? null, input.practiceKind ?? 'mysql_lab', input.learningCaseId ?? null, now, now)
     return this.getPracticeRun(id)
   }
 
