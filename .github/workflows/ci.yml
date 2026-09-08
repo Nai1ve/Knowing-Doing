@@ -73,6 +73,55 @@ jobs:
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
           DEPLOY_PORT: ${{ secrets.DEPLOY_PORT || '22' }}
         run: ssh-keyscan -p "$DEPLOY_PORT" -H "$DEPLOY_HOST" >> "$HOME/.ssh/known_hosts"
+      - name: Install production runtime secrets
+        if: env.DEPLOY_SSH_KEY != ''
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT || '22' }}
+          LAB_TOKEN_SECRET: ${{ secrets.LAB_TOKEN_SECRET }}
+          LAB_MYSQL_RUNNER_PASSWORD: ${{ secrets.LAB_MYSQL_RUNNER_PASSWORD }}
+          LAB_MYSQL_ADMIN_PASSWORD: ${{ secrets.LAB_MYSQL_ADMIN_PASSWORD }}
+          ZHIXING_MODEL_BASE_URL: ${{ secrets.ZHIXING_MODEL_BASE_URL || 'https://api.deepseek.com' }}
+          ZHIXING_MODEL_API_KEY: ${{ secrets.ZHIXING_MODEL_API_KEY }}
+          ZHIXING_MODEL_NAME: ${{ secrets.ZHIXING_MODEL_NAME || 'deepseek-v4-flash' }}
+          ZHIXING_ZHIHU_ACCESS_SECRET: ${{ secrets.ZHIXING_ZHIHU_ACCESS_SECRET }}
+        run: |
+          set -Eeuo pipefail
+          test -n "$LAB_TOKEN_SECRET" || { echo 'Missing required secret: LAB_TOKEN_SECRET' >&2; exit 1; }
+          test -n "$ZHIXING_MODEL_API_KEY" || { echo 'Missing required secret: ZHIXING_MODEL_API_KEY' >&2; exit 1; }
+          umask 077
+          cat <<EOF | ssh -p "$DEPLOY_PORT" "$DEPLOY_USER@$DEPLOY_HOST" "sudo -n install -d -m 0755 /etc/knowing-doing && sudo -n install -o root -g root -m 0600 /dev/stdin /etc/knowing-doing/backend.env"
+          NODE_ENV=production
+          LAB_API_HOST=127.0.0.1
+          LAB_API_PORT=3001
+          LAB_CORS_ORIGIN=http://$DEPLOY_HOST
+          LAB_MYSQL_HOST=127.0.0.1
+          LAB_MYSQL_PORT=13306
+          LAB_MYSQL_RUNNER_USER=zhixing_lab_runner
+          LAB_MYSQL_RUNNER_PASSWORD=$LAB_MYSQL_RUNNER_PASSWORD
+          LAB_MYSQL_ADMIN_USER=zhixing_lab_admin
+          LAB_MYSQL_ADMIN_PASSWORD=$LAB_MYSQL_ADMIN_PASSWORD
+          LAB_TOKEN_SECRET=$LAB_TOKEN_SECRET
+          LAB_RUN_LEASE_MS=1200000
+          LAB_RUN_IDLE_TIMEOUT_MS=300000
+          LAB_QUEUE_LEASE_MS=1800000
+          LAB_QUERY_TIMEOUT_MS=10000
+          LAB_MAX_ROWS=200
+          LAB_MAX_OUTPUT_BYTES=1048576
+          LAB_RUNNER_POOL_SIZE=6
+          ZHIXING_PRODUCT_DB_PATH=/home/ubuntu/knowing-doing-data/zhixing-product.db
+          ZHIXING_MODEL_BASE_URL=$ZHIXING_MODEL_BASE_URL
+          ZHIXING_MODEL_API_KEY=$ZHIXING_MODEL_API_KEY
+          ZHIXING_MODEL_NAME=$ZHIXING_MODEL_NAME
+          ZHIXING_MODEL_TIMEOUT_MS=300000
+          ZHIXING_ZHIHU_ACCESS_SECRET=$ZHIXING_ZHIHU_ACCESS_SECRET
+          ZHIXING_ZHIHU_API_BASE_URL=https://developer.zhihu.com
+          ZHIXING_RETRIEVAL_TIMEOUT_MS=15000
+          ZHIXING_RETRIEVAL_CACHE_TTL_MS=86400000
+          ZHIXING_IDENTITY_MODE=shared_demo
+          ZHIXING_DEMO_LEARNER_ID=demo-learner
+          EOF
       - name: Deploy immutable release
         if: env.DEPLOY_SSH_KEY != ''
         env:

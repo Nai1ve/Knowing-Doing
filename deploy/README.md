@@ -15,6 +15,12 @@ Configure these repository secrets before expecting a push to restart the server
 `DEPLOY_SSH_KEY` containing the dedicated private key whose public key is in the
 server user's `~/.ssh/authorized_keys`.
 
+Runtime secrets are installed by the workflow into `/etc/knowing-doing/backend.env`
+with mode `0600`. Configure the names listed in
+`deploy/github-actions-secrets.example`, especially `LAB_TOKEN_SECRET`,
+`ZHIXING_MODEL_API_KEY`, and `ZHIXING_MODEL_NAME`. The workflow does not print or
+commit these values. The model and Zhihu keys are never written to the repository.
+
 The workflow tests both packages on every pull request and push. A push to `main`
 then fetches that commit on the server, builds a new release, runs the explicit
 SQLite migration command, switches the release symlink, and restarts the service.
