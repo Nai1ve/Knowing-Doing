@@ -55,12 +55,13 @@ export interface RoadmapNode {
   verifiedAt: string | null
   progressRevision: number
   childCount: number
+  evidence: Array<{ sourceType: string; sourceId: string; excerpt: string }>
 }
 
 export interface Roadmap {
   id: string
   learnerId: string
-  templateKey: PlanningTemplateKey
+  templateKey: string
   goal: string
   status: RoadmapStatus
   revision: number

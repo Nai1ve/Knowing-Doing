@@ -40,6 +40,8 @@ export interface LabConfig {
   retrievalTimeoutMs: number
   retrievalCacheTtlMs: number
   caseIds: CaseId[]
+  identityMode: 'client' | 'shared_demo'
+  demoLearnerId: string
 }
 
 export function loadConfig(): LabConfig {
@@ -78,6 +80,8 @@ export function loadConfig(): LabConfig {
     zhihuApiBaseUrl: process.env.ZHIXING_ZHIHU_API_BASE_URL ?? 'https://developer.zhihu.com',
     retrievalTimeoutMs: numberEnv('ZHIXING_RETRIEVAL_TIMEOUT_MS', 15_000),
     retrievalCacheTtlMs: numberEnv('ZHIXING_RETRIEVAL_CACHE_TTL_MS', 24 * 60 * 60 * 1000),
+    identityMode: process.env.ZHIXING_IDENTITY_MODE === 'shared_demo' || process.env.NODE_ENV === 'production' ? 'shared_demo' : 'client',
+    demoLearnerId: process.env.ZHIXING_DEMO_LEARNER_ID ?? 'demo-learner',
     caseIds: [
       'mysql-order-list-index-001',
       'mysql-deadlock-lock-order-001',

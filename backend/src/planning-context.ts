@@ -67,6 +67,11 @@ export class PlanningContextCompiler {
     const goalItem: ContextItem = { id: randomUUID(), key: 'goal', kind: 'goal', content: input.goal.trim(), status: 'explicit', confidence: 1, importance: 5, sourceRefs: input.messageId ? [`planning_message:${input.messageId}`] : [] }
     merged.set(goalItem.key, goalItem)
 
+    if (input.messageId) {
+      const message = this.db.prepare("SELECT content FROM planning_messages WHERE id = ? AND session_id = ? AND role = 'user'").get(input.messageId, input.sessionId) as Row | undefined
+      if (message) merged.set(`conversation:${input.messageId}`, { id: randomUUID(), key: `conversation:${input.messageId}`, kind: 'conversation', content: text(message, 'content').slice(0, 2000), status: 'explicit', confidence: 1, importance: 3, sourceRefs: [`planning_message:${input.messageId}`] })
+    }
+
     for (const evidence of input.delta.evidence ?? []) {
       const content = evidence.excerpt.trim().slice(0, 2000); if (!content) continue
       const sourceKey = `${evidence.sourceType}:${evidence.sourceId || hash(content)}`
@@ -88,10 +93,10 @@ export class PlanningContextCompiler {
       const key = `question:${input.delta.followUpTopic}`; const existing = merged.get(key)
       merged.set(key, { id: existing?.id ?? randomUUID(), key, kind: 'open_question', content: this.questionFor(input.delta.followUpTopic), status: 'open', confidence: 1, importance: 5, sourceRefs: input.messageId ? [`planning_message:${input.messageId}`] : [] })
     }
-    if ((input.delta.evidence ?? []).length === 0 && input.messageId) {
-      const key = `conversation:${input.messageId}`
-      merged.set(key, { id: randomUUID(), key, kind: 'conversation', content: '用户补充了一轮规划信息。', status: 'explicit', confidence: 1, importance: 1, sourceRefs: [`planning_message:${input.messageId}`] })
-    }
+      if ((input.delta.evidence ?? []).length === 0 && input.messageId && !merged.has(`conversation:${input.messageId}`)) {
+        const key = `conversation:${input.messageId}`
+        merged.set(key, { id: randomUUID(), key, kind: 'conversation', content: '用户补充了一轮规划信息。', status: 'explicit', confidence: 1, importance: 1, sourceRefs: [`planning_message:${input.messageId}`] })
+      }
 
     const activeItems = [...merged.values()].filter((item) => item.content.trim() && item.status !== 'superseded').map((item) => ({ ...item, id: randomUUID() }))
     const currentFocus = this.focus(input.delta.followUpTopic ?? null, activeItems)

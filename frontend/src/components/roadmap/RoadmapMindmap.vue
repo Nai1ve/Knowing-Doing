@@ -130,7 +130,7 @@ const flowEdges = computed<Edge[]>(() => {
       target: node.id,
       sourceHandle: pair.sourceHandle,
       targetHandle: pair.targetHandle,
-      type: 'bezier',
+      type: 'default',
       selectable: false,
       style: { stroke: active ? '#d27b50' : '#aeb8c4', strokeWidth: active ? 2.5 : 1.35, opacity: active ? 1 : .8 },
       data: { visible: visible.has(node.id) },

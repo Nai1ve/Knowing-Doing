@@ -7,6 +7,7 @@ import { AgentPlanningService, type PlanningProvider } from '../src/agent-planni
 import { PlanningContextCompiler } from '../src/planning-context.js'
 import { applyProductMigrations } from '../src/product-migrate.js'
 import { ProductRepository } from '../src/product-repository.js'
+import { PlanningService } from '../src/planning.js'
 
 function withService<T>(callback: (service: AgentPlanningService, repository: ProductRepository) => Promise<T> | T): Promise<T> {
   const directory = mkdtempSync(path.join(tmpdir(), 'zhixing-agent-planning-')); const dbPath = path.join(directory, 'product.db'); applyProductMigrations(dbPath); const repository = new ProductRepository(dbPath)
@@ -24,7 +25,25 @@ describe('AgentPlanningService', () => {
     expect(session.requiredTopics.find((topic) => topic.key === 'goal_deadline')?.status).toBe('covered')
     expect(session.profile?.dimensions[0].level).toBe('applied')
     expect(events).toContain('profile_updated')
+    expect(events).toContain('roadmap_readiness')
     expect(repository.db.prepare('SELECT COUNT(*) AS count FROM planning_agent_invocations').get()).toMatchObject({ count: 2 })
+  }))
+
+  it('exposes resumable planning state and coalesces concurrent roadmap generation', async () => withService(async (service, repository) => {
+    const learnerId = 'state-learner'
+    const session = service.createSession(learnerId, { message: '我想学习 MySQL 慢查询和索引优化', clientRequestId: 'state-start' })
+    await service.streamMessage(learnerId, session.id, session.goal, 'state-start', async () => undefined)
+
+    const first = await service.generateRoadmap(learnerId, session.id, 'state-roadmap')
+    const second = await service.generateRoadmap(learnerId, session.id, 'state-roadmap-retry')
+    expect(second.id).toBe(first.id)
+
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    const state = service.planningState(learnerId)
+    expect(state.session?.id).toBe(session.id)
+    expect(state.generation?.id).toBe(first.id)
+    expect(state.generation?.status).toBe('succeeded')
+    expect(repository.db.prepare('SELECT COUNT(*) AS count FROM roadmap_generation_runs WHERE planning_session_id = ?').get(session.id)).toMatchObject({ count: 1 })
   }))
 
   it('does not append the original user message during invocation retry', async () => withService(async (service, repository) => {
@@ -33,6 +52,13 @@ describe('AgentPlanningService', () => {
     const invocation = repository.db.prepare("SELECT id FROM planning_agent_invocations WHERE session_id = ? AND kind = 'planner'").get(first.id) as { id: string }
     await service.retryInvocation('retry-learner', invocation.id, async () => undefined)
     expect(repository.db.prepare("SELECT COUNT(*) AS count FROM planning_messages WHERE session_id = ? AND role = 'user'").get(first.id)).toMatchObject({ count: 1 })
+  }))
+
+  it('rejects a second process while the session row is marked running', async () => withService(async (service, repository) => {
+    const session = service.createSession('busy-learner', { message: '我想学习后端系统设计', clientRequestId: 'busy-start' })
+    repository.db.prepare("UPDATE planning_sessions SET agent_status = 'running' WHERE id = ?").run(session.id)
+    await expect(service.streamMessage('busy-learner', session.id, '补充我的项目经历', 'busy-turn', async () => undefined)).rejects.toMatchObject({ code: 'planning_busy' })
+    expect(repository.db.prepare('SELECT COUNT(*) AS count FROM planning_messages WHERE session_id = ?').get(session.id)).toMatchObject({ count: 1 })
   }))
 
   it('accepts feedback only for materials in the owned route', async () => withService(async (service, repository) => {
@@ -59,5 +85,36 @@ describe('AgentPlanningService', () => {
     expect(first.version).toBe(1); expect(second.version).toBe(2); expect(second.explicitFacts.map((item) => item.content)).toEqual(expect.arrayContaining(['参与过支付服务开发', '负责服务边界和发布决策']))
     expect(second.openQuestions).toHaveLength(0)
     expect(repository.db.prepare('SELECT COUNT(*) AS count FROM planning_context_snapshots WHERE session_id = ?').get(session.id)).toMatchObject({ count: 2 })
+  }))
+
+  it('keeps the original planning message when the interpreter returns no evidence', async () => withService(async (service, repository) => {
+    const learnerId = 'raw-message-learner'; const session = service.createSession(learnerId, { message: '我想成为后端和 AI 应用工程师', clientRequestId: 'raw-1' })
+    const message = repository.db.prepare("SELECT id FROM planning_messages WHERE session_id = ? AND role = 'user'").get(session.id) as { id: string }
+    const packet = new PlanningContextCompiler(repository.db).update({ learnerId, sessionId: session.id, goal: session.goal, messageId: message.id, clientRequestId: 'raw-1', resumeText: null, delta: { evidence: [], dimensions: [], coveredTopics: [], followUpTopic: null } })
+    expect(packet.explicitFacts.map((item) => item.content)).toContain('我想成为后端和 AI 应用工程师')
+    expect(packet.explicitFacts.map((item) => item.content)).not.toContain('用户补充了一轮信息。')
+  }))
+
+  it('generates a dynamic MySQL route and materializes the Lab unit from the conversation', async () => withService(async (service, repository) => {
+    const session = service.createSession('dynamic-learner', { message: '我想学习 MySQL 慢查询、EXPLAIN 和索引优化', clientRequestId: 'dynamic-1' })
+    await service.streamMessage('dynamic-learner', session.id, session.goal, 'dynamic-1', async () => undefined)
+    const generation = await service.generateRoadmap('dynamic-learner', session.id, 'roadmap-1')
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    const completed = service.getRoadmapGeneration('dynamic-learner', generation.id)
+    expect(completed.status).toBe('succeeded')
+    expect(completed.roadmapId).toBeTruthy()
+    const planning = new PlanningService(repository)
+    const draft = planning.getDraftForLearner('dynamic-learner', completed.roadmapId as string)
+    expect(draft.templateKey).toBe('agent-roadmap-v2')
+    expect(draft.nodes.some((node) => node.caseId === 'mysql-order-list-index-001')).toBe(true)
+    expect(draft.nodes.some((node) => node.evidence.length > 0)).toBe(true)
+    const plan = planning.confirm('dynamic-learner', draft.id, draft.revision)
+    expect(plan.units[0].learningMode).toBe('lab')
+    expect(plan.units[0].caseId).toBe('mysql-order-list-index-001')
+
+    const nodePlan = repository.db.prepare('EXPLAIN QUERY PLAN SELECT n.id FROM roadmap_nodes n WHERE n.roadmap_id = ? AND n.parent_id IS NULL ORDER BY n.position').all(draft.id) as Array<{ detail: string }>
+    expect(nodePlan.some((row) => row.detail.includes('idx_roadmap_nodes_parent_position'))).toBe(true)
+    const evidencePlan = repository.db.prepare('EXPLAIN QUERY PLAN SELECT e.source_type, e.source_id FROM roadmap_node_evidence e WHERE e.roadmap_id = ? AND e.node_id = ? ORDER BY e.position').all(draft.id, draft.nodes.find((node) => node.caseId === 'mysql-order-list-index-001')?.id) as Array<{ detail: string }>
+    expect(evidencePlan.some((row) => row.detail.includes('idx_roadmap_node_evidence_node_position'))).toBe(true)
   }))
 })

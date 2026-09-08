@@ -228,7 +228,7 @@ export class PracticeService {
     const plan = this.getPlan(learnerId, planId)
     const unit = plan.units.find((candidate) => candidate.id === planUnitId)
     if (!unit) throw new ProductNotFoundError(`Plan unit not found: ${planUnitId}`)
-    if (unit.status !== 'current' || unit.availability !== 'available' || !unit.caseId) throw new LabError('unit_not_available', '当前学习单元尚未开放实践', 409)
+    if (unit.status !== 'current' || unit.availability !== 'available' || unit.learningMode !== 'lab' || !unit.caseId) throw new LabError('unit_not_available', '当前学习单元尚未开放实践', 409)
     return { plan, unit: unit as PlanUnit & { caseId: CaseId } }
   }
 

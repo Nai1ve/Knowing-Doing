@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "tsx watch src/server.ts",
     "db:migrate": "tsx src/product-migrate.ts",
+    "product:adopt-demo-history": "tsx src/reassign-demo-learner.ts",
     "product:backfill-curation": "tsx src/backfill-curation.ts",
     "product:replay-narrative": "tsx src/replay-narrative.ts",
     "build": "tsc -p tsconfig.json",

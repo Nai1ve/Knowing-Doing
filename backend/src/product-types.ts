@@ -70,7 +70,7 @@ export interface Intake {
 export type DiagnosticTargetKey = 'mysql_performance' | 'general'
 export type DiagnosticSessionStatus = 'draft' | 'ready' | 'proposed' | 'confirmed' | 'superseded'
 export type PlanProposalStatus = 'ready' | 'confirmed' | 'superseded'
-export type LearningMode = 'lab' | 'unavailable'
+export type LearningMode = 'lab' | 'knowledge' | 'unavailable'
 
 export interface DiagnosticTurn {
   id: string

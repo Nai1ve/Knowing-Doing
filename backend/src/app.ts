@@ -56,6 +56,10 @@ export function buildApp(dependencies: AppDependencies): { app: FastifyInstance;
   const scheduler = new LabScheduler(store, dependencies.config)
   const app = Fastify({ logger: false })
 
+  app.addHook('onRequest', async (request) => {
+    if (dependencies.config.identityMode === 'shared_demo') request.headers['x-learner-id'] = dependencies.config.demoLearnerId
+  })
+
   void app.register(multipart, { limits: { files: 1, fields: 0, fileSize: dependencies.config.resumeMaxBytes } })
   void app.register(cors, { origin: dependencies.config.corsOrigin, methods: ['GET', 'HEAD', 'POST', 'PATCH', 'DELETE', 'OPTIONS'] })
   app.setErrorHandler((error, _request, reply) => {
@@ -218,6 +222,7 @@ function registerAgentPlanningRoutes(app: FastifyInstance, service: AgentPlannin
     try { await action(send) } catch (error) { if (!reply.raw.destroyed && !reply.raw.writableEnded) await send({ type: 'failed', invocationId: 'unknown', code: error instanceof Error ? error.name : 'planning_failed', message: error instanceof Error ? error.message : '规划调用失败', retryable: true }) } finally { if (!reply.raw.writableEnded) reply.raw.end() }
   }
   app.post('/api/product/planning-sessions/stream', async (request, reply) => { const body = productBody(request); const message = stringField(body, 'message'); const requestId = optionalString(body, 'clientRequestId') ?? randomUUID(); await stream(request, reply, (send) => service.createAndStream(learnerId(request), message, requestId, send)) })
+  app.get('/api/product/planning/state', async (request, reply) => reply.send(service.planningState(learnerId(request))))
   app.post('/api/product/planning-sessions/:sessionId/messages/stream', async (request, reply) => { const body = productBody(request); const sessionId = String((request.params as { sessionId: string }).sessionId); const message = stringField(body, 'message'); const requestId = optionalString(body, 'clientRequestId') ?? randomUUID(); await stream(request, reply, (send) => service.streamMessage(learnerId(request), sessionId, message, requestId, send)) })
   app.post('/api/product/planning-invocations/:invocationId/retry', async (request, reply) => { const invocationId = String((request.params as { invocationId: string }).invocationId); await stream(request, reply, (send) => service.retryInvocation(learnerId(request), invocationId, send)) })
   app.post('/api/product/planning-sessions/:sessionId/roadmap-generations', async (request, reply) => { const body = productBody(request); const result = await service.generateRoadmap(learnerId(request), String((request.params as { sessionId: string }).sessionId), optionalString(body, 'clientRequestId') ?? randomUUID()); reply.code(202).send(result) })

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { ArrowRight, LockKeyhole } from 'lucide-vue-next'
-import { RouterLink } from 'vue-router'
+import { RouterLink, useRoute } from 'vue-router'
 import PracticeLauncher from '@/components/learning/PracticeLauncher.vue'
 import PracticeWorkspace from '@/components/learning/PracticeWorkspace.vue'
 import { useLabStore } from '@/stores/lab'
@@ -11,8 +11,13 @@ import { usePlanStore } from '@/stores/plan'
 const labStore = useLabStore()
 const practiceStore = usePracticeStore()
 const planStore = usePlanStore()
+const route = useRoute()
 const nextUnit = computed(() => planStore.productPlan?.units.find((unit) => unit.status === 'current') ?? planStore.productPlan?.units.find((unit) => unit.status === 'upcoming') ?? null)
-const currentUnit = computed(() => planStore.productPlan?.units.find((unit) => unit.status === 'current' && unit.availability === 'available') ?? null)
+const currentUnit = computed(() => {
+  const units = planStore.productPlan?.units ?? []
+  const requested = typeof route.query.planUnitId === 'string' ? units.find((unit) => unit.id === route.query.planUnitId) : null
+  return requested?.status === 'current' && requested.availability === 'available' ? requested : units.find((unit) => unit.status === 'current' && unit.availability === 'available') ?? null
+})
 const lessonUnavailable = ref(false)
 
 onMounted(() => {
