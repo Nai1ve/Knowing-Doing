@@ -384,7 +384,7 @@ export class AgentPlanningService {
     const claimed = this.db.transaction(() => {
       const updated = this.db.prepare("UPDATE roadmap_generation_runs SET status = 'queued', phase = 'domain', failure_code = NULL, failure_message = NULL, diagnostics_json = '{}', completed_at = NULL, updated_at = ? WHERE id = ? AND learner_id = ? AND status IN ('failed', 'interrupted')").run(now, id, learnerId)
       if (updated.changes === 0) return false
-      const sessionUpdated = this.db.prepare("UPDATE planning_sessions SET agent_status = 'generating', updated_at = ? WHERE id = ? AND learner_id = ? AND mode = 'agent' AND agent_status NOT IN ('running', 'generating')").run(now, sessionId, learnerId)
+      const sessionUpdated = this.db.prepare("UPDATE planning_sessions SET agent_status = 'generating', updated_at = ? WHERE id = ? AND learner_id = ? AND mode = 'agent' AND agent_status <> 'running'").run(now, sessionId, learnerId)
       if (sessionUpdated.changes === 0) throw new LabError('planning_busy', '当前规划会话正在处理上一条消息，请稍后重试', 409, true)
       return true
     })()
