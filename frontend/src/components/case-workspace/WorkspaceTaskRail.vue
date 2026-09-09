@@ -1,15 +1,20 @@
 <script setup lang="ts">
 import { CheckCircle2, Circle, Play } from 'lucide-vue-next'
-import type { ProductCaseSpec, ProductWorkspaceExecution } from '@/types/product'
+import type { ProductCaseSpec, ProductWorkspaceCompletion, ProductWorkspaceExecution } from '@/types/product'
 
-defineProps<{ spec: ProductCaseSpec; executions: ProductWorkspaceExecution[]; disabled?: boolean }>()
+const props = defineProps<{ spec: ProductCaseSpec; executions: ProductWorkspaceExecution[]; completion: ProductWorkspaceCompletion | null; disabled?: boolean }>()
 const emit = defineEmits<{ execute: [command: string] }>()
+function taskDone(index: number, task: ProductCaseSpec['tasks'][number]): boolean {
+  if (index === props.spec.tasks.length - 1) return props.completion?.status === 'verified'
+  const successful = props.executions.filter((item) => item.status === 'succeeded' && task.recommendedCommands.includes(item.command)).length
+  return successful > index
+}
 </script>
 
 <template>
   <aside class="task-rail" aria-labelledby="task-rail-title">
     <div class="rail-heading"><div><span class="eyebrow">Practice path</span><h2 id="task-rail-title">按顺序完成</h2></div><span>{{ spec.tasks.length }} 个任务</span></div>
-    <article v-for="(task, index) in spec.tasks" :key="task.key" class="rail-task"><div class="rail-task-head"><span class="task-index">{{ String(index + 1).padStart(2, '0') }}</span><strong>{{ task.key }}</strong><CheckCircle2 v-if="executions.some((item) => item.status === 'succeeded') && index === spec.tasks.length - 1" :size="14" class="done" aria-label="已有成功执行" /><Circle v-else :size="14" class="pending" aria-hidden="true" /></div><p>{{ task.instruction }}</p><small>观察：{{ task.expectedObservation }}</small><button v-for="command in task.recommendedCommands" :key="command" type="button" :disabled="disabled" @click="emit('execute', command)"><Play :size="11" aria-hidden="true" />{{ command }}</button></article>
+    <article v-for="(task, index) in spec.tasks" :key="task.key" class="rail-task"><div class="rail-task-head"><span class="task-index">{{ String(index + 1).padStart(2, '0') }}</span><strong>{{ task.key }}</strong><CheckCircle2 v-if="taskDone(index, task)" :size="14" class="done" aria-label="任务已完成" /><Circle v-else :size="14" class="pending" aria-hidden="true" /></div><p>{{ task.instruction }}</p><small>观察：{{ task.expectedObservation }}</small><button v-for="command in task.recommendedCommands" :key="command" type="button" :disabled="disabled" @click="emit('execute', command)"><Play :size="11" aria-hidden="true" />{{ command }}</button></article>
   </aside>
 </template>
 

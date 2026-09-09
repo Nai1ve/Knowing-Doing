@@ -14,6 +14,7 @@ import { PlanningService } from './planning.js'
 import { CaseWorkspaceService } from './case-workspace-service.js'
 import { FixtureCaseBuilder, ModelCaseBuilder } from './case-builder.js'
 import { FakeWorkspaceRunnerClient, HttpWorkspaceRunnerClient } from './workspace-runner-client.js'
+import { WorkspaceCompletionService } from './workspace-completion-service.js'
 
 const config = loadConfig()
 const productRepository = new ProductRepository(config.productDbPath)
@@ -31,9 +32,11 @@ const workspaceRunner = config.workspaceRunnerFake
   ? new FakeWorkspaceRunnerClient()
   : new HttpWorkspaceRunnerClient(config.workspaceRunnerUrl, config.workspaceRunnerToken, config.workspaceRunnerTimeoutMs)
 const caseBuilder = config.caseBuilderProvider === 'model' ? new ModelCaseBuilder(config) : new FixtureCaseBuilder()
-const caseWorkspaceService = new CaseWorkspaceService(productRepository, caseBuilder, workspaceRunner)
+const workspaceCompletion = new WorkspaceCompletionService(productRepository, planningService, (runId) => { writingService.enqueueAutoDraft(runId) })
+const caseWorkspaceService = new CaseWorkspaceService(productRepository, caseBuilder, workspaceRunner, workspaceCompletion)
 caseWorkspaceService.resumeCaseJobs()
 await caseWorkspaceService.resumeWorkspaces()
+workspaceCompletion.resumePending()
 const { app, scheduler } = buildApp({
   config,
   practiceServiceFactory: (labScheduler) => new PracticeService(productRepository, labScheduler, new TutorEngine(config), retrieval, curation, (runId) => { planningService.markLabVerified(runId); writingService.enqueueAutoDraft(runId) }),

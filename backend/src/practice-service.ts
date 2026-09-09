@@ -545,7 +545,9 @@ export class PracticeService {
   }
 
   verify(runId: string) {
-    const run = this.run(runId); const snapshot = this.repository.snapshot(runId)
+    const run = this.run(runId)
+    if (run.practiceKind === 'code_workspace') throw new LabError('workspace_completion_required', 'Python 工作区需要通过验证命令完成案例', 409)
+    const snapshot = this.repository.snapshot(runId)
     const completion = evaluatePracticeCompletion(run, snapshot)
     const decision = decideAfterVerification(run, snapshot.events, completion.ready)
     if (run.status === 'resolved') return { run, decision, snapshot, completion }

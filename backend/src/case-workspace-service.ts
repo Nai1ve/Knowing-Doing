@@ -4,7 +4,7 @@ import { getWorkspaceCapability } from './capability-registry.js'
 import { MAX_WORKSPACE_FILE_BYTES, MAX_WORKSPACE_TOTAL_BYTES, parseCaseRequest, parseCaseSpec, isAllowedPythonCommand } from './case-schemas.js'
 import { CaseBuilderError, type CaseBuilderAttemptEvent, type CaseBuilderContext, type CaseBuilderProvider } from './case-builder.js'
 import { LabError } from './errors.js'
-import type { CaseRequest, CaseSpec, LearningCase, CaseGenerationJob, PracticeRun, SourceItem, WorkspaceExecution, WorkspaceFile, WorkspaceRun } from './product-types.js'
+import type { CaseRequest, CaseSpec, LearningCase, CaseGenerationJob, PracticeRun, SourceItem, WorkspaceCompletion, WorkspaceExecution, WorkspaceFile, WorkspaceRun, WorkspaceTutorHistory } from './product-types.js'
 import type { ProductRepository } from './product-repository.js'
 import type { RunnerFileInput, WorkspaceRunnerClient } from './workspace-runner-client.js'
 import { WorkspaceRunnerError } from './workspace-runner-client.js'
@@ -57,13 +57,14 @@ export interface WorkspaceSummary {
   case: LearningCase
   files: WorkspaceFile[]
   executions: WorkspaceExecution[]
+  completion: WorkspaceCompletion | null
 }
 
 export class CaseWorkspaceService {
   private readonly caseLocks = new Map<string, Promise<void>>()
   private readonly workspaceLocks = new Map<string, Promise<void>>()
 
-  constructor(private readonly repository: ProductRepository, private readonly builder: CaseBuilderProvider, private readonly runner: WorkspaceRunnerClient) {}
+  constructor(private readonly repository: ProductRepository, private readonly builder: CaseBuilderProvider, private readonly runner: WorkspaceRunnerClient, private readonly completionService?: { completionForWorkspace(learnerId: string, workspaceRunId: string): WorkspaceCompletion | null; evaluateExecution(learnerId: string, workspaceRunId: string, executionId: string): WorkspaceCompletion | null; recheck(learnerId: string, workspaceRunId: string): WorkspaceCompletion | null }) {}
 
   private get db(): Database.Database { return this.repository.db }
 
@@ -99,7 +100,7 @@ export class CaseWorkspaceService {
     const learningCase = this.caseForLearner(text(row, 'learner_id'), workspace.learningCaseId)
     const files = (this.db.prepare('SELECT * FROM workspace_files WHERE workspace_run_id = ? ORDER BY path ASC').all(workspace.id) as Row[]).map(fileFrom)
     const executions = (this.db.prepare('SELECT * FROM workspace_executions WHERE workspace_run_id = ? ORDER BY sequence DESC LIMIT 20').all(workspace.id) as Row[]).map(executionFrom)
-    return { workspace, practice, case: learningCase, files, executions }
+      return { workspace, practice, case: learningCase, files, executions, completion: this.completionService?.completionForWorkspace(text(row, 'learner_id'), workspace.id) ?? null }
   }
 
   createCaseRequest(learnerId: string, input: unknown): { case: LearningCase; job: CaseGenerationJob } {
@@ -294,6 +295,21 @@ export class CaseWorkspaceService {
 
   getWorkspace(learnerId: string, workspaceId: string): WorkspaceSummary { return this.summaryFrom(this.workspaceRow(learnerId, workspaceId)) }
 
+  getCompletion(learnerId: string, workspaceId: string): WorkspaceCompletion | null {
+    this.workspaceRow(learnerId, workspaceId)
+    return this.completionService?.completionForWorkspace(learnerId, workspaceId) ?? null
+  }
+
+  recheckCompletion(learnerId: string, workspaceId: string): WorkspaceCompletion | null {
+    this.workspaceRow(learnerId, workspaceId)
+    return this.completionService?.recheck(learnerId, workspaceId) ?? null
+  }
+
+  getTutorHistory(learnerId: string, workspaceId: string): WorkspaceTutorHistory {
+    const row = this.workspaceRow(learnerId, workspaceId)
+    return this.repository.workspaceTutorHistory(text(row, 'practice_id'))
+  }
+
   getFile(learnerId: string, workspaceId: string, path: string): WorkspaceFile {
     this.workspaceRow(learnerId, workspaceId)
     const row = this.db.prepare('SELECT * FROM workspace_files WHERE workspace_run_id = ? AND path = ?').get(workspaceId, path) as Row | undefined
@@ -359,8 +375,9 @@ export class CaseWorkspaceService {
         }
         const execution = executionFrom(this.db.prepare('SELECT * FROM workspace_executions WHERE id = ?').get(executionId) as Row); const artifactKind = execution.status === 'succeeded' ? 'workspace_output' : 'workspace_error'
         const commandArtifact = this.repository.createArtifact({ learnerId, practiceRunId: workspace.practiceRunId, kind: 'workspace_command', sourceKind: 'workspace', verificationStatus: 'not_applicable', content: command, metadata: { executionId } })
-        const outputArtifact = this.repository.createArtifact({ learnerId, practiceRunId: workspace.practiceRunId, kind: artifactKind, sourceKind: 'workspace', verificationStatus: execution.status === 'succeeded' ? 'verified_lab' : 'not_applicable', content: `${execution.stdout}${execution.stderr ? `\n${execution.stderr}` : ''}`, metadata: { executionId, status: execution.status, exitCode: execution.exitCode, durationMs: execution.durationMs } })
+        const outputArtifact = this.repository.createArtifact({ learnerId, practiceRunId: workspace.practiceRunId, kind: artifactKind, sourceKind: 'workspace', verificationStatus: 'not_applicable', content: `${execution.stdout}${execution.stderr ? `\n${execution.stderr}` : ''}`, metadata: { executionId, status: execution.status, exitCode: execution.exitCode, durationMs: execution.durationMs } })
         this.repository.appendEvent({ learnerId, practiceRunId: workspace.practiceRunId, actor: 'workspace', type: 'workspace_execution_finished', stage: 'verify', payload: { executionId, command, status: execution.status, exitCode: execution.exitCode }, artifactRefs: [commandArtifact.id, outputArtifact.id], clientRequestId: `execution-finished:${executionId}` })
+        try { this.completionService?.evaluateExecution(learnerId, workspaceId, execution.id) } catch (error) { console.error('[zhixing-workspace] completion_evaluation_failed', { workspaceRunId: workspaceId, executionId: execution.id, error: error instanceof Error ? error.message : String(error) }) }
         return { execution, workspace: this.getWorkspace(learnerId, workspaceId) }
       } catch (error) {
         const failure = error instanceof WorkspaceRunnerError ? error.code : 'runner_unavailable'; const completed = new Date().toISOString()

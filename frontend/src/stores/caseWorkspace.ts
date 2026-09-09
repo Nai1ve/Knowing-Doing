@@ -1,7 +1,7 @@
 import { computed, ref } from 'vue'
 import { defineStore } from 'pinia'
-import { createCaseRequest, endWorkspace, executeWorkspace, getCaseGenerationJob, getLearningCase, getWorkspaceRun, resetWorkspace, retryCaseGeneration, saveWorkspaceFile, startCasePractice } from '@/api/caseWorkspaceService'
-import { createProductPin, getProductSnapshot, retryProductTutor, streamProductTutor } from '@/api/productService'
+import { createCaseRequest, endWorkspace, executeWorkspace, getCaseGenerationJob, getLearningCase, getWorkspaceRun, getWorkspaceTutorHistory, resetWorkspace, retryCaseGeneration, recheckWorkspaceCompletion, saveWorkspaceFile, startCasePractice } from '@/api/caseWorkspaceService'
+import { createProductPin, retryProductTutor, streamProductTutor } from '@/api/productService'
 import { createClientId } from '@/utils/client-id'
 import type { ProductCaseInput, ProductCaseGenerationJob, ProductLearningCase, ProductPracticePin, ProductSnapshot, ProductTutorMessage, ProductTutorResponse, ProductTutorSource, ProductTutorStreamEvent, ProductWorkspaceSummary } from '@/types/product'
 
@@ -57,8 +57,14 @@ export const useCaseWorkspaceStore = defineStore('caseWorkspace', () => {
     tutorLastResponse.value = replyEvent ? replyEvent.payload as unknown as ProductTutorResponse : null
   }
 
-  async function loadTutor(practiceRunId: string) {
-    try { hydrateTutor(await getProductSnapshot(practiceRunId)) } catch (cause) { error.value = cause instanceof Error ? cause.message : 'Tutor 历史加载失败' }
+  function hydrateTutorHistory(data: { messages: ProductTutorMessage[]; pins: ProductPracticePin[]; lastResponse: ProductTutorResponse | null }) {
+    tutorMessages.value = data.messages
+    tutorPins.value = data.pins
+    tutorLastResponse.value = data.lastResponse
+  }
+
+  async function loadTutor(workspaceRunId: string) {
+    try { hydrateTutorHistory(await getWorkspaceTutorHistory(workspaceRunId)) } catch (cause) { error.value = cause instanceof Error ? cause.message : 'Tutor 历史加载失败' }
   }
 
   async function loadCase(caseId: string) {
@@ -100,7 +106,7 @@ export const useCaseWorkspaceStore = defineStore('caseWorkspace', () => {
 
   async function loadWorkspace(workspaceRunId: string) {
     loading.value = true; error.value = null
-    try { const value = await getWorkspaceRun(workspaceRunId); hydrateWorkspace(value); await loadTutor(value.practice.id) } catch (cause) { error.value = cause instanceof Error ? cause.message : '工作区加载失败'; throw cause } finally { loading.value = false }
+    try { const value = await getWorkspaceRun(workspaceRunId); hydrateWorkspace(value); await loadTutor(workspaceRunId) } catch (cause) { error.value = cause instanceof Error ? cause.message : '工作区加载失败'; throw cause } finally { loading.value = false }
   }
 
   function selectFile(path: string) {
@@ -124,6 +130,10 @@ export const useCaseWorkspaceStore = defineStore('caseWorkspace', () => {
     if (!workspace.value) return
     working.value = true; error.value = null
     try { hydrateWorkspace((await executeWorkspace(workspace.value.workspace.id, command)).workspace); if (workspace.value) workspace.value.executions = [...workspace.value.executions] } catch (cause) { error.value = cause instanceof Error ? cause.message : '执行失败' } finally { working.value = false }
+  }
+  async function recheckCompletion() {
+    if (!workspace.value) return
+    try { workspace.value.completion = await recheckWorkspaceCompletion(workspace.value.workspace.id) } catch (cause) { error.value = cause instanceof Error ? cause.message : '完成状态检查失败' }
   }
 
   async function reset() { if (!workspace.value) return; working.value = true; error.value = null; try { hydrateWorkspace(await resetWorkspace(workspace.value.workspace.id)); saveState.value = 'saved' } catch (cause) { error.value = cause instanceof Error ? cause.message : '工作区重置失败' } finally { working.value = false } }
@@ -164,5 +174,5 @@ export const useCaseWorkspaceStore = defineStore('caseWorkspace', () => {
   const tutorNextQuestion = computed(() => tutorLastResponse.value?.nextQuestion ?? '请先说明你从代码或测试输出中观察到了什么。')
   const tutorPinnedIds = computed(() => tutorPins.value.map((item) => item.targetId))
 
-  return { learningCase, job, workspace, selectedPath, editorContent, selectedFile, saveState, loading, working, error, isGenerating, tutorMessages, tutorSources, tutorLastResponse, tutorFailure, tutorLoading, tutorCurrentGap, tutorNextQuestion, tutorPinnedIds, resetCase, loadCase, create, retry, startPractice, loadWorkspace, selectFile, scheduleSave, saveFile, execute, reset, end, askTutor, retryTutor, pinTutor, dispose }
+  return { learningCase, job, workspace, selectedPath, editorContent, selectedFile, saveState, loading, working, error, isGenerating, tutorMessages, tutorSources, tutorLastResponse, tutorFailure, tutorLoading, tutorCurrentGap, tutorNextQuestion, tutorPinnedIds, resetCase, loadCase, create, retry, startPractice, loadWorkspace, selectFile, scheduleSave, saveFile, execute, recheckCompletion, reset, end, askTutor, retryTutor, pinTutor, dispose }
 })

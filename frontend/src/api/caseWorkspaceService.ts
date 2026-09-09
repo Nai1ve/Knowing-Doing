@@ -1,5 +1,5 @@
 import { ApiError, apiClient } from './client'
-import type { ProductCaseGenerationJob, ProductCaseInput, ProductLearningCase, ProductWorkspaceSummary } from '@/types/product'
+import type { ProductCaseGenerationJob, ProductCaseInput, ProductLearningCase, ProductWorkspaceCompletion, ProductWorkspaceSummary, ProductWorkspaceTutorHistory } from '@/types/product'
 import { createClientId } from '@/utils/client-id'
 
 const learnerKey = 'zhixing.learner.id'
@@ -18,6 +18,9 @@ export function retryCaseGeneration(jobId: string): Promise<{ case: ProductLearn
 export function getLearningCase(caseId: string): Promise<ProductLearningCase> { return request(`/product/learning-cases/${encodeURIComponent(caseId)}`) }
 export function startCasePractice(caseId: string): Promise<ProductWorkspaceSummary> { return request(`/product/learning-cases/${encodeURIComponent(caseId)}/practice`, { method: 'POST' }) }
 export function getWorkspaceRun(workspaceRunId: string): Promise<ProductWorkspaceSummary> { return request(`/product/workspace-runs/${encodeURIComponent(workspaceRunId)}`) }
+export function getWorkspaceCompletion(workspaceRunId: string): Promise<ProductWorkspaceCompletion | null> { return request(`/product/workspace-runs/${encodeURIComponent(workspaceRunId)}/completion`) }
+export function recheckWorkspaceCompletion(workspaceRunId: string): Promise<ProductWorkspaceCompletion | null> { return request(`/product/workspace-runs/${encodeURIComponent(workspaceRunId)}/completion/recheck`, { method: 'POST' }) }
+export function getWorkspaceTutorHistory(workspaceRunId: string): Promise<ProductWorkspaceTutorHistory> { return request(`/product/workspace-runs/${encodeURIComponent(workspaceRunId)}/tutor-history`) }
 export function saveWorkspaceFile(workspaceRunId: string, path: string, content: string, expectedRevision: number): Promise<ProductWorkspaceSummary> { return request(`/product/workspace-runs/${encodeURIComponent(workspaceRunId)}/files/${encodeURIComponent(path)}`, { method: 'PATCH', body: JSON.stringify({ content, expectedRevision }) }) }
 export async function executeWorkspace(workspaceRunId: string, command: string, clientRequestId = createClientId()): Promise<{ execution: ProductWorkspaceSummary['executions'][number]; workspace: ProductWorkspaceSummary }> {
   try {

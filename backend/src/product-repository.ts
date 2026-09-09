@@ -1000,6 +1000,19 @@ export class ProductRepository {
     return (this.db.prepare('SELECT id, user_artifact_id, assistant_artifact_id, mode, provider, source_status, created_at FROM tutor_turns WHERE practice_run_id = ? ORDER BY created_at ASC').all(practiceRunId) as Row[]).map((row) => ({ id: text(row, 'id'), userArtifactId: nullableText(row, 'user_artifact_id'), assistantArtifactId: nullableText(row, 'assistant_artifact_id'), mode: text(row, 'mode'), provider: text(row, 'provider'), sourceStatus: text(row, 'source_status'), createdAt: text(row, 'created_at') }))
   }
 
+  workspaceTutorHistory(practiceRunId: string): { messages: Array<{ id: string; role: 'user' | 'assistant'; content: string; source?: string }>; pins: PracticePin[]; lastResponse: Record<string, unknown> | null } {
+    const rows = this.db.prepare(`SELECT t.id, t.provider, t.source_status, t.created_at, ua.id AS user_id, ua.content AS user_content, aa.id AS assistant_id, aa.content AS assistant_content
+      FROM tutor_turns t INNER JOIN artifacts ua ON ua.id = t.user_artifact_id LEFT JOIN artifacts aa ON aa.id = t.assistant_artifact_id
+      WHERE t.practice_run_id = ? ORDER BY t.created_at DESC LIMIT 20`).all(practiceRunId) as Row[]
+    const messages: Array<{ id: string; role: 'user' | 'assistant'; content: string; source?: string }> = []
+    for (const row of [...rows].reverse()) {
+      messages.push({ id: text(row, 'user_id'), role: 'user', content: text(row, 'user_content') })
+      if (row.assistant_id != null) messages.push({ id: text(row, 'assistant_id'), role: 'assistant', content: text(row, 'assistant_content'), source: `知行 AI · ${text(row, 'source_status')}` })
+    }
+    const event = this.db.prepare("SELECT payload_json FROM practice_events WHERE practice_run_id = ? AND type = 'tutor_reply' ORDER BY sequence DESC LIMIT 1").get(practiceRunId) as Row | undefined
+    return { messages, pins: this.listPracticePins(practiceRunId), lastResponse: event ? json<Record<string, unknown> | null>(event.payload_json, null) : null }
+  }
+
   createTutorInvocation(input: { practiceRunId: string; userArtifactId: string; clientRequestId: string; provider: string; model: string }): TutorInvocation {
     const id = randomUUID(); const now = new Date().toISOString()
     this.db.prepare(`INSERT INTO tutor_invocations(id, practice_run_id, user_artifact_id, client_request_id, provider, model, status, retrieval_status, source_ids_json, created_at)

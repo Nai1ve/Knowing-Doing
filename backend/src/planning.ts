@@ -340,4 +340,15 @@ export class PlanningService {
     const now = new Date().toISOString(); this.db.prepare("UPDATE roadmap_node_progress SET status = 'verified', source = 'lab', verified_at = ?, completed_at = COALESCE(completed_at, ?), revision = revision + 1, updated_at = ? WHERE roadmap_id = ? AND node_id = ? AND status <> 'verified'").run(now, now, now, str(row, 'roadmap_id'), str(row, 'roadmap_node_id'))
     this.db.prepare('INSERT INTO roadmap_events(id, learner_id, roadmap_id, node_id, type, payload_json, created_at) VALUES (?, ?, ?, ?, \'lab_verified\', ?, ?)').run(randomUUID(), str(row, 'learner_id'), str(row, 'roadmap_id'), str(row, 'roadmap_node_id'), JSON.stringify({ practiceRunId }), now)
   }
+
+  markWorkspaceVerifiedInTransaction(practiceRunId: string): void {
+    const row = this.db.prepare("SELECT r.learner_id, c.roadmap_node_id, n.roadmap_id FROM practice_runs r INNER JOIN learning_cases c ON c.id = r.learning_case_id INNER JOIN roadmap_nodes n ON n.id = c.roadmap_node_id WHERE r.id = ? AND r.practice_kind = 'code_workspace' AND r.status = 'resolved'").get(practiceRunId) as Row | undefined
+    if (!row) return
+    const now = new Date().toISOString(); const changed = this.db.prepare("UPDATE roadmap_node_progress SET status = 'verified', source = 'workspace', verified_at = ?, completed_at = COALESCE(completed_at, ?), revision = revision + 1, updated_at = ? WHERE roadmap_id = ? AND node_id = ? AND status <> 'verified'").run(now, now, now, str(row, 'roadmap_id'), str(row, 'roadmap_node_id'))
+    if (changed.changes > 0) this.db.prepare('INSERT INTO roadmap_events(id, learner_id, roadmap_id, node_id, type, payload_json, created_at) VALUES (?, ?, ?, ?, \'workspace_verified\', ?, ?)').run(randomUUID(), str(row, 'learner_id'), str(row, 'roadmap_id'), str(row, 'roadmap_node_id'), JSON.stringify({ practiceRunId }), now)
+  }
+
+  markWorkspaceVerified(practiceRunId: string): void {
+    this.db.transaction(() => this.markWorkspaceVerifiedInTransaction(practiceRunId))()
+  }
 }

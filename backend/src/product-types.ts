@@ -23,6 +23,8 @@ export type EventType =
   | 'workspace_file_saved'
   | 'workspace_execution_started'
   | 'workspace_execution_finished'
+  | 'workspace_completion_checked'
+  | 'workspace_verified'
   | 'workspace_reset'
   | 'workspace_ended'
 
@@ -42,9 +44,10 @@ export type WritingGenerationStatus = 'queued' | 'running' | 'succeeded' | 'fail
 export type WritingDraftPhase = 'indexing' | 'outlining' | 'drafting' | 'humanizing' | 'checking' | 'ready' | 'failed'
 export type WritingDraftStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'interrupted'
 
-export type ArtifactKind = 'user_message' | 'sql' | 'explain' | 'benchmark' | 'result_set' | 'error' | 'external_text' | 'tutor_reply' | 'source_excerpt' | 'note_outline' | 'article_draft' | 'workspace_file' | 'workspace_command' | 'workspace_output' | 'workspace_error'
+export type ArtifactKind = 'user_message' | 'sql' | 'explain' | 'benchmark' | 'result_set' | 'error' | 'external_text' | 'tutor_reply' | 'source_excerpt' | 'note_outline' | 'article_draft' | 'workspace_file' | 'workspace_command' | 'workspace_output' | 'workspace_error' | 'workspace_verification'
 export type ArtifactSourceKind = 'user' | 'lab' | 'workspace' | 'tutor' | 'zhihu' | 'global_search' | 'system'
-export type VerificationStatus = 'verified_lab' | 'external_unverified' | 'model_generated' | 'source_verified' | 'not_applicable'
+export type VerificationStatus = 'verified_lab' | 'verified_workspace' | 'external_unverified' | 'model_generated' | 'source_verified' | 'not_applicable'
+export type WorkspaceCompletionStatus = 'pending' | 'not_matched' | 'verified' | 'superseded'
 
 export interface Learner {
   id: string
@@ -157,6 +160,24 @@ export interface WorkspaceRun {
   createdAt: string
   updatedAt: string
   endedAt: string | null
+}
+
+export interface WorkspaceCompletion {
+  id: string
+  learnerId: string
+  workspaceRunId: string
+  practiceRunId: string
+  learningCaseId: string
+  executionId: string
+  inputFingerprint: string
+  evaluatorVersion: string
+  status: WorkspaceCompletionStatus
+  matchedSignals: string[]
+  missingSignals: string[]
+  artifactRefs: string[]
+  createdAt: string
+  updatedAt: string
+  verifiedAt: string | null
 }
 
 export interface WorkspaceFile {
@@ -471,6 +492,12 @@ export interface PracticeSnapshot {
   tutorTurns: Array<{ id: string; userArtifactId: string | null; assistantArtifactId: string | null; mode: string; provider: string; sourceStatus: string; createdAt: string }>
   pins: PracticePin[]
   completion: PracticeCompletion
+}
+
+export interface WorkspaceTutorHistory {
+  messages: Array<{ id: string; role: 'user' | 'assistant'; content: string; source?: string }>
+  pins: PracticePin[]
+  lastResponse: Record<string, unknown> | null
 }
 
 export interface PracticeHistoryItem {

@@ -261,6 +261,9 @@ function registerCaseWorkspaceRoutes(app: FastifyInstance, service: CaseWorkspac
     reply.code(201).send(await service.startPractice(learnerId(request), String((request.params as { caseId: string }).caseId)))
   })
   app.get('/api/product/workspace-runs/:workspaceRunId', async (request, reply) => reply.send(service.getWorkspace(learnerId(request), workspaceId(request))))
+  app.get('/api/product/workspace-runs/:workspaceRunId/completion', async (request, reply) => reply.send(service.getCompletion(learnerId(request), workspaceId(request))))
+  app.post('/api/product/workspace-runs/:workspaceRunId/completion/recheck', async (request, reply) => reply.send(service.recheckCompletion(learnerId(request), workspaceId(request))))
+  app.get('/api/product/workspace-runs/:workspaceRunId/tutor-history', async (request, reply) => reply.send(service.getTutorHistory(learnerId(request), workspaceId(request))))
   app.get('/api/product/workspace-runs/:workspaceRunId/files/:path', async (request, reply) => {
     const params = request.params as { workspaceRunId: string; path: string }
     reply.send(service.getFile(learnerId(request), params.workspaceRunId, params.path))
