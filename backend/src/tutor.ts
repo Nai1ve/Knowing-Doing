@@ -25,6 +25,15 @@ function stageGuidance(stage: PracticeRun['stage']): Pick<TutorResponse, 'intent
   return { intent: 'reflect', nextQuestion: '这次实践中最值得写进工程复盘的判断转折是什么？', suggestedActions: ['整理根因与证据', '生成可编辑复盘大纲'] }
 }
 
+function workspaceGuidance(stage: PracticeRun['stage']): Pick<TutorResponse, 'intent' | 'nextQuestion' | 'suggestedActions'> {
+  if (stage === 'observe') return { intent: 'clarify', nextQuestion: '你先观察到了什么？请把现象和代码位置对应起来。', suggestedActions: ['指出失败测试或异常输出', '说明你准备先观察哪段代码'] }
+  if (stage === 'hypothesize') return { intent: 'evidence_request', nextQuestion: '你认为失败的直接原因是什么？哪一个最小改动或测试可以验证它？', suggestedActions: ['写下假设与预期', '先运行案例提供的 pytest 命令'] }
+  if (stage === 'inspect') return { intent: 'clarify', nextQuestion: '当前实现和测试的约束分别是什么？哪一项决定了修复方式？', suggestedActions: ['定位输入边界', '对照测试断言与实现'] }
+  if (stage === 'attempt') return { intent: 'attempt_review', nextQuestion: '这次修改后的测试结果说明了什么？还有哪些边界没有验证？', suggestedActions: ['比较修改前后的输出', '补充一个最小边界测试'] }
+  if (stage === 'verify') return { intent: 'tradeoff', nextQuestion: '你准备怎样证明修复既满足目标，又没有破坏原有行为？', suggestedActions: ['运行完整 pytest', '记录关键测试和结果'] }
+  return { intent: 'reflect', nextQuestion: '这次案例中最值得迁移到其他代码的问题解决方法是什么？', suggestedActions: ['整理根因与验证', '记录仍需进一步练习的地方'] }
+}
+
 function stripThinking(value: string): string {
   const endTokens = ['<｜end▁of▁thinking｜>', '</think>', '</thinking>']
   let result = value
@@ -74,7 +83,7 @@ function sourcesForPrompt(sources: SourceItem[]): Array<Pick<SourceItem, 'id' | 
 }
 
 export function tutorResponseFromGenerated(run: PracticeRun, context: TutorContext, generated: TutorGenerated, sources: SourceItem[], retrievalStatus: 'retrieved' | 'empty' | 'unavailable' = sources.length > 0 ? 'retrieved' : 'empty'): TutorResponse {
-  const guidance = stageGuidance(run.stage)
+  const guidance = context.workspace ? workspaceGuidance(run.stage) : stageGuidance(run.stage)
   return { response: generated.response, ...guidance, currentGap: context.hot.currentGap ?? '还需要一份可验证的实验或解释证据。', evidenceRefs: context.rawEvidence.map((item) => item.id), sourceRefs: generated.sourceRefs, provider: 'model', sourceStatus: generated.sourceRefs.length > 0 || sources.length > 0 ? 'retrieved' : retrievalStatus === 'unavailable' ? 'unavailable' : 'not_needed' }
 }
 
@@ -93,7 +102,7 @@ export class TutorEngine {
       const response = await fetch(modelUrl(this.config.modelBaseUrl), {
         method: 'POST', signal: controller.signal, headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${this.config.modelApiKey}` },
         body: JSON.stringify({ model: this.config.modelName, temperature: 0.2, stream: true, thinking: { type: 'disabled' }, messages: [
-          { role: 'system', content: '你是知行 Tutor。请用中文自然语言回答，不要输出 JSON、思维过程或固定模板。只根据实践上下文和给定来源回答：帮助用户观察、提出可验证假设、设计最小实验并解释证据。不要替用户宣布实验成功，不得伪造知乎来源。需要引用来源时，在对应句末使用 [[source:来源id]]；不需要引用时不要添加标记。' },
+          { role: 'system', content: context.workspace ? '你是知行代码工作区 Tutor。请用中文自然语言回答，不要输出 JSON、思维过程或固定模板。只根据当前案例、代码文件、pytest 输出、实践事件和给定来源回答：帮助用户观察代码行为、提出可验证假设、设计最小修改和验证步骤。不要替用户写文件，不要把测试通过直接宣布为能力掌握，不得伪造知乎来源。需要引用来源时，在对应句末使用 [[source:来源id]]；不需要引用时不要添加标记。' : '你是知行 Tutor。请用中文自然语言回答，不要输出 JSON、思维过程或固定模板。只根据实践上下文和给定来源回答：帮助用户观察、提出可验证假设、设计最小实验并解释证据。不要替用户宣布实验成功，不得伪造知乎来源。需要引用来源时，在对应句末使用 [[source:来源id]]；不需要引用时不要添加标记。' },
           { role: 'user', content: JSON.stringify({ message, context: { ...context, availableSourceIds: sources.map((source) => source.id), sources: sourcesForPrompt(sources) } }) },
         ] }),
       })

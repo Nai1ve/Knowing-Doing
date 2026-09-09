@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { LabConfig } from '../src/config.js'
-import type { TutorContext } from '../src/context.js'
+import type { TutorContext, WorkspaceTutorContext } from '../src/context.js'
 import type { PracticeRun, SourceItem } from '../src/product-types.js'
 import { TutorEngine, TutorProviderError } from '../src/tutor.js'
 
@@ -13,6 +13,32 @@ function engine(): TutorEngine {
 }
 
 describe('TutorEngine', () => {
+  it('uses the workspace-specific prompt and bounded context', async () => {
+    let requestBody: { messages?: Array<{ role: string; content: string }> } | undefined
+    vi.stubGlobal('fetch', vi.fn(async (_input: unknown, init?: RequestInit) => {
+      requestBody = JSON.parse(String(init?.body)) as typeof requestBody
+      return new Response(['data: {"choices":[{"delta":{"content":"先看失败断言。"}}]}', '', 'data: [DONE]', ''].join('\n'), { headers: { 'Content-Type': 'text/event-stream' } })
+    }))
+    const workspaceRun: PracticeRun = { ...run, caseId: 'workspace:case-1', practiceKind: 'code_workspace', learningCaseId: 'case-1' }
+    const workspaceContext: WorkspaceTutorContext = {
+      ...context,
+      hot: { ...context.hot, goal: '完成 Python 测试案例', caseId: workspaceRun.caseId },
+      workspace: {
+        status: 'active',
+        node: { title: 'Python 测试', summary: '理解测试反馈', completionStandard: '完成一次修复并验证' },
+        case: { title: '边界修复', scenario: '订单汇总器', learningGoal: '定位测试失败', difficulty: 'applied', tutorContext: { concepts: ['边界条件'], likelyMisconceptions: [], evidenceToNotice: ['失败断言'] } },
+        currentTask: { key: 'observe', instruction: '运行测试', recommendedCommands: ['pytest -q'], expectedObservation: '出现失败' },
+        recentExecutions: [{ command: 'pytest -q', status: 'failed', exitCode: 1, stdout: '', stderr: 'FAILED', durationMs: 20 }],
+        recentFiles: [{ path: 'order.py', revision: 1, content: 'def total(items): pass' }],
+      },
+    }
+    await engine().generate(workspaceRun, workspaceContext, '我看到测试失败了', [])
+    expect(requestBody?.messages?.[0]?.content).toContain('代码工作区 Tutor')
+    expect(requestBody?.messages?.[1]?.content).toContain('pytest -q')
+    expect(requestBody?.messages?.[1]?.content).not.toContain('mysql-order-list-index-001')
+    vi.unstubAllGlobals()
+  })
+
   it('filters reasoning and unknown source markers while streaming natural language', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => new Response([
       'data: {"choices":[{"delta":{"reasoning_content":"do not show"}}]}',

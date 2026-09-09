@@ -13,6 +13,8 @@ export const router = createRouter({
     { path: '/route', name: 'route', redirect: '/roadmap' },
     { path: '/roadmap', name: 'roadmap', component: () => import('@/views/RouteView.vue') },
     { path: '/roadmap/:roadmapId/node/:nodeId', name: 'roadmap-node', component: () => import('@/views/RouteView.vue') },
+    { path: '/roadmap/:roadmapId/node/:nodeId/case', name: 'case-setup', component: () => import('@/views/CaseSetupView.vue') },
+    { path: '/workspace/:workspaceRunId', name: 'code-workspace', component: () => import('@/views/CodeWorkspaceView.vue') },
     { path: '/lesson', name: 'lesson', component: () => import('@/views/LessonView.vue') },
     { path: '/notes', name: 'notes', component: () => import('@/views/NotesView.vue') },
     { path: '/writing', name: 'writing', component: () => import('@/views/WritingView.vue') },

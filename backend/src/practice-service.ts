@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto'
 import type { CaseId, LabExecutionResult } from './domain.js'
 import type { LabScheduler } from './scheduler.js'
 import { decideAfterLab, decideAfterMessage, decideAfterVerification, evaluatePracticeCompletion } from './coach.js'
-import { buildTutorContext } from './context.js'
+import { buildTutorContext, buildWorkspaceTutorContext } from './context.js'
 import { createPlan } from './planner.js'
 import type { ProductRepository } from './product-repository.js'
 import type { Artifact, CaseStage, DiagnosticSession, DiagnosticTargetKey, Intake, LabSegment, MemoryItem, PlanProposal, PlanUnit, PracticeEvent, PracticeHistoryPage, PracticePin, PracticeRun, PracticeSnapshot, SourceItem, TutorInvocation, TutorResponse, TutorSource } from './product-types.js'
@@ -453,7 +453,14 @@ export class PracticeService {
       this.repository.updateTutorInvocation(invocation.id, { status: 'running', retrievalStatus: retrievalResult.status, sourceIds: sources.map((source) => source.id), failureCode: null, failureMessage: null, latencyMs: null })
       await emit?.({ type: 'sources', invocationId: invocation.id, status: retrievalResult.status, items: this.tutorSources(sources), errorCode: retrievalResult.errorCode })
       const contextSnapshot = this.repository.snapshot(input.runId)
-      const context = buildTutorContext({ goal: this.goalForRun(run), run, events: contextSnapshot.events, artifacts: contextSnapshot.artifacts, pathNodes: contextSnapshot.pathNodes, stageMemories: contextSnapshot.stageMemories, sourceIds: sources.map((source) => source.id) })
+      const context = run.practiceKind === 'code_workspace'
+        ? buildWorkspaceTutorContext({
+          goal: this.goalForRun(run), run, learningCase: this.repository.getLearningCaseForLearner(run.learningCaseId ?? '', run.learnerId),
+          workspaceStatus: this.repository.getWorkspaceRunForPractice(run.learnerId, run.id)?.status ?? 'unknown',
+          events: contextSnapshot.events, artifacts: contextSnapshot.artifacts, pathNodes: contextSnapshot.pathNodes,
+          stageMemories: contextSnapshot.stageMemories, sourceIds: sources.map((source) => source.id),
+        })
+        : buildTutorContext({ goal: this.goalForRun(run), run, events: contextSnapshot.events, artifacts: contextSnapshot.artifacts, pathNodes: contextSnapshot.pathNodes, stageMemories: contextSnapshot.stageMemories, sourceIds: sources.map((source) => source.id) })
       const generatedResponse = await this.tutor.generate(run, context, input.message, sources, async (delta) => { await emit?.({ type: 'answer_delta', invocationId: invocation.id, delta }) })
       const tutor = tutorResponseFromGenerated(run, context, generatedResponse, sources, retrievalResult.status)
       const assistantArtifact = this.repository.createArtifact({ learnerId: run.learnerId, practiceRunId: input.runId, kind: 'tutor_reply', sourceKind: 'tutor', verificationStatus: 'model_generated', content: tutor.response, metadata: { intent: tutor.intent, sourceRefs: tutor.sourceRefs, invocationId: invocation.id } })
@@ -611,6 +618,9 @@ export class PracticeService {
     return { artifact, snapshot: this.repository.snapshot(runId) }
   }
 
-  private goalForRun(run: PracticeRun): string { return run.caseId === 'mysql-order-list-index-001' ? '学习 MySQL 慢查询优化' : `学习 ${run.caseId}` }
+  private goalForRun(run: PracticeRun): string {
+    if (run.practiceKind === 'code_workspace') return `完成代码工作区案例 ${run.learningCaseId ?? run.caseId}`
+    return run.caseId === 'mysql-order-list-index-001' ? '学习 MySQL 慢查询优化' : `学习 ${run.caseId}`
+  }
   private inferTechnology(goal: string): string { return /k8s|kubernetes/i.test(goal) ? 'Kubernetes' : /redis/i.test(goal) ? 'Redis' : /kafka/i.test(goal) ? 'Kafka' : 'MySQL 8' }
 }

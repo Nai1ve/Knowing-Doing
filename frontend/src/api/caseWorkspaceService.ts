@@ -1,4 +1,4 @@
-import { apiClient } from './client'
+import { ApiError, apiClient } from './client'
 import type { ProductCaseGenerationJob, ProductCaseInput, ProductLearningCase, ProductWorkspaceSummary } from '@/types/product'
 import { createClientId } from '@/utils/client-id'
 
@@ -15,9 +15,17 @@ export function createCaseRequest(nodeId: string, input: ProductCaseInput, optio
 }
 export function getCaseGenerationJob(jobId: string): Promise<{ case: ProductLearningCase; job: ProductCaseGenerationJob }> { return request(`/product/case-generation-jobs/${encodeURIComponent(jobId)}`) }
 export function retryCaseGeneration(jobId: string): Promise<{ case: ProductLearningCase; job: ProductCaseGenerationJob }> { return request(`/product/case-generation-jobs/${encodeURIComponent(jobId)}/retry`, { method: 'POST' }) }
+export function getLearningCase(caseId: string): Promise<ProductLearningCase> { return request(`/product/learning-cases/${encodeURIComponent(caseId)}`) }
 export function startCasePractice(caseId: string): Promise<ProductWorkspaceSummary> { return request(`/product/learning-cases/${encodeURIComponent(caseId)}/practice`, { method: 'POST' }) }
 export function getWorkspaceRun(workspaceRunId: string): Promise<ProductWorkspaceSummary> { return request(`/product/workspace-runs/${encodeURIComponent(workspaceRunId)}`) }
 export function saveWorkspaceFile(workspaceRunId: string, path: string, content: string, expectedRevision: number): Promise<ProductWorkspaceSummary> { return request(`/product/workspace-runs/${encodeURIComponent(workspaceRunId)}/files/${encodeURIComponent(path)}`, { method: 'PATCH', body: JSON.stringify({ content, expectedRevision }) }) }
-export function executeWorkspace(workspaceRunId: string, command: string, clientRequestId = createClientId()): Promise<{ execution: ProductWorkspaceSummary['executions'][number]; workspace: ProductWorkspaceSummary }> { return request(`/product/workspace-runs/${encodeURIComponent(workspaceRunId)}/executions`, { method: 'POST', body: JSON.stringify({ command, clientRequestId }) }) }
+export async function executeWorkspace(workspaceRunId: string, command: string, clientRequestId = createClientId()): Promise<{ execution: ProductWorkspaceSummary['executions'][number]; workspace: ProductWorkspaceSummary }> {
+  try {
+    return await request(`/product/workspace-runs/${encodeURIComponent(workspaceRunId)}/executions`, { method: 'POST', body: JSON.stringify({ command, clientRequestId }) })
+  } catch (error) {
+    if (error instanceof ApiError && [422, 504].includes(error.status) && error.payload && typeof error.payload === 'object' && 'execution' in error.payload && 'workspace' in error.payload) return error.payload as { execution: ProductWorkspaceSummary['executions'][number]; workspace: ProductWorkspaceSummary }
+    throw error
+  }
+}
 export function resetWorkspace(workspaceRunId: string): Promise<ProductWorkspaceSummary> { return request(`/product/workspace-runs/${encodeURIComponent(workspaceRunId)}/reset`, { method: 'POST' }) }
 export function endWorkspace(workspaceRunId: string): Promise<ProductWorkspaceSummary> { return request(`/product/workspace-runs/${encodeURIComponent(workspaceRunId)}/end`, { method: 'POST' }) }

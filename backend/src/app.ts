@@ -254,6 +254,9 @@ function registerCaseWorkspaceRoutes(app: FastifyInstance, service: CaseWorkspac
   app.post('/api/product/case-generation-jobs/:jobId/retry', async (request, reply) => {
     reply.code(202).send(service.retryCaseGeneration(learnerId(request), String((request.params as { jobId: string }).jobId)))
   })
+  app.get('/api/product/learning-cases/:caseId', async (request, reply) => {
+    reply.send(service.getLearningCase(learnerId(request), String((request.params as { caseId: string }).caseId)))
+  })
   app.post('/api/product/learning-cases/:caseId/practice', async (request, reply) => {
     reply.code(201).send(await service.startPractice(learnerId(request), String((request.params as { caseId: string }).caseId)))
   })

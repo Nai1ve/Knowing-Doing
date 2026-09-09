@@ -11,7 +11,7 @@ const maxOutputBytes = 1024 * 1024
 const leaseMs = 30 * 60_000
 const idleMs = 5 * 60_000
 
-type Run = { id: string; containerId: string; files: Map<string, number>; commands: Set<string>; leaseExpiresAt: number; lastUsedAt: number; ended: boolean }
+type Run = { id: string; containerId: string; files: Map<string, number>; fileBytes: Map<string, number>; commands: Set<string>; leaseExpiresAt: number; lastUsedAt: number; ended: boolean }
 const runs = new Map<string, Run>()
 
 class RunnerError extends Error {
@@ -51,15 +51,18 @@ const writeScript = "import os,sys; p=sys.argv[1]; os.makedirs(os.path.dirname(p
 
 async function writeContainerFile(run: Run, path: string, content: string): Promise<void> {
   if (!validPath(path)) throw new RunnerError('invalid_file_path', '文件路径不受支持')
-  if (content.length > MAX_FILE_BYTES) throw new RunnerError('file_too_large', '文件内容过大', 422)
-  await docker(['exec', '-i', run.containerId, 'python', '-c', writeScript, `/workspace/${path}`], { input: content, timeout: 10_000 }); run.files.set(path, (run.files.get(path) ?? 0) + 1); run.lastUsedAt = Date.now(); run.leaseExpiresAt = Date.now() + leaseMs
+  const bytes = Buffer.byteLength(content, 'utf8')
+  if (bytes > MAX_FILE_BYTES) throw new RunnerError('file_too_large', '文件内容过大', 422)
+  const totalBytes = [...run.fileBytes.entries()].reduce((total, [filePath, fileBytes]) => total + (filePath === path ? 0 : fileBytes), 0) + bytes
+  if (totalBytes > MAX_TOTAL_FILE_BYTES) throw new RunnerError('workspace_total_too_large', '工作区文件总大小过大', 422)
+  await docker(['exec', '-i', run.containerId, 'python', '-c', writeScript, `/workspace/${path}`], { input: content, timeout: 10_000 }); run.files.set(path, (run.files.get(path) ?? 0) + 1); run.fileBytes.set(path, bytes); run.lastUsedAt = Date.now(); run.leaseExpiresAt = Date.now() + leaseMs
 }
 
 const clearScript = "import os,shutil; p='/workspace'; [shutil.rmtree(os.path.join(p,n)) if os.path.isdir(os.path.join(p,n)) else os.remove(os.path.join(p,n)) for n in os.listdir(p)]"
 
 async function clearContainerFiles(run: Run): Promise<void> {
   await docker(['exec', run.containerId, 'python', '-c', clearScript], { timeout: 10_000 })
-  run.files.clear()
+  run.files.clear(); run.fileBytes.clear()
 }
 
 async function createRun(input: Record<string, unknown>): Promise<{ runnerRunId: string; leaseExpiresAt: string }> {
@@ -70,13 +73,13 @@ async function createRun(input: Record<string, unknown>): Promise<{ runnerRunId:
   for (const item of files) {
     if (!item || typeof item !== 'object') throw new RunnerError('invalid_file', '文件格式无效')
     const file = item as Record<string, unknown>; const path = stringField(file, 'path'); const content = file.content
-    if (!validPath(path) || paths.has(path) || typeof content !== 'string' || content.length > MAX_FILE_BYTES) throw new RunnerError('invalid_file', '文件格式无效')
+    if (!validPath(path) || paths.has(path) || typeof content !== 'string' || Buffer.byteLength(content, 'utf8') > MAX_FILE_BYTES) throw new RunnerError('invalid_file', '文件格式无效')
     paths.add(path); totalBytes += Buffer.byteLength(content, 'utf8')
   }
   if (totalBytes > MAX_TOTAL_FILE_BYTES) throw new RunnerError('invalid_file', '工作区文件总大小过大', 422)
   const allowed = new Set(commands.map((item) => String(item).trim())); const id = randomUUID()
   const created = await docker(['run', '-d', '--rm', '--name', `zhixing-ws-${id}`, '--network', 'none', '--cap-drop=ALL', '--security-opt', 'no-new-privileges', '--read-only', '--tmpfs', '/workspace:rw,nosuid,nodev,size=32m', '--tmpfs', '/tmp:rw,noexec,nosuid,size=16m', '--memory', '512m', '--cpus', '1', '--pids-limit', '128', '--workdir', '/workspace', image, 'tail', '-f', '/dev/null'])
-  const containerId = created.stdout.trim(); const run: Run = { id, containerId, files: new Map(), commands: allowed, leaseExpiresAt: Date.now() + leaseMs, lastUsedAt: Date.now(), ended: false }; runs.set(id, run)
+  const containerId = created.stdout.trim(); const run: Run = { id, containerId, files: new Map(), fileBytes: new Map(), commands: allowed, leaseExpiresAt: Date.now() + leaseMs, lastUsedAt: Date.now(), ended: false }; runs.set(id, run)
   try { for (const item of files) { const file = item as Record<string, unknown>; await writeContainerFile(run, stringField(file, 'path'), file.content as string) } } catch (error) { await endRun(run).catch(() => undefined); throw error }
   return { runnerRunId: id, leaseExpiresAt: new Date(run.leaseExpiresAt).toISOString() }
 }
@@ -85,7 +88,8 @@ async function endRun(run: Run): Promise<void> { if (run.ended) return; run.ende
 
 async function route(request: IncomingMessage, reply: ServerResponse): Promise<void> {
   if (request.method === 'GET' && request.url === '/health') {
-    try { await docker(['image', 'inspect', image], { timeout: 5_000 }); return send(reply, 200, { ready: true, dockerReady: true, template: image }) } catch { return send(reply, 503, { ready: false, dockerReady: false, template: image }) }
+    try { await docker(['image', 'inspect', image], { timeout: 5_000 }) } catch { return send(reply, 503, { ready: false, serviceReady: true, templateReady: false, containerCreateReady: false, template: image }) }
+    try { await docker(['run', '--rm', '--network', 'none', '--cap-drop=ALL', '--security-opt', 'no-new-privileges', '--read-only', '--tmpfs', '/workspace:rw,nosuid,nodev,size=32m', '--tmpfs', '/tmp:rw,noexec,nosuid,size=16m', '--memory', '512m', '--cpus', '1', '--pids-limit', '128', '--workdir', '/workspace', image, 'true'], { timeout: 10_000 }); return send(reply, 200, { ready: true, serviceReady: true, templateReady: true, containerCreateReady: true, dockerReady: true, template: image }) } catch { return send(reply, 503, { ready: false, serviceReady: true, templateReady: true, containerCreateReady: false, dockerReady: false, template: image }) }
   }
   if (request.headers['x-workspace-runner-token'] !== token) return send(reply, 401, { error: { code: 'unauthorized', message: 'Runner token 无效' } })
   const url = new URL(request.url ?? '/', `http://${request.headers.host ?? 'localhost'}`); const parts = url.pathname.split('/').filter(Boolean); const runId = parts[3] ?? null
@@ -95,7 +99,7 @@ async function route(request: IncomingMessage, reply: ServerResponse): Promise<v
     const run = runs.get(runId); if (!run || run.ended) throw new RunnerError('runner_run_not_found', 'Runner 工作区不存在', 404)
     if (request.method === 'GET' && parts.length === 4) return send(reply, 200, { status: 'active', leaseExpiresAt: new Date(run.leaseExpiresAt).toISOString() })
     if (request.method === 'PUT' && parts[4] === 'files') {
-      const path = decodeURIComponent(parts.slice(5).join('/')); const input = await body(request); const expected = Number(input.expectedRevision); const current = run.files.get(path) ?? 0; if (!Number.isInteger(expected) || expected !== current) throw new RunnerError('file_revision_conflict', 'Runner 文件版本冲突', 409); const content = input.content; if (typeof content !== 'string' || content.length > 262144) throw new RunnerError('file_too_large', '文件内容过大', 422); await writeContainerFile(run, path, content); return send(reply, 200, { revision: current + 1 })
+      const path = decodeURIComponent(parts.slice(5).join('/')); const input = await body(request); const expected = Number(input.expectedRevision); const current = run.files.get(path) ?? 0; if (!Number.isInteger(expected) || expected !== current) throw new RunnerError('file_revision_conflict', 'Runner 文件版本冲突', 409); const content = input.content; if (typeof content !== 'string') throw new RunnerError('invalid_file', '文件格式无效'); await writeContainerFile(run, path, content); return send(reply, 200, { revision: current + 1 })
     }
     if (request.method === 'POST' && parts[4] === 'executions') {
       const input = await body(request); const command = stringField(input, 'command'); if (!validCommand(command, run.commands)) throw new RunnerError('unsupported_command', '命令不在 Runner allowlist 内', 400); const started = Date.now(); const args = command === 'pytest -q' ? ['exec', run.containerId, 'python', '-m', 'pytest', '-q'] : ['exec', run.containerId, ...command.split(/\s+/)];
@@ -110,7 +114,7 @@ async function route(request: IncomingMessage, reply: ServerResponse): Promise<v
         throw error
       }
     }
-    if (request.method === 'POST' && parts[4] === 'reset') { const input = await body(request); const files = input.files; if (!Array.isArray(files) || files.length < 1 || files.length > 10) throw new RunnerError('invalid_request', 'files 必须是 1 到 10 个文件'); await clearContainerFiles(run); for (const item of files) { const file = item as Record<string, unknown>; if (typeof file.content !== 'string') throw new RunnerError('invalid_file', '文件格式无效'); await writeContainerFile(run, stringField(file, 'path'), file.content) }; return send(reply, 204, {}) }
+    if (request.method === 'POST' && parts[4] === 'reset') { const input = await body(request); const files = input.files; if (!Array.isArray(files) || files.length < 1 || files.length > 10) throw new RunnerError('invalid_request', 'files 必须是 1 到 10 个文件'); const paths = new Set<string>(); let totalBytes = 0; for (const item of files) { if (!item || typeof item !== 'object') throw new RunnerError('invalid_file', '文件格式无效'); const file = item as Record<string, unknown>; const path = stringField(file, 'path'); const content = file.content; if (paths.has(path) || typeof content !== 'string' || !validPath(path) || Buffer.byteLength(content, 'utf8') > MAX_FILE_BYTES) throw new RunnerError('invalid_file', '文件格式无效'); paths.add(path); totalBytes += Buffer.byteLength(content, 'utf8') }; if (totalBytes > MAX_TOTAL_FILE_BYTES) throw new RunnerError('workspace_total_too_large', '工作区文件总大小过大', 422); await clearContainerFiles(run); for (const item of files) { const file = item as Record<string, unknown>; await writeContainerFile(run, stringField(file, 'path'), file.content as string) }; return send(reply, 204, {}) }
     if (request.method === 'POST' && parts[4] === 'end') { await endRun(run); return send(reply, 204, {}) }
     throw new RunnerError('not_found', 'Runner 路径不存在', 404)
   } catch (error) { if (error instanceof RunnerError) return send(reply, error.statusCode, { error: { code: error.code, message: error.message } }); return send(reply, 500, { error: { code: 'runner_internal_error', message: 'Runner 内部错误' } }) }

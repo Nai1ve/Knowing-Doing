@@ -46,6 +46,7 @@ export interface LabConfig {
   workspaceRunnerToken: string
   workspaceRunnerTimeoutMs: number
   workspaceRunnerFake: boolean
+  caseBuilderProvider: 'fixture' | 'model'
 }
 
 export function loadConfig(): LabConfig {
@@ -90,6 +91,7 @@ export function loadConfig(): LabConfig {
     workspaceRunnerToken: process.env.WORKSPACE_RUNNER_TOKEN ?? 'development-workspace-runner-token',
     workspaceRunnerTimeoutMs: numberEnv('WORKSPACE_RUNNER_TIMEOUT_MS', 35_000),
     workspaceRunnerFake: process.env.WORKSPACE_RUNNER_FAKE === 'true',
+    caseBuilderProvider: process.env.ZHIXING_CASE_BUILDER_PROVIDER === 'model' ? 'model' : 'fixture',
     caseIds: [
       'mysql-order-list-index-001',
       'mysql-deadlock-lock-order-001',

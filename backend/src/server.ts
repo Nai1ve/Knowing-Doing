@@ -12,7 +12,7 @@ import { CurationService, ModelCurationSummarizer } from './curation-service.js'
 import { DeepSeekWritingAgent } from './writing-agent.js'
 import { PlanningService } from './planning.js'
 import { CaseWorkspaceService } from './case-workspace-service.js'
-import { FixtureCaseBuilder } from './case-builder.js'
+import { FixtureCaseBuilder, ModelCaseBuilder } from './case-builder.js'
 import { FakeWorkspaceRunnerClient, HttpWorkspaceRunnerClient } from './workspace-runner-client.js'
 
 const config = loadConfig()
@@ -30,7 +30,8 @@ agentPlanningService.recoverRoadmapGenerations()
 const workspaceRunner = config.workspaceRunnerFake
   ? new FakeWorkspaceRunnerClient()
   : new HttpWorkspaceRunnerClient(config.workspaceRunnerUrl, config.workspaceRunnerToken, config.workspaceRunnerTimeoutMs)
-const caseWorkspaceService = new CaseWorkspaceService(productRepository, new FixtureCaseBuilder(), workspaceRunner)
+const caseBuilder = config.caseBuilderProvider === 'model' ? new ModelCaseBuilder(config) : new FixtureCaseBuilder()
+const caseWorkspaceService = new CaseWorkspaceService(productRepository, caseBuilder, workspaceRunner)
 caseWorkspaceService.resumeCaseJobs()
 await caseWorkspaceService.resumeWorkspaces()
 const { app, scheduler } = buildApp({

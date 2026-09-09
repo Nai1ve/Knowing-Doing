@@ -742,6 +742,17 @@ export class ProductRepository {
     return runFrom(row)
   }
 
+  getLearningCaseForLearner(id: string, learnerId: string): LearningCase {
+    const row = this.db.prepare('SELECT * FROM learning_cases WHERE id = ? AND learner_id = ?').get(id, learnerId) as Row | undefined
+    if (!row) throw new Error(`Learning case not found: ${id}`)
+    return learningCaseFrom(row)
+  }
+
+  getWorkspaceRunForPractice(learnerId: string, practiceRunId: string): WorkspaceRun | null {
+    const row = this.db.prepare('SELECT w.* FROM workspace_runs w INNER JOIN practice_runs r ON r.id = w.practice_run_id WHERE w.practice_run_id = ? AND w.learner_id = ? AND r.learner_id = ? ORDER BY w.updated_at DESC LIMIT 1').get(practiceRunId, learnerId, learnerId) as Row | undefined
+    return row ? workspaceRunFrom(row) : null
+  }
+
   listPracticeHistory(learnerId: string, options: { cursor?: { updatedAt: string; id: string }; limit: number }): PracticeHistoryRecord[] {
     const cursorClause = options.cursor ? 'AND (r.updated_at < ? OR (r.updated_at = ? AND r.id < ?))' : ''
     const values = options.cursor ? [learnerId, options.cursor.updatedAt, options.cursor.updatedAt, options.cursor.id, options.limit] : [learnerId, options.limit]

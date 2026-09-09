@@ -18,6 +18,9 @@ function createWorkspaceNode(repository: ProductRepository, learnerId: string): 
   repository.ensureLearner(learnerId); const now = new Date().toISOString(); const roadmapId = 'roadmap-workspace-1'; const nodeId = 'node-python-1'
   repository.db.prepare("INSERT INTO learning_roadmaps(id, learner_id, template_key, goal, status, revision, input_snapshot_json, created_at, updated_at) VALUES (?, ?, 'agent-roadmap-v2', '学习 Python 测试', 'active', 1, '{}', ?, ?)").run(roadmapId, learnerId, now, now)
   repository.db.prepare("INSERT INTO roadmap_nodes(id, roadmap_id, parent_id, node_key, node_type, title, summary, knowledge_card_json, completion_standard, estimated_minutes, priority, position, learning_mode, capability_key, case_id, created_at) VALUES (?, ?, NULL, 'python-testing', 'lab', 'Python 测试实践', '完成一个 Python 测试修复案例。', '{}', '测试通过', 90, 1, 1, 'workspace', 'python.testing', NULL, ?)").run(nodeId, roadmapId, now)
+  repository.db.prepare("INSERT INTO roadmap_node_evidence(id, roadmap_id, node_id, source_type, source_id, excerpt, position, created_at) VALUES ('workspace-evidence-1', ?, ?, 'planning_message', 'message-1', '用户希望通过测试定位边界条件并验证修复。', 1, ?)").run(roadmapId, nodeId, now)
+  repository.db.prepare("INSERT INTO learner_profile_snapshots(id, learner_id, planning_session_id, version, status, input_fingerprint, summary_json, created_at) VALUES ('workspace-profile-1', ?, NULL, 1, 'current', 'profile-fingerprint', '{}', ?)").run(learnerId, now)
+  repository.db.prepare("INSERT INTO learner_profile_dimensions(id, snapshot_id, dimension_key, level, confidence, summary, next_validation) VALUES ('workspace-dimension-1', 'workspace-profile-1', 'python.testing', 'exposed', 0.6, '接触过测试但需要实践验证。', '完成一次 pytest 修复案例。')").run()
   return nodeId
 }
 
@@ -33,6 +36,8 @@ describe('CaseWorkspaceService', () => {
     await vi.waitFor(() => expect(service.getCaseGenerationJob(learnerId, first.job.id).job.status).toBe('succeeded'))
     const ready = service.getCaseGenerationJob(learnerId, first.job.id)
     expect(ready.case.provider).toBe('fixture'); expect(ready.case.spec?.environment.templateKey).toBe('python-pytest-v1')
+    expect(ready.case.inputSnapshot.context).toMatchObject({ roadmapRationale: [{ sourceType: 'planning_message', sourceId: 'message-1' }], learnerProfile: { snapshotId: 'workspace-profile-1', dimensions: [{ key: 'python.testing', level: 'exposed' }] } })
+    expect(repository.db.prepare('SELECT phase, status FROM case_generation_attempts WHERE case_generation_job_id = ?').all(first.job.id)).toEqual([{ phase: 'generate', status: 'succeeded' }])
 
     const workspace = await service.startPractice(learnerId, ready.case.id)
     expect(workspace.workspace.status).toBe('active'); expect(workspace.files).toHaveLength(3)
@@ -46,6 +51,10 @@ describe('CaseWorkspaceService', () => {
     const snapshot = repository.snapshot(workspace.practice.id)
     expect(snapshot.artifacts.map((artifact) => artifact.kind)).toEqual(expect.arrayContaining(['workspace_file', 'workspace_command', 'workspace_output']))
     expect(repository.db.prepare('SELECT COUNT(*) AS count FROM learning_cases WHERE learner_id = ?').get(learnerId)).toMatchObject({ count: 1 })
+    const ended = await service.end(learnerId, workspace.workspace.id)
+    expect(ended.workspace.status).toBe('ended')
+    await expect(service.execute(learnerId, workspace.workspace.id, 'pytest -q', 'exec-after-end')).rejects.toMatchObject({ code: 'workspace_not_active' })
+    await expect(service.saveFile(learnerId, workspace.workspace.id, source.path, 'after end', fixed.files.find((file) => file.path === source.path)!.revision)).rejects.toMatchObject({ code: 'workspace_not_active' })
   }))
 
   it('protects ownership, revision conflicts and active workspace uniqueness', async () => withService(async (service, repository) => {
@@ -56,6 +65,12 @@ describe('CaseWorkspaceService', () => {
     expect(second.workspace.id).toBe(first.workspace.id)
     expect(() => service.getWorkspace('other-workspace', first.workspace.id)).toThrow('工作区不存在')
     const file = first.files[0]!; await expect(service.saveFile(learnerId, first.workspace.id, file.path, 'stale', file.revision + 1)).rejects.toMatchObject({ code: 'file_revision_conflict' })
+    const largeContent = 'x'.repeat(240 * 1024)
+    const now = new Date().toISOString()
+    const insertExtraFile = repository.db.prepare('INSERT INTO workspace_files(id, workspace_run_id, path, content, checksum, revision, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 1, ?, ?)')
+    for (let index = 0; index < 9; index += 1) insertExtraFile.run(`extra-${index}`, first.workspace.id, `extra-${index}.txt`, largeContent, 'fixture', now, now)
+    await expect(service.saveFile(learnerId, first.workspace.id, file.path, 'replacement', file.revision)).rejects.toMatchObject({ code: 'workspace_total_too_large' })
+    expect(service.getWorkspace(learnerId, first.workspace.id).workspace.status).toBe('active')
     const filePlan = repository.db.prepare('EXPLAIN QUERY PLAN SELECT * FROM workspace_files WHERE workspace_run_id = ? ORDER BY path').all(first.workspace.id) as Array<{ detail: string }>
     expect(filePlan.some((row) => row.detail.includes('idx_workspace_files_run_path'))).toBe(true)
     const jobPlan = repository.db.prepare('EXPLAIN QUERY PLAN SELECT * FROM case_generation_jobs WHERE learner_id = ? AND status = ? ORDER BY updated_at DESC').all(learnerId, 'succeeded') as Array<{ detail: string }>

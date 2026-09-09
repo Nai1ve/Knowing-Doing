@@ -4,7 +4,7 @@ import { BookOpen, ExternalLink, LoaderCircle, Pin, RotateCcw, Send, Sparkles } 
 import MarkdownContent from './MarkdownContent.vue'
 import type { ProductPracticePin, ProductTutorMessage, ProductTutorSource } from '@/types/product'
 
-const props = defineProps<{
+const props = withDefaults(defineProps<{
   messages: ProductTutorMessage[]
   sources: ProductTutorSource[]
   sourceStatus?: string
@@ -14,7 +14,18 @@ const props = defineProps<{
   failure?: { invocationId: string; code: string; message: string; retryable: boolean } | null
   pinnedIds?: string[]
   disabled?: boolean
-}>()
+  eyebrow?: string
+  title?: string
+  emptyTitle?: string
+  emptyDescription?: string
+  placeholder?: string
+}>(), {
+  eyebrow: 'Tutor Agent · 知乎知识',
+  title: '和你的导师讨论',
+  emptyTitle: '从观察开始',
+  emptyDescription: '告诉我你观察到的现象。我会追问判断依据，不直接替你下结论。',
+  placeholder: '描述你的判断、错误或下一步想尝试的操作…',
+})
 const emit = defineEmits<{
   ask: [message: string]
   retry: []
@@ -50,7 +61,7 @@ watch(() => props.messages[props.messages.length - 1]?.content, scrollToLatest)
     <header class="tutor-header">
       <div class="tutor-title">
         <span class="tutor-mark"><Sparkles :size="15" aria-hidden="true" /></span>
-        <div><div class="eyebrow">Tutor Agent · 知乎知识</div><h2 id="tutor-title">和你的导师讨论</h2></div>
+        <div><div class="eyebrow">{{ props.eyebrow }}</div><h2 id="tutor-title">{{ props.title }}</h2></div>
       </div>
       <span class="tutor-status" :class="{ working: loading }">
         <LoaderCircle v-if="loading" class="spin" :size="12" aria-hidden="true" />{{ loading ? '正在思考' : disabled ? '本次实践已收束' : '随时可问' }}
@@ -62,8 +73,8 @@ watch(() => props.messages[props.messages.length - 1]?.content, scrollToLatest)
     </div>
     <div ref="transcript" class="tutor-transcript" aria-live="polite">
       <div v-if="!messages.length" class="tutor-empty">
-        <BookOpen :size="22" aria-hidden="true" /><strong>从观察开始</strong>
-        <p>告诉我你从慢日志和表结构里看到了什么。我会追问判断依据，不直接替你下结论。</p>
+        <BookOpen :size="22" aria-hidden="true" /><strong>{{ props.emptyTitle }}</strong>
+        <p>{{ props.emptyDescription }}</p>
       </div>
       <article v-for="message in messages" :key="message.id" class="message" :class="message.role">
         <div class="message-meta">
@@ -93,7 +104,7 @@ watch(() => props.messages[props.messages.length - 1]?.content, scrollToLatest)
     </div>
     <form class="tutor-composer" @submit.prevent="submit">
       <label class="sr-only" for="tutor-input">向 Tutor 提问</label>
-      <textarea id="tutor-input" v-model="draft" rows="3" :placeholder="disabled ? '本次实践已完成，可进入复盘与写作。' : '描述你的判断、错误或下一步想尝试的操作…'" :disabled="loading || disabled" @keydown="onKeydown" />
+      <textarea id="tutor-input" v-model="draft" rows="3" :placeholder="disabled ? '本次实践已完成，可进入复盘与写作。' : props.placeholder" :disabled="loading || disabled" @keydown="onKeydown" />
       <div class="composer-footer"><span>Enter 发送 · Shift + Enter 换行</span><button class="primary-button" type="submit" :disabled="!canSend"><Send :size="13" aria-hidden="true" />发送</button></div>
     </form>
   </section>

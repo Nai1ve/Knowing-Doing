@@ -1,6 +1,9 @@
 import { z } from 'zod'
 import type { CaseRequest, CaseSpec } from './product-types.js'
 
+export const MAX_WORKSPACE_FILE_BYTES = 262144
+export const MAX_WORKSPACE_TOTAL_BYTES = 2 * 1024 * 1024
+
 export const caseRequestSchema = z.object({
   roadmapNodeId: z.string().trim().min(1).max(120),
   input: z.discriminatedUnion('kind', [
@@ -45,7 +48,7 @@ export function validateCaseSpecBoundaries(spec: CaseSpec): void {
     if (!/\.(py|json|md|txt)$/.test(file.path)) throw new Error(`unsupported_starter_extension:${file.path}`)
     totalBytes += Buffer.byteLength(file.content, 'utf8')
   }
-  if (totalBytes > 2 * 1024 * 1024) throw new Error('starter_files_too_large')
+  if (totalBytes > MAX_WORKSPACE_TOTAL_BYTES) throw new Error('starter_files_too_large')
   for (const command of commands) {
     if (!isAllowedPythonCommand(command)) throw new Error(`unsupported_command:${command}`)
   }
