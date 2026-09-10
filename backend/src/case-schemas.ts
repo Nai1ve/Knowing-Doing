@@ -1,6 +1,7 @@
 import { z } from 'zod'
-import type { CaseRequest, CaseSpec, ReferenceSolution } from './product-types.js'
-import { getEnvironmentTemplate, resolveEnvironmentCommand } from './environment-registry.js'
+import type { CaseRequest, CaseSpec, ExerciseSpecV2, ReferenceSolution, ReferenceSolutionV2 } from './product-types.js'
+import { getEnvironmentTemplate } from './environment-registry.js'
+import { getEnvironmentInterpreter } from './environment-interpreters.js'
 
 export const MAX_WORKSPACE_FILE_BYTES = 262144
 export const MAX_WORKSPACE_TOTAL_BYTES = 2 * 1024 * 1024
@@ -38,6 +39,25 @@ export const caseGenerationOutputSchema = z.union([
   z.object({ exerciseSpec: caseSpecSchema, referenceSolution: referenceSolutionSchema }),
 ])
 
+const exerciseAssetSchema = z.object({
+  kind: z.enum(['file', 'fixture', 'dataset_seed', 'schema', 'fault_seed']),
+  key: z.string().trim().min(1).max(120),
+  content: z.string().max(262144),
+  path: z.string().trim().min(1).max(180).optional(),
+})
+
+export const exerciseSpecV2Schema = z.object({
+  specVersion: z.literal(2), capabilityKey: z.string().trim().min(1).max(160), title: z.string().trim().min(1).max(240),
+  scenario: z.string().trim().min(1).max(12000), learningGoal: z.string().trim().min(1).max(4000), difficulty: z.enum(['introductory', 'applied', 'advanced']),
+  environment: z.object({ key: z.string().trim().min(1).max(120), version: z.string().trim().min(1).max(40), services: z.array(z.string().trim().min(1).max(80)).max(8) }),
+  starterAssets: z.array(exerciseAssetSchema).min(1).max(16),
+  tasks: z.array(z.object({ key: z.string().trim().min(1).max(80), instruction: z.string().trim().min(1).max(4000), recommendedCommandKeys: z.array(z.string().trim().min(1).max(120)).min(1).max(8), expectedObservation: z.string().trim().min(1).max(2000) })).min(1).max(12),
+  verification: z.object({ commandKeys: z.array(z.string().trim().min(1).max(120)).min(1).max(8), successSignals: z.array(z.string().trim().min(1).max(240)).min(1).max(12) }),
+  tutorContext: z.object({ concepts: z.array(z.string().trim().min(1).max(240)).max(20), likelyMisconceptions: z.array(z.string().trim().min(1).max(400)).max(20), evidenceToNotice: z.array(z.string().trim().min(1).max(400)).max(20) }),
+})
+
+const referenceSolutionV2Schema = z.object({ assets: z.array(exerciseAssetSchema).min(1).max(16), verificationCommandKeys: z.array(z.string().trim().min(1).max(120)).min(1).max(8) })
+
 export function parseCaseRequest(value: unknown): CaseRequest {
   return caseRequestSchema.parse(value) as CaseRequest
 }
@@ -56,14 +76,26 @@ export function parseCaseSpec(value: unknown): CaseSpec {
     tasks: parsed.tasks.map((task) => ({ ...task, recommendedCommands: task.recommendedCommands.map((command) => resolveCommand(key, version, command)) })),
     verification: { ...parsed.verification, commands: parsed.verification.commands.map((command) => resolveCommand(key, version, command)) },
   } as CaseSpec
-  validateCaseSpecBoundaries(spec)
+  getEnvironmentInterpreter(key, version).validateCaseSpec(spec)
   return spec
 }
 
 function resolveCommand(environmentKey: string, version: string, command: string): string {
-  const resolved = resolveEnvironmentCommand(environmentKey, version, command)
-  if (!resolved) throw new Error(`unsupported_command_key:${command}`)
-  return resolved
+  return getEnvironmentInterpreter(environmentKey, version).resolveCommand(command)
+}
+
+export function parseExerciseSpecV2(value: unknown): ExerciseSpecV2 {
+  const parsed = exerciseSpecV2Schema.parse(value) as ExerciseSpecV2
+  getEnvironmentInterpreter(parsed.environment.key, parsed.environment.version).validateExerciseSpec(parsed)
+  return parsed
+}
+
+export function parseExerciseGenerationOutput(value: unknown): { spec: ExerciseSpecV2; referenceSolution: ReferenceSolutionV2 } {
+  const parsed = z.object({ exerciseSpec: exerciseSpecV2Schema, referenceSolution: referenceSolutionV2Schema }).parse(value)
+  const spec = parseExerciseSpecV2(parsed.exerciseSpec)
+  const referenceSolution = parsed.referenceSolution as ReferenceSolutionV2
+  getEnvironmentInterpreter(spec.environment.key, spec.environment.version).validateReferenceSolution(referenceSolution)
+  return { spec, referenceSolution }
 }
 
 export function parseCaseGenerationOutput(value: unknown): { spec: CaseSpec; referenceSolution: ReferenceSolution | null } {
@@ -73,44 +105,16 @@ export function parseCaseGenerationOutput(value: unknown): { spec: CaseSpec; ref
     const version = spec.environment.version ?? '1'
     const files = parsed.referenceSolution.files.map((file) => ({ path: file.path, content: file.content }))
     const verificationCommands = parsed.referenceSolution.verificationCommandKeys.map((command) => resolveCommand(spec.environment.key ?? spec.environment.templateKey, version, command))
-    validateReferenceSolution(files, verificationCommands)
+    getEnvironmentInterpreter(spec.environment.key ?? spec.environment.templateKey, version).validateReferenceSolution({ assets: files.map((file) => ({ kind: 'file', key: file.path, path: file.path, content: file.content })), verificationCommandKeys: parsed.referenceSolution.verificationCommandKeys })
     return { spec, referenceSolution: { files, verificationCommands } }
   }
   return { spec: parseCaseSpec(parsed), referenceSolution: null }
 }
 
-function validateReferenceSolution(files: Array<{ path: string; content: string }>, commands: string[]): void {
-  const paths = new Set<string>()
-  let totalBytes = 0
-  for (const file of files) {
-    if (paths.has(file.path)) throw new Error(`duplicate_reference_path:${file.path}`)
-    if (file.path.startsWith('/') || file.path.includes('..') || file.path.includes('\\')) throw new Error(`invalid_reference_path:${file.path}`)
-    if (!/\.(py|json|md|txt)$/.test(file.path)) throw new Error(`unsupported_reference_extension:${file.path}`)
-    paths.add(file.path)
-    totalBytes += Buffer.byteLength(file.content, 'utf8')
-  }
-  if (totalBytes > MAX_WORKSPACE_TOTAL_BYTES) throw new Error('reference_files_too_large')
-  if (commands.length === 0) throw new Error('reference_verification_required')
-}
-
 export function validateCaseSpecBoundaries(spec: CaseSpec): void {
-  const paths = new Set<string>()
-  const commands = new Set([...spec.verification.commands, ...spec.tasks.flatMap((task) => task.recommendedCommands)])
-  let totalBytes = 0
-  for (const file of spec.starterFiles) {
-    if (paths.has(file.path)) throw new Error(`duplicate_starter_path:${file.path}`)
-    paths.add(file.path)
-    if (file.path.startsWith('/') || file.path.includes('..') || file.path.includes('\\')) throw new Error(`invalid_starter_path:${file.path}`)
-    if (!/\.(py|json|md|txt)$/.test(file.path)) throw new Error(`unsupported_starter_extension:${file.path}`)
-    totalBytes += Buffer.byteLength(file.content, 'utf8')
-  }
-  if (totalBytes > MAX_WORKSPACE_TOTAL_BYTES) throw new Error('starter_files_too_large')
-  for (const command of commands) {
-    if (!isAllowedPythonCommand(command)) throw new Error(`unsupported_command:${command}`)
-  }
+  getEnvironmentInterpreter(spec.environment.key ?? spec.environment.templateKey, spec.environment.version ?? '1').validateCaseSpec(spec)
 }
 
 export function isAllowedPythonCommand(command: string): boolean {
-  const normalized = command.trim().replace(/\s+/g, ' ')
-  return normalized === 'pytest -q' || normalized === 'python -m pytest -q' || /^python -m pytest [\w./-]+(?: [\w./-]+)*$/.test(normalized)
+  return getEnvironmentInterpreter('python-pytest-v1', '1').canExecute(command)
 }

@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import { getEnvironmentTemplateForCapability } from './environment-registry.js'
+import { resolveCapability } from './environment-registry.js'
 import { CaseBuilderError, type CaseBuilderContext, type CaseBuilderInput } from './case-builder.js'
 import type { EnvironmentTemplate, SourceItem } from './product-types.js'
 
@@ -36,8 +36,9 @@ export function compileCaseContext(input: CaseBuilderInput): FrozenCaseContext {
   const builderContext = input.context
   const roadmapNode = builderContext?.roadmapNode
   if (!roadmapNode) throw new CaseBuilderError('case_context_missing', '案例上下文缺少路线节点')
-  const environment = getEnvironmentTemplateForCapability(roadmapNode.capabilityKey)
-  if (!environment || environment.status !== 'available') throw new CaseBuilderError('workspace_environment_unavailable', '案例上下文中的运行环境不可用')
+  const resolved = resolveCapability(roadmapNode.capabilityKey)
+  if (!resolved) throw new CaseBuilderError('workspace_environment_unavailable', '案例上下文中的运行环境不可用')
+  const environment = resolved.template
   const frozen = {
     request: {
       roadmapNodeId: input.request.roadmapNodeId,

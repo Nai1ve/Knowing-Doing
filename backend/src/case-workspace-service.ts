@@ -2,7 +2,7 @@ import { createHash, randomUUID } from 'node:crypto'
 import type Database from 'better-sqlite3'
 import { getWorkspaceCapability } from './capability-registry.js'
 import { getEnvironmentTemplate } from './environment-registry.js'
-import { MAX_WORKSPACE_FILE_BYTES, MAX_WORKSPACE_TOTAL_BYTES, parseCaseRequest, parseCaseSpec, isAllowedPythonCommand } from './case-schemas.js'
+import { MAX_WORKSPACE_FILE_BYTES, MAX_WORKSPACE_TOTAL_BYTES, parseCaseRequest, parseCaseSpec } from './case-schemas.js'
 import { CaseBuilderError, type CaseBuilderAttemptEvent, type CaseBuilderAttemptPhase, type CaseBuilderContext, type CaseBuilderProvider } from './case-builder.js'
 import { LabError } from './errors.js'
 import type { CaseRequest, CaseSpec, EnvironmentTemplate, LearningCase, CaseGenerationJob, PracticeRun, ReferenceSolution, SourceItem, WorkspaceCompletion, WorkspaceExecution, WorkspaceFile, WorkspaceRun, WorkspaceTutorHistory } from './product-types.js'
@@ -10,6 +10,7 @@ import type { ProductRepository } from './product-repository.js'
 import type { RunnerFileInput, WorkspaceRunnerClient } from './workspace-runner-client.js'
 import { DockerWorkspaceRuntimeAdapter, type RuntimeAdapter } from './runtime-adapter.js'
 import { WorkspaceRunnerError } from './workspace-runner-client.js'
+import { getEnvironmentInterpreter } from './environment-interpreters.js'
 
 type Row = Record<string, unknown>
 
@@ -32,7 +33,7 @@ function learningCaseFrom(row: Row): LearningCase {
   return {
     id: text(row, 'id'), learnerId: text(row, 'learner_id'), roadmapNodeId: text(row, 'roadmap_node_id'), capabilityKey: text(row, 'capability_key'), templateKey: text(row, 'template_key'),
     inputKind: text(row, 'input_kind') as LearningCase['inputKind'], inputSnapshot: json<Record<string, unknown>>(row.input_snapshot_json, {}), inputFingerprint: text(row, 'input_fingerprint'),
-    provider: text(row, 'provider') as LearningCase['provider'], version: number(row, 'version'), status: text(row, 'status') as LearningCase['status'], spec: row.case_spec_json === '{}' ? null : json<CaseSpec | null>(row.case_spec_json, null),
+    provider: text(row, 'provider') as LearningCase['provider'], version: number(row, 'version'), status: text(row, 'status') as LearningCase['status'], spec: row.case_spec_json === '{}' ? null : json<CaseSpec | null>(row.case_spec_json, null), specVersion: number(row, 'spec_version'), preflightStatus: text(row, 'preflight_status') as LearningCase['preflightStatus'],
     environmentKey: nullable(row, 'environment_key') ?? text(row, 'template_key'), environmentVersion: nullable(row, 'environment_version') ?? '1', runtimeKind: (nullable(row, 'runtime_kind') ?? 'docker_workspace') as LearningCase['runtimeKind'],
     failureCode: nullable(row, 'failure_code'), failureMessage: nullable(row, 'failure_message'), createdAt: text(row, 'created_at'), updatedAt: text(row, 'updated_at'),
   }
@@ -372,7 +373,8 @@ export class CaseWorkspaceService {
     return this.withLock(this.workspaceLocks, workspaceId, async () => {
       const row = this.workspaceRow(learnerId, workspaceId); const workspace = workspaceRunFrom(row); const item = this.caseForLearner(learnerId, workspace.learningCaseId)
       if (workspace.status !== 'active' || !workspace.runnerRunId) throw new LabError('workspace_not_active', '当前工作区不可执行', 409)
-      if (!isAllowedPythonCommand(command) || !item.spec || ![...item.spec.verification.commands, ...item.spec.tasks.flatMap((task) => task.recommendedCommands), 'pytest -q'].includes(command)) throw new LabError('unsupported_command', '当前命令不在案例允许范围内', 400)
+      const environmentKey = item.environmentKey ?? item.templateKey; const environmentVersion = item.environmentVersion ?? '1'
+      if (!item.spec || !getEnvironmentInterpreter(environmentKey, environmentVersion).canExecute(command) || ![...item.spec.verification.commands, ...item.spec.tasks.flatMap((task) => task.recommendedCommands), 'pytest -q'].includes(command)) throw new LabError('unsupported_command', '当前命令不在案例允许范围内', 400)
       const existing = this.db.prepare('SELECT * FROM workspace_executions WHERE workspace_run_id = ? AND client_request_id = ?').get(workspaceId, clientRequestId) as Row | undefined
       if (existing) return { execution: executionFrom(existing), workspace: this.getWorkspace(learnerId, workspaceId) }
       const now = new Date().toISOString(); const executionId = randomUUID()

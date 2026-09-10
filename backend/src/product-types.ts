@@ -89,6 +89,8 @@ export type WorkspaceRunStatus = 'provisioning' | 'active' | 'executing' | 'fail
 export type WorkspaceExecutionStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'timed_out' | 'rejected'
 export type PracticeKind = 'mysql_lab' | 'code_workspace'
 export type RuntimeKind = 'mysql_lab' | 'docker_workspace'
+export type ExerciseAssetKind = 'file' | 'fixture' | 'dataset_seed' | 'schema' | 'fault_seed'
+export type ExerciseKind = 'code_repair' | 'concept_drill' | 'data_diagnosis'
 
 export interface EnvironmentTemplate {
   key: string
@@ -123,6 +125,33 @@ export interface CaseSpec {
   tasks: Array<{ key: string; instruction: string; recommendedCommands: string[]; expectedObservation: string }>
   verification: { commands: string[]; successSignals: string[] }
   tutorContext: { concepts: string[]; likelyMisconceptions: string[]; evidenceToNotice: string[] }
+}
+
+/** Environment-neutral case contract interpreted by a registered runtime. */
+export interface ExerciseAsset {
+  kind: ExerciseAssetKind
+  key: string
+  content: string
+  path?: string
+}
+
+export interface ExerciseSpecV2 {
+  specVersion: 2
+  capabilityKey: string
+  title: string
+  scenario: string
+  learningGoal: string
+  difficulty: CaseDifficulty
+  environment: { key: string; version: string; services: string[] }
+  starterAssets: ExerciseAsset[]
+  tasks: Array<{ key: string; instruction: string; recommendedCommandKeys: string[]; expectedObservation: string }>
+  verification: { commandKeys: string[]; successSignals: string[] }
+  tutorContext: { concepts: string[]; likelyMisconceptions: string[]; evidenceToNotice: string[] }
+}
+
+export interface ReferenceSolutionV2 {
+  assets: ExerciseAsset[]
+  verificationCommandKeys: string[]
 }
 
 export interface CaseIntent {
@@ -165,6 +194,8 @@ export interface LearningCase {
   version: number
   status: CaseGenerationStatus
   spec: CaseSpec | null
+  specVersion?: number
+  preflightStatus?: 'not_required' | 'queued' | 'running' | 'passed' | 'failed'
   failureCode: string | null
   failureMessage: string | null
   createdAt: string
