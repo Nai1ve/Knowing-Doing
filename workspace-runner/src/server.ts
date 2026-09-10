@@ -2,16 +2,21 @@ import { randomUUID } from 'node:crypto'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import { spawn } from 'node:child_process'
 import { URL } from 'node:url'
-import { isValidPythonCommand, isValidWorkspacePath, MAX_FILE_BYTES, MAX_TOTAL_FILE_BYTES } from './validation.js'
+import { getTemplatePolicy, isValidTemplateCommand, isValidWorkspacePath, MAX_FILE_BYTES, MAX_TOTAL_FILE_BYTES } from './validation.js'
 
 const port = Number(process.env.WORKSPACE_RUNNER_PORT ?? 3101)
 const token = process.env.WORKSPACE_RUNNER_TOKEN ?? 'development-workspace-runner-token'
-const image = process.env.WORKSPACE_PYTHON_IMAGE ?? 'zhixing-python-pytest-v1:local'
+const images: Record<string, string> = {
+  'python-pytest-v1': process.env.WORKSPACE_PYTHON_IMAGE ?? 'zhixing-python-pytest-v1:local',
+  'go-test-v1': process.env.WORKSPACE_GO_IMAGE ?? 'zhixing-go-test-v1:local',
+}
 const maxOutputBytes = 1024 * 1024
 const leaseMs = 30 * 60_000
 const idleMs = 5 * 60_000
+const tmpfsSize = (templateKey: string) => templateKey === 'go-test-v1' ? '128m' : '16m'
+const workspaceSize = (templateKey: string) => templateKey === 'go-test-v1' ? '128m' : '32m'
 
-type Run = { id: string; containerId: string; files: Map<string, number>; fileBytes: Map<string, number>; commands: Set<string>; leaseExpiresAt: number; lastUsedAt: number; ended: boolean }
+type Run = { id: string; templateKey: string; containerId: string; files: Map<string, number>; fileBytes: Map<string, number>; commands: Set<string>; leaseExpiresAt: number; lastUsedAt: number; ended: boolean }
 const runs = new Map<string, Run>()
 
 class RunnerError extends Error {
@@ -32,9 +37,6 @@ function stringField(value: Record<string, unknown>, key: string): string {
   const item = value[key]; if (typeof item !== 'string' || !item.trim()) throw new RunnerError('invalid_request', `${key} 不能为空`); return item.trim()
 }
 
-const validPath = isValidWorkspacePath
-const validCommand = isValidPythonCommand
-
 async function docker(args: string[], options: { input?: string; timeout?: number; allowNonZero?: boolean } = {}): Promise<{ stdout: string; stderr: string; exitCode: number }> {
   return await new Promise((resolve, reject) => {
     const child = spawn('docker', args, { stdio: ['pipe', 'pipe', 'pipe'] }); const stdout: Buffer[] = []; const stderr: Buffer[] = []; let total = 0; let stderrTotal = 0; let timedOut = false
@@ -47,40 +49,47 @@ async function docker(args: string[], options: { input?: string; timeout?: numbe
   })
 }
 
-const writeScript = "import os,sys; p=sys.argv[1]; os.makedirs(os.path.dirname(p),exist_ok=True); open(p,'wb').write(sys.stdin.buffer.read())"
+const writeScript = "set -eu; p=\"$1\"; mkdir -p \"$(dirname \"$p\")\"; cat > \"$p\""
 
 async function writeContainerFile(run: Run, path: string, content: string): Promise<void> {
-  if (!validPath(path)) throw new RunnerError('invalid_file_path', '文件路径不受支持')
+  if (!isValidWorkspacePath(path, getTemplatePolicy(run.templateKey)?.extensions ?? [])) throw new RunnerError('invalid_file_path', '文件路径不受支持')
   const bytes = Buffer.byteLength(content, 'utf8')
   if (bytes > MAX_FILE_BYTES) throw new RunnerError('file_too_large', '文件内容过大', 422)
   const totalBytes = [...run.fileBytes.entries()].reduce((total, [filePath, fileBytes]) => total + (filePath === path ? 0 : fileBytes), 0) + bytes
   if (totalBytes > MAX_TOTAL_FILE_BYTES) throw new RunnerError('workspace_total_too_large', '工作区文件总大小过大', 422)
-  await docker(['exec', '-i', run.containerId, 'python', '-c', writeScript, `/workspace/${path}`], { input: content, timeout: 10_000 }); run.files.set(path, (run.files.get(path) ?? 0) + 1); run.fileBytes.set(path, bytes); run.lastUsedAt = Date.now(); run.leaseExpiresAt = Date.now() + leaseMs
+  await docker(['exec', '-i', run.containerId, 'sh', '-c', writeScript, 'sh', `/workspace/${path}`], { input: content, timeout: 10_000 }); run.files.set(path, (run.files.get(path) ?? 0) + 1); run.fileBytes.set(path, bytes); run.lastUsedAt = Date.now(); run.leaseExpiresAt = Date.now() + leaseMs
 }
 
-const clearScript = "import os,shutil; p='/workspace'; [shutil.rmtree(os.path.join(p,n)) if os.path.isdir(os.path.join(p,n)) else os.remove(os.path.join(p,n)) for n in os.listdir(p)]"
+const clearScript = "set -eu; find /workspace -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +"
 
 async function clearContainerFiles(run: Run): Promise<void> {
-  await docker(['exec', run.containerId, 'python', '-c', clearScript], { timeout: 10_000 })
+  await docker(['exec', run.containerId, 'sh', '-c', clearScript], { timeout: 10_000 })
   run.files.clear(); run.fileBytes.clear()
+  await ensureTemplateDirectories(run)
+}
+
+async function ensureTemplateDirectories(run: Run): Promise<void> {
+  if (run.templateKey === 'go-test-v1') await docker(['exec', run.containerId, 'sh', '-c', 'mkdir -p /workspace/.go-cache /workspace/.go-mod /workspace/.go /workspace/.go-tmp'], { timeout: 10_000 })
 }
 
 async function createRun(input: Record<string, unknown>): Promise<{ runnerRunId: string; leaseExpiresAt: string }> {
-  if (stringField(input, 'templateKey') !== 'python-pytest-v1') throw new RunnerError('template_not_available', '只支持 python-pytest-v1', 409)
+  const templateKey = stringField(input, 'templateKey'); const policy = getTemplatePolicy(templateKey); if (!policy) throw new RunnerError('template_not_available', '当前环境模板尚未开放', 409)
+  const image = images[templateKey]
   const files = input.files; const commands = input.commands; if (!Array.isArray(files) || !Array.isArray(commands)) throw new RunnerError('invalid_request', 'files 和 commands 必须是数组')
   if (files.length < 1 || files.length > 10 || commands.length < 1) throw new RunnerError('invalid_request', '工作区文件或命令数量无效')
   const paths = new Set<string>(); let totalBytes = 0
   for (const item of files) {
     if (!item || typeof item !== 'object') throw new RunnerError('invalid_file', '文件格式无效')
     const file = item as Record<string, unknown>; const path = stringField(file, 'path'); const content = file.content
-    if (!validPath(path) || paths.has(path) || typeof content !== 'string' || Buffer.byteLength(content, 'utf8') > MAX_FILE_BYTES) throw new RunnerError('invalid_file', '文件格式无效')
+    if (!isValidWorkspacePath(path, policy.extensions) || paths.has(path) || typeof content !== 'string' || Buffer.byteLength(content, 'utf8') > MAX_FILE_BYTES) throw new RunnerError('invalid_file', '文件格式无效')
     paths.add(path); totalBytes += Buffer.byteLength(content, 'utf8')
   }
   if (totalBytes > MAX_TOTAL_FILE_BYTES) throw new RunnerError('invalid_file', '工作区文件总大小过大', 422)
-  const allowed = new Set(commands.map((item) => String(item).trim())); const id = randomUUID()
-  const created = await docker(['run', '-d', '--rm', '--name', `zhixing-ws-${id}`, '--network', 'none', '--cap-drop=ALL', '--security-opt', 'no-new-privileges', '--read-only', '--tmpfs', '/workspace:rw,nosuid,nodev,size=32m', '--tmpfs', '/tmp:rw,noexec,nosuid,size=16m', '--memory', '512m', '--cpus', '1', '--pids-limit', '128', '--workdir', '/workspace', image, 'tail', '-f', '/dev/null'])
-  const containerId = created.stdout.trim(); const run: Run = { id, containerId, files: new Map(), fileBytes: new Map(), commands: allowed, leaseExpiresAt: Date.now() + leaseMs, lastUsedAt: Date.now(), ended: false }; runs.set(id, run)
-  try { for (const item of files) { const file = item as Record<string, unknown>; await writeContainerFile(run, stringField(file, 'path'), file.content as string) } } catch (error) { await endRun(run).catch(() => undefined); throw error }
+  const allowed = new Set(commands.map((item) => String(item).trim())); if (commands.some((item) => !isValidTemplateCommand(templateKey, String(item), allowed))) throw new RunnerError('unsupported_command', '命令不在模板 allowlist 内')
+  const id = randomUUID()
+  const created = await docker(['run', '-d', '--rm', '--name', `zhixing-ws-${id}`, '--network', 'none', '--cap-drop=ALL', '--security-opt', 'no-new-privileges', '--read-only', '--tmpfs', `/workspace:rw,exec,nosuid,nodev,size=${workspaceSize(templateKey)}`, '--tmpfs', `/tmp:rw,noexec,nosuid,size=${tmpfsSize(templateKey)}`, '--memory', '512m', '--cpus', '1', '--pids-limit', '128', '--workdir', '/workspace', image, 'tail', '-f', '/dev/null'])
+  const containerId = created.stdout.trim(); const run: Run = { id, templateKey, containerId, files: new Map(), fileBytes: new Map(), commands: allowed, leaseExpiresAt: Date.now() + leaseMs, lastUsedAt: Date.now(), ended: false }; runs.set(id, run)
+  try { await ensureTemplateDirectories(run); for (const item of files) { const file = item as Record<string, unknown>; await writeContainerFile(run, stringField(file, 'path'), file.content as string) } } catch (error) { await endRun(run).catch(() => undefined); throw error }
   return { runnerRunId: id, leaseExpiresAt: new Date(run.leaseExpiresAt).toISOString() }
 }
 
@@ -88,8 +97,14 @@ async function endRun(run: Run): Promise<void> { if (run.ended) return; run.ende
 
 async function route(request: IncomingMessage, reply: ServerResponse): Promise<void> {
   if (request.method === 'GET' && request.url === '/health') {
-    try { await docker(['image', 'inspect', image], { timeout: 5_000 }) } catch { return send(reply, 503, { ready: false, serviceReady: true, templateReady: false, containerCreateReady: false, template: image }) }
-    try { await docker(['run', '--rm', '--network', 'none', '--cap-drop=ALL', '--security-opt', 'no-new-privileges', '--read-only', '--tmpfs', '/workspace:rw,nosuid,nodev,size=32m', '--tmpfs', '/tmp:rw,noexec,nosuid,size=16m', '--memory', '512m', '--cpus', '1', '--pids-limit', '128', '--workdir', '/workspace', image, 'true'], { timeout: 10_000 }); return send(reply, 200, { ready: true, serviceReady: true, templateReady: true, containerCreateReady: true, dockerReady: true, template: image }) } catch { return send(reply, 503, { ready: false, serviceReady: true, templateReady: true, containerCreateReady: false, dockerReady: false, template: image }) }
+    const templateStatus: Record<string, { image: string; ready: boolean }> = {}
+    for (const [templateKey, image] of Object.entries(images)) {
+      let ready = true
+      try { await docker(['image', 'inspect', image], { timeout: 5_000 }); await docker(['run', '--rm', '--network', 'none', '--cap-drop=ALL', '--security-opt', 'no-new-privileges', '--read-only', '--tmpfs', `/workspace:rw,exec,nosuid,nodev,size=${workspaceSize(templateKey)}`, '--tmpfs', `/tmp:rw,noexec,nosuid,size=${tmpfsSize(templateKey)}`, '--memory', '512m', '--cpus', '1', '--pids-limit', '128', '--workdir', '/workspace', image, 'true'], { timeout: 10_000 }) } catch { ready = false }
+      templateStatus[templateKey] = { image, ready }
+    }
+    const ready = Object.values(templateStatus).every((item) => item.ready)
+    return send(reply, ready ? 200 : 503, { ready, serviceReady: true, templateReady: ready, containerCreateReady: ready, dockerReady: ready, templates: templateStatus })
   }
   if (request.headers['x-workspace-runner-token'] !== token) return send(reply, 401, { error: { code: 'unauthorized', message: 'Runner token 无效' } })
   const url = new URL(request.url ?? '/', `http://${request.headers.host ?? 'localhost'}`); const parts = url.pathname.split('/').filter(Boolean); const runId = parts[3] ?? null
@@ -102,7 +117,7 @@ async function route(request: IncomingMessage, reply: ServerResponse): Promise<v
       const path = decodeURIComponent(parts.slice(5).join('/')); const input = await body(request); const expected = Number(input.expectedRevision); const current = run.files.get(path) ?? 0; if (!Number.isInteger(expected) || expected !== current) throw new RunnerError('file_revision_conflict', 'Runner 文件版本冲突', 409); const content = input.content; if (typeof content !== 'string') throw new RunnerError('invalid_file', '文件格式无效'); await writeContainerFile(run, path, content); return send(reply, 200, { revision: current + 1 })
     }
     if (request.method === 'POST' && parts[4] === 'executions') {
-      const input = await body(request); const command = stringField(input, 'command'); if (!validCommand(command, run.commands)) throw new RunnerError('unsupported_command', '命令不在 Runner allowlist 内', 400); const started = Date.now(); const args = command === 'pytest -q' ? ['exec', run.containerId, 'python', '-m', 'pytest', '-q'] : ['exec', run.containerId, ...command.split(/\s+/)];
+      const input = await body(request); const command = stringField(input, 'command'); if (!isValidTemplateCommand(run.templateKey, command, run.commands)) throw new RunnerError('unsupported_command', '命令不在 Runner allowlist 内', 400); const started = Date.now(); const args = run.templateKey === 'python-pytest-v1' && command === 'pytest -q' ? ['exec', run.containerId, 'python', '-m', 'pytest', '-q'] : ['exec', run.containerId, ...command.split(/\s+/)];
       try {
         const result = await docker(args, { timeout: 30_000, allowNonZero: true })
         return send(reply, 200, { runnerExecutionId: randomUUID(), status: result.exitCode === 0 ? 'succeeded' : 'failed', stdout: result.stdout.slice(0, maxOutputBytes), stderr: result.stderr.slice(0, maxOutputBytes), exitCode: result.exitCode, durationMs: Date.now() - started })
@@ -114,7 +129,7 @@ async function route(request: IncomingMessage, reply: ServerResponse): Promise<v
         throw error
       }
     }
-    if (request.method === 'POST' && parts[4] === 'reset') { const input = await body(request); const files = input.files; if (!Array.isArray(files) || files.length < 1 || files.length > 10) throw new RunnerError('invalid_request', 'files 必须是 1 到 10 个文件'); const paths = new Set<string>(); let totalBytes = 0; for (const item of files) { if (!item || typeof item !== 'object') throw new RunnerError('invalid_file', '文件格式无效'); const file = item as Record<string, unknown>; const path = stringField(file, 'path'); const content = file.content; if (paths.has(path) || typeof content !== 'string' || !validPath(path) || Buffer.byteLength(content, 'utf8') > MAX_FILE_BYTES) throw new RunnerError('invalid_file', '文件格式无效'); paths.add(path); totalBytes += Buffer.byteLength(content, 'utf8') }; if (totalBytes > MAX_TOTAL_FILE_BYTES) throw new RunnerError('workspace_total_too_large', '工作区文件总大小过大', 422); await clearContainerFiles(run); for (const item of files) { const file = item as Record<string, unknown>; await writeContainerFile(run, stringField(file, 'path'), file.content as string) }; return send(reply, 204, {}) }
+    if (request.method === 'POST' && parts[4] === 'reset') { const input = await body(request); const files = input.files; const policy = getTemplatePolicy(run.templateKey); if (!policy || !Array.isArray(files) || files.length < 1 || files.length > 10) throw new RunnerError('invalid_request', 'files 必须是 1 到 10 个文件'); const paths = new Set<string>(); let totalBytes = 0; for (const item of files) { if (!item || typeof item !== 'object') throw new RunnerError('invalid_file', '文件格式无效'); const file = item as Record<string, unknown>; const path = stringField(file, 'path'); const content = file.content; if (paths.has(path) || typeof content !== 'string' || !isValidWorkspacePath(path, policy.extensions) || Buffer.byteLength(content, 'utf8') > MAX_FILE_BYTES) throw new RunnerError('invalid_file', '文件格式无效'); paths.add(path); totalBytes += Buffer.byteLength(content, 'utf8') }; if (totalBytes > MAX_TOTAL_FILE_BYTES) throw new RunnerError('workspace_total_too_large', '工作区文件总大小过大', 422); await clearContainerFiles(run); for (const item of files) { const file = item as Record<string, unknown>; await writeContainerFile(run, stringField(file, 'path'), file.content as string) }; return send(reply, 204, {}) }
     if (request.method === 'POST' && parts[4] === 'end') { await endRun(run); return send(reply, 204, {}) }
     throw new RunnerError('not_found', 'Runner 路径不存在', 404)
   } catch (error) { if (error instanceof RunnerError) return send(reply, error.statusCode, { error: { code: error.code, message: error.message } }); return send(reply, 500, { error: { code: 'runner_internal_error', message: 'Runner 内部错误' } }) }

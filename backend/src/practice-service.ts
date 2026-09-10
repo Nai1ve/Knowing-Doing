@@ -512,8 +512,8 @@ export class PracticeService {
     if (run.practiceKind && run.practiceKind !== 'mysql_lab') throw new LabError('workspace_run_required', '该实践使用代码工作区，请在工作区执行命令', 409)
     if (run.status === 'resolved') throw new LabError('practice_resolved', '该实践已经完成，不能继续执行实验', 409)
     if (!run.labRunId) throw new LabError('lab_run_not_ready', '当前实践尚未获得可执行的 Lab 运行', 409, true)
-    if (!isCaseId(run.caseId)) throw new LabError('case_not_found', 'MySQL 案例不存在', 404)
-    validateStatement(input.statement, getManifest(run.caseId))
+    if (run.practiceKind !== 'mysql_lab') throw new LabError('workspace_run_required', '代码工作区实践不能执行 MySQL SQL', 409)
+    validateStatement(input.statement, this.scheduler.manifestFor(run.caseId))
     const existingEvidence = this.repository.findEventByClientRequestId(run.id, `${input.clientRequestId}:evidence`)
     if (existingEvidence) {
       const evidenceId = existingEvidence.artifactRefs[0]

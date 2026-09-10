@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { ModelCaseBuilder } from '../src/case-builder.js'
+import { FixtureCaseBuilder, ModelCaseBuilder } from '../src/case-builder.js'
 
 const validSpec = {
   title: '配置解析器的边界修复',
@@ -35,5 +35,18 @@ describe('ModelCaseBuilder', () => {
   it('fails explicitly when the model is not configured', async () => {
     const builder = new ModelCaseBuilder({ modelBaseUrl: '', modelApiKey: '', modelName: 'test-model', modelTimeoutMs: 1000 })
     await expect(builder.build({ request: { roadmapNodeId: 'node-1', input: { kind: 'brief', brief: '练习测试修复' }, clientRequestId: 'request-2' }, source: null })).rejects.toMatchObject({ code: 'model_not_configured' })
+  })
+})
+
+describe('FixtureCaseBuilder', () => {
+  it('builds the admitted Go fixture with a platform-owned command', async () => {
+    const result = await new FixtureCaseBuilder().build({
+      request: { roadmapNodeId: 'go-node', input: { kind: 'brief', brief: '练习 Go 测试边界条件' }, clientRequestId: 'go-case' },
+      source: null,
+      context: { roadmapNode: { id: 'go-node', title: 'Go 测试', summary: 'Go 测试', completionStandard: '测试通过', capabilityKey: 'go.testing' }, roadmapRationale: [], learnerProfile: { snapshotId: null, dimensions: [] } },
+    })
+    expect(result.environment.key).toBe('go-test-v1')
+    expect(result.verification.commands).toEqual(['go test ./...'])
+    expect(result.starterFiles.some((file) => file.path.endsWith('.go'))).toBe(true)
   })
 })

@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import type { PoolConnection as Connection } from 'mysql2/promise'
 import { AsyncGate, AsyncMutex } from './async-gate.js'
-import type { CaseId, LabExecutionResult, QueueTicketView, RunView, SessionName } from './domain.js'
+import type { CaseId, CaseManifest, LabExecutionResult, QueueTicketView, RunView, SessionName } from './domain.js'
 import { getManifest, listManifests } from './fixtures.js'
 import { LabError } from './errors.js'
 import type { LabStore } from './mysql-store.js'
@@ -56,15 +56,25 @@ export interface SchedulerOptions {
 
 export class LabScheduler {
   private readonly slots = new Map<CaseId, CaseSlot>()
+  private readonly manifests = new Map<CaseId, CaseManifest>()
   private readonly tickets = new Map<string, Ticket>()
   private readonly reapTimer: NodeJS.Timeout
 
   constructor(private readonly store: LabStore, private readonly options: SchedulerOptions) {
     for (const manifest of listManifests()) {
+      this.manifests.set(manifest.id, manifest)
       this.slots.set(manifest.id, { caseId: manifest.id, queue: [], control: new AsyncMutex(), gate: new AsyncGate() })
     }
     this.reapTimer = setInterval(() => { void this.reapExpired() }, 30_000)
     this.reapTimer.unref()
+  }
+
+  async registerDynamicCase(manifest: CaseManifest, material: import('./mysql-store.js').DynamicMySqlMaterial): Promise<void> {
+    if (this.slots.has(manifest.id)) return
+    if (!this.store.registerDynamicCase) throw new LabError('dynamic_case_unavailable', '当前 MySQL 存储不支持动态案例', 409)
+    await this.store.registerDynamicCase(manifest, material)
+    this.manifests.set(manifest.id, manifest)
+    this.slots.set(manifest.id, { caseId: manifest.id, queue: [], control: new AsyncMutex(), gate: new AsyncGate() })
   }
 
   async createRun(caseId: CaseId): Promise<{ kind: 'started'; run: RunView; accessToken: string } | { kind: 'queued'; ticket: QueueTicketView }> {
@@ -125,7 +135,7 @@ export class LabScheduler {
   async createSession(runId: string, token: string | undefined, name: string): Promise<{ id: string; name: SessionName; status: 'open' }> {
     const run = this.findRun(runId, token)
     this.recordActivity(run)
-    const manifest = getManifest(run.caseId)
+    const manifest = this.manifestFor(run.caseId)
     if (!manifest.allowedSessions.includes(name as SessionName)) {
       throw new LabError('session_not_allowed', '当前案例不支持该会话', 422, false, { allowedSessions: manifest.allowedSessions })
     }
@@ -345,13 +355,19 @@ export class LabScheduler {
   }
 
   private toRunView(run: ActiveRun): RunView {
-    const manifest = getManifest(run.caseId)
+    const manifest = this.manifestFor(run.caseId)
     return {
       runId: run.runId, caseId: run.caseId, revision: run.revision, status: 'active', fixtureVersion: manifest.fixtureVersion,
       expiresAt: new Date(run.expiresAt).toISOString(),
       idleExpiresAt: new Date(Math.min(run.expiresAt, run.lastActivityAt + this.options.runIdleTimeoutMs)).toISOString(),
       sessions: [...run.sessions.values()].map((session) => ({ id: session.id, name: session.name, status: session.status })),
     }
+  }
+
+  manifestFor(caseId: CaseId) {
+    const manifest = this.manifests.get(caseId)
+    if (manifest) return manifest
+    try { return getManifest(caseId as never) } catch { throw new LabError('case_not_found', '案例不存在', 404) }
   }
 
   private toTicketView(ticket: Ticket): QueueTicketView {

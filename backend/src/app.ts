@@ -16,6 +16,7 @@ import { WritingConflictError, WritingNotFoundError, WritingService } from './wr
 import { PlanningService } from './planning.js'
 import { AgentPlanningService, PlanningAgentError, type PlanningStreamEvent } from './agent-planning.js'
 import { CaseWorkspaceService } from './case-workspace-service.js'
+import { MySqlDynamicCaseService } from './mysql-dynamic-case-service.js'
 
 type Body = Record<string, unknown>
 
@@ -50,6 +51,7 @@ export interface AppDependencies {
   planningServiceFactory?: () => PlanningService
   agentPlanningServiceFactory?: () => AgentPlanningService
   caseWorkspaceServiceFactory?: () => CaseWorkspaceService
+  mysqlDynamicCaseServiceFactory?: (scheduler: LabScheduler) => MySqlDynamicCaseService
   runtimeStatus?: () => Promise<Record<string, unknown>>
 }
 
@@ -133,7 +135,7 @@ export function buildApp(dependencies: AppDependencies): { app: FastifyInstance;
     const runId = String((request.params as { runId: string }).runId)
     const body = bodyOf(request)
     const run = scheduler.getRun(runId, bearer(request))
-    const manifest = getManifest(run.caseId)
+    const manifest = scheduler.manifestFor(run.caseId)
     const statement = stringField(body, 'statement')
     const sessionId = stringField(body, 'sessionId')
     const clientRequestId = stringField(body, 'clientRequestId')
@@ -158,7 +160,7 @@ export function buildApp(dependencies: AppDependencies): { app: FastifyInstance;
     throw new LabError('replay_not_ready', '当前案例尚未准备可用的回放快照', 503, true, { caseId, snapshotId: String((request.params as { snapshotId: string }).snapshotId) })
   })
 
-  if (dependencies.practiceServiceFactory) registerProductRoutes(app, dependencies.practiceServiceFactory(scheduler), dependencies.writingServiceFactory?.())
+  if (dependencies.practiceServiceFactory) registerProductRoutes(app, dependencies.practiceServiceFactory(scheduler), dependencies.writingServiceFactory?.(), dependencies.mysqlDynamicCaseServiceFactory?.(scheduler))
   if (dependencies.planningServiceFactory) registerPlanningRoutes(app, dependencies.planningServiceFactory(), dependencies.agentPlanningServiceFactory?.())
   if (dependencies.caseWorkspaceServiceFactory) registerCaseWorkspaceRoutes(app, dependencies.caseWorkspaceServiceFactory())
 
@@ -295,7 +297,7 @@ function optionalString(body: Body, key: string): string | null | undefined {
 
 function productRunId(request: FastifyRequest): string { return String((request.params as { runId: string }).runId) }
 
-function registerProductRoutes(app: FastifyInstance, service: PracticeService, writingService?: WritingService): void {
+function registerProductRoutes(app: FastifyInstance, service: PracticeService, writingService?: WritingService, mysqlDynamicCaseService?: MySqlDynamicCaseService): void {
   app.post('/api/product/sample-plans/mysql-performance', async (request, reply) => {
     reply.code(201).send(service.createMysqlPerformancePlan(learnerId(request)))
   })
@@ -382,6 +384,24 @@ function registerProductRoutes(app: FastifyInstance, service: PracticeService, w
     if (result.queue) return reply.code(202).send(result)
     return reply.code(201).send(result)
   })
+
+  if (mysqlDynamicCaseService) {
+    app.post('/api/product/roadmap-nodes/:nodeId/mysql-case-requests', async (request, reply) => {
+      const body = productBody(request)
+      reply.code(201).send(await mysqlDynamicCaseService.createCase(learnerId(request), {
+        roadmapNodeId: String((request.params as { nodeId: string }).nodeId),
+        request: body.request,
+        clientRequestId: stringField(body, 'clientRequestId'),
+      }))
+    })
+    app.post('/api/product/learning-cases/:caseId/mysql-practice', async (request, reply) => {
+      const result = await mysqlDynamicCaseService.startPractice(learnerId(request), String((request.params as { caseId: string }).caseId))
+      reply.code(201).send(result)
+    })
+    app.get('/api/product/learning-cases/:caseId/materialization', async (request, reply) => {
+      reply.send(mysqlDynamicCaseService.materializationFor(learnerId(request), String((request.params as { caseId: string }).caseId)))
+    })
+  }
 
   app.get('/api/product/practice-runs', async (request, reply) => {
     const query = request.query as { cursor?: string; limit?: string }

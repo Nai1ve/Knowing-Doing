@@ -121,7 +121,15 @@ class PythonPytestInterpreter extends RegisteredEnvironmentInterpreter {
   }
 }
 
+class GoTestInterpreter extends RegisteredEnvironmentInterpreter {
+  protected resolveExecutableCommand(command: string): boolean {
+    return command.trim().replace(/\s+/g, ' ') === 'go test ./...'
+  }
+}
+
 export function getEnvironmentInterpreter(key: string, version = '1'): EnvironmentInterpreter {
   const template = templateFor(key, version)
-  return template.key === 'python-pytest-v1' ? new PythonPytestInterpreter(template) : new RegisteredEnvironmentInterpreter(template)
+  if (template.key === 'python-pytest-v1') return new PythonPytestInterpreter(template)
+  if (template.key === 'go-test-v1') return new GoTestInterpreter(template)
+  return new RegisteredEnvironmentInterpreter(template)
 }

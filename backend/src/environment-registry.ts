@@ -25,7 +25,13 @@ const templates: EnvironmentTemplate[] = [
     commandPolicy: { allowedCommandKeys: ['sql', 'explain', 'benchmark'] },
     initializationContract: { supportsStarterFiles: false, supportsDatasetSeed: true, supportsSchemaSeed: true, supportsFaultSeed: true },
   },
-  ...plannedTemplate('go-test-v1', 'Go 测试工作区', 'go.testing', 'Go'),
+  {
+    key: 'go-test-v1', version: '1', runtimeKind: 'docker_workspace', status: 'available', displayName: 'Go + testing 工作区',
+    capabilityKeys: ['go.testing'], services: [{ key: 'go', role: 'runtime', displayName: 'Go 1.24' }], resourceProfile: 'small',
+    assetPolicy: { allowedExtensions: ['.go', '.mod', '.sum', '.md', '.txt'], maxFiles: 10, maxTotalBytes: 2 * 1024 * 1024 },
+    commandPolicy: { allowedCommandKeys: ['go_test'] },
+    initializationContract: { supportsStarterFiles: true, supportsDatasetSeed: false, supportsSchemaSeed: false, supportsFaultSeed: false },
+  },
   ...plannedTemplate('java-maven-v1', 'Java Maven 工作区', 'java.testing', 'Java'),
   ...plannedTemplate('rust-cargo-v1', 'Rust Cargo 工作区', 'rust.testing', 'Rust'),
   ...plannedTemplate('cpp-cmake-v1', 'C++ CMake 工作区', 'cpp.testing', 'C++'),
@@ -47,7 +53,7 @@ const capabilities: EnvironmentCapability[] = [
   { capabilityKey: 'python.collections.list', environmentKey: 'python-pytest-v1', environmentVersion: '1', provider: 'model', status: 'available', exerciseKinds: ['concept_drill', 'code_repair'], aliases: ['Python list', 'Python 列表', '列表', '索引', '切片', '可变性'] },
   { capabilityKey: 'mysql.performance', environmentKey: 'mysql-performance-v1', environmentVersion: '1', provider: 'fixture', status: 'available', exerciseKinds: ['data_diagnosis'], aliases: ['MySQL 性能'] },
   { capabilityKey: 'mysql.slow-query', environmentKey: 'mysql-performance-v1', environmentVersion: '1', provider: 'fixture', status: 'available', exerciseKinds: ['data_diagnosis'], aliases: ['MySQL 慢查询', 'EXPLAIN', '索引优化'] },
-  { capabilityKey: 'go.testing', environmentKey: 'go-test-v1', environmentVersion: '1', provider: 'model', status: 'planned', exerciseKinds: ['code_repair', 'concept_drill'], aliases: ['Go 测试'] },
+  { capabilityKey: 'go.testing', environmentKey: 'go-test-v1', environmentVersion: '1', provider: 'fixture', status: 'available', exerciseKinds: ['code_repair', 'concept_drill'], aliases: ['Go 测试', 'Go testing'] },
   { capabilityKey: 'java.testing', environmentKey: 'java-maven-v1', environmentVersion: '1', provider: 'model', status: 'planned', exerciseKinds: ['code_repair', 'concept_drill'], aliases: ['Java 测试'] },
   { capabilityKey: 'rust.testing', environmentKey: 'rust-cargo-v1', environmentVersion: '1', provider: 'model', status: 'planned', exerciseKinds: ['code_repair', 'concept_drill'], aliases: ['Rust 测试'] },
   { capabilityKey: 'cpp.testing', environmentKey: 'cpp-cmake-v1', environmentVersion: '1', provider: 'model', status: 'planned', exerciseKinds: ['code_repair', 'concept_drill'], aliases: ['C++ 测试'] },
@@ -63,6 +69,10 @@ const commandAliases: Record<string, Record<string, string>> = {
     pytest_quiet: 'pytest -q',
     'pytest -q': 'pytest -q',
     'python -m pytest -q': 'python -m pytest -q',
+  },
+  'go-test-v1': {
+    go_test: 'go test ./...',
+    'go test ./...': 'go test ./...',
   },
 }
 

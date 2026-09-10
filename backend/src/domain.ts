@@ -4,14 +4,17 @@ export const CASE_IDS = [
   'mysql-deep-pagination-001',
 ] as const
 
-export type CaseId = (typeof CASE_IDS)[number]
+// Fixed cases keep their literal IDs for the fixture catalog, while generated
+// cases use a learner-owned UUID. The scheduler still resolves every ID
+// through a registered manifest before it can be executed.
+export type CaseId = string
 export type SessionName = 'default' | 'tx-a' | 'tx-b'
 
 export type RunStatus = 'active' | 'expired' | 'released'
 export type QueueStatus = 'waiting' | 'ready' | 'expired' | 'cancelled'
 
 export interface CaseManifest {
-  id: CaseId
+  id: string
   title: string
   schema: string
   allowedSessions: SessionName[]

@@ -53,6 +53,31 @@ export class FixtureCaseBuilder implements CaseBuilderProvider {
       : `参考材料：${input.source?.title ?? '已选知乎材料'}\n${input.sourceSnapshot?.contentMarkdown ?? input.source?.excerpt ?? ''}`
     const caseInputLabel = input.sourceSnapshot ? `参考材料“${input.source?.title ?? '已选知乎材料'}”的冻结正文已作为案例上下文读取。` : `本次输入：${context.slice(0, 1200)}`
     const isList = input.context?.roadmapNode.capabilityKey === 'python.collections.list' || /(python\s*list|python\s*列表|列表|切片|可变性)/i.test(context)
+    const isGo = input.context?.roadmapNode.capabilityKey === 'go.testing'
+    if (isGo) {
+      const spec = parseCaseSpec({
+        title: 'Go 表格驱动测试中的边界条件修复',
+        scenario: `你接手了一个处理订单状态的 Go 小模块。先运行 go test，观察边界测试，再用最小修改修复实现。\n\n${caseInputLabel}`,
+        learningGoal: input.request.desiredOutcome?.trim() || '通过表格驱动测试理解 Go 函数边界、错误处理和测试反馈。',
+        difficulty: input.request.difficulty ?? 'applied',
+        environment: { key: 'go-test-v1', version: '1', templateKey: 'go-test-v1', services: [] },
+        starterFiles: [
+          { path: 'go.mod', content: 'module example.com/zhixing/orders\n\ngo 1.24\n' },
+          { path: 'orders.go', content: 'package orders\n\nfunc NormalizeStatus(status string) string {\n    // zhixing-fixture: go-order-status-starter\n    return status\n}\n' },
+          { path: 'orders_test.go', content: 'package orders\n\nimport "testing"\n\nfunc TestNormalizeStatus(t *testing.T) {\n    tests := []struct { input, want string }{\n        {" paid ", "PAID"},\n        {"pending", "PENDING"},\n        {"", "UNKNOWN"},\n    }\n    for _, test := range tests {\n        if got := NormalizeStatus(test.input); got != test.want { t.Errorf("NormalizeStatus(%q) = %q, want %q", test.input, got, test.want) }\n    }\n}\n' },
+          { path: 'README.md', content: '# Go 测试实践\n\n运行 `go test ./...`，观察空白和大小写输入的失败结果。\n' },
+        ],
+        tasks: [
+          { key: 'observe', instruction: '运行测试，记录失败输入和期望结果。', recommendedCommands: ['go test ./...'], expectedObservation: '空白和小写状态没有被规范化。' },
+          { key: 'inspect', instruction: '阅读实现和表格驱动测试，说明边界输入为何暴露问题。', recommendedCommands: ['go test ./...'], expectedObservation: '实现直接返回原字符串，没有统一大小写或处理空值。' },
+          { key: 'fix', instruction: '用最小修改规范化状态并重新验证。', recommendedCommands: ['go test ./...'], expectedObservation: '所有测试通过，空值返回 UNKNOWN。' },
+        ],
+        verification: { commands: ['go test ./...'], successSignals: ['ok', 'PASS'] },
+        tutorContext: { concepts: ['Go table-driven tests', '字符串规范化', '边界条件'], likelyMisconceptions: ['只修复样例而不处理空值', '忽略测试表中输入与期望的关系'], evidenceToNotice: ['go test 输出', '测试表', '修改前后函数行为'] },
+      })
+      input.onReferenceSolution?.({ files: [{ path: 'orders.go', content: 'package orders\n\nimport "strings"\n\nfunc NormalizeStatus(status string) string {\n    normalized := strings.ToUpper(strings.TrimSpace(status))\n    if normalized == "" { return "UNKNOWN" }\n    return normalized\n}\n' }], verificationCommands: ['go test ./...'] })
+      return spec
+    }
     if (isList) {
       const spec = parseCaseSpec({
         title: 'Python list 的创建、索引、切片与可变性',

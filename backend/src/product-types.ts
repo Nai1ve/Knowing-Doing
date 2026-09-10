@@ -219,6 +219,47 @@ export interface ReferenceSolution {
   verificationCommands: string[]
 }
 
+export type MySqlMaterializationStatus = 'pending' | 'materialized' | 'failed' | 'expired'
+export type MySqlFaultKey = 'wrong_index' | 'missing_index' | 'non_sargable_query'
+
+export interface MySqlExerciseRequest {
+  capabilityKey: 'mysql.slow-query'
+  environmentKey: 'mysql-performance-v1'
+  environmentVersion: '1'
+  schemaTemplateKey: 'orders-v1'
+  seedProfileKey: 'orders-100k-v1' | 'orders-1m-v1'
+  faultKey: MySqlFaultKey
+  queryTemplateKey: 'orders-by-user-created-v1'
+  parameters: { rowCount: number; distribution: 'uniform' | 'skewed' }
+}
+
+export interface MySqlMaterializationPlan {
+  registryVersion: string
+  request: MySqlExerciseRequest
+  schemaSql: string
+  seedProfile: { key: string; rowCount: number; distribution: string }
+  faultSeed: { key: MySqlFaultKey; sql: string }
+  query: { key: string; sql: string }
+  verification: { explainSignals: string[]; benchmarkSignals: string[] }
+  referenceSolution: { sql: string }
+}
+
+export interface CaseMaterialization {
+  id: string
+  learnerId: string
+  learningCaseId: string
+  environmentKey: string
+  environmentVersion: string
+  materializationFingerprint: string
+  registryVersion: string
+  status: MySqlMaterializationStatus
+  plan: MySqlMaterializationPlan | null
+  failureCode: string | null
+  failureMessage: string | null
+  createdAt: string
+  updatedAt: string
+}
+
 export interface LearningCase {
   id: string
   learnerId: string

@@ -40,4 +40,19 @@ describe('environment interpreters', () => {
   it('rejects an asset that the selected environment cannot initialize', () => {
     expect(() => parseExerciseSpecV2({ ...pythonExercise, starterAssets: [{ kind: 'schema', key: 'schema', content: 'CREATE TABLE x' }] })).toThrow('unsupported_asset_kind:schema')
   })
+
+  it('interprets the admitted Go template with its own file and command policy', () => {
+    const spec = parseExerciseSpecV2({
+      ...pythonExercise,
+      capabilityKey: 'go.testing',
+      environment: { key: 'go-test-v1', version: '1', services: ['go'] },
+      starterAssets: [{ kind: 'file', key: 'module', path: 'go.mod', content: 'module example.com/test\n\ngo 1.24\n' }],
+      tasks: [{ key: 'test', instruction: '运行 Go 测试。', recommendedCommandKeys: ['go_test'], expectedObservation: '测试输出可见。' }],
+      verification: { commandKeys: ['go_test'], successSignals: ['ok'] },
+    })
+    const materialized = getEnvironmentInterpreter('go-test-v1').materializeExercise(spec)
+    expect(materialized.environment.key).toBe('go-test-v1')
+    expect(materialized.verification.commands).toEqual(['go test ./...'])
+    expect(getEnvironmentInterpreter('go-test-v1').canExecute('python -c "import os"')).toBe(false)
+  })
 })

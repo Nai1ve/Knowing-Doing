@@ -9,9 +9,9 @@ describe('environment registry', () => {
     expect(resolveCapability('mysql.slow-query')).toMatchObject({ capability: { environmentVersion: '1' }, template: { key: 'mysql-performance-v1' } })
   })
 
-  it('keeps unsupported future environments planned', () => {
+  it('keeps unsupported future environments planned while admitting Go', () => {
     const go = getEnvironmentTemplate('go-test-v1')
-    expect(go).toMatchObject({ status: 'planned', key: 'go-test-v1' })
-    expect(listEnvironmentTemplates().filter((item) => item.status === 'available').map((item) => item.key)).toEqual(['python-pytest-v1', 'mysql-performance-v1'])
+    expect(go).toMatchObject({ status: 'available', key: 'go-test-v1' })
+    expect(listEnvironmentTemplates().filter((item) => item.status === 'planned').map((item) => item.key)).toEqual(['java-maven-v1', 'rust-cargo-v1', 'cpp-cmake-v1', 'go-redis-v1', 'kafka-kraft-v1'])
   })
 })

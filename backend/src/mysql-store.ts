@@ -24,10 +24,22 @@ export interface LabStore {
   }>
   closeConnection(connection: Connection, options?: { destroy?: boolean }): Promise<void>
   close?(): Promise<void>
+  registerDynamicCase?(manifest: CaseManifest, plan: DynamicMySqlMaterial): Promise<void>
+}
+
+export interface DynamicMySqlMaterial {
+  schemaSql: string
+  rowCount: number
+  distribution: 'uniform' | 'skewed'
+  faultSql: string
 }
 
 function quoteIdentifier(identifier: string): string {
   return `\`${identifier.replaceAll('`', '``')}\``
+}
+
+function quoteString(value: string): string {
+  return `'${value.replaceAll('\\', '\\\\').replaceAll("'", "''")}'`
 }
 
 function serializeValue(value: unknown): unknown {
@@ -56,6 +68,8 @@ function formatRawResult(columns: string[], rows: unknown[][], command?: { affec
 
 export class MySqlLabStore implements LabStore {
   private readonly runnerPools = new Map<CaseId, Pool>()
+  private readonly manifests = new Map<CaseId, CaseManifest>()
+  private readonly dynamicMaterials = new Map<CaseId, DynamicMySqlMaterial>()
   private readonly adminPool: Pool
 
   constructor(private readonly options: {
@@ -76,6 +90,7 @@ export class MySqlLabStore implements LabStore {
       connectionLimit: 3,
     })
     for (const manifest of listManifests()) {
+      this.manifests.set(manifest.id, manifest)
       this.runnerPools.set(manifest.id, mysql.createPool({
         host: options.host,
         port: options.port,
@@ -86,6 +101,38 @@ export class MySqlLabStore implements LabStore {
         connectionLimit: Math.max(1, Math.floor(options.runnerPoolSize / 3)),
         enableKeepAlive: true,
       }))
+    }
+  }
+
+  private manifestFor(caseId: CaseId): CaseManifest {
+    const manifest = this.manifests.get(caseId) ?? (listManifests().find((item) => item.id === caseId) ?? null)
+    if (!manifest) throw new LabError('case_not_found', '案例不存在', 404)
+    return manifest
+  }
+
+  async registerDynamicCase(manifest: CaseManifest, material: DynamicMySqlMaterial): Promise<void> {
+    if (!/^zhixing_dynamic_[a-f0-9]{12,64}$/.test(manifest.schema)) throw new LabError('invalid_dynamic_schema', '动态案例 schema 不符合平台命名规则', 422)
+    if (this.manifests.has(manifest.id)) return
+    const connection = await this.adminPool.getConnection()
+    try {
+      await connection.query(`CREATE DATABASE IF NOT EXISTS ${quoteIdentifier(manifest.schema)}`)
+      await connection.query(`GRANT SELECT, INSERT, UPDATE, DELETE, CREATE, ALTER, DROP, INDEX ON ${quoteIdentifier(manifest.schema)}.* TO ${quoteString(this.options.runnerUser)}@'%'`)
+      this.manifests.set(manifest.id, manifest)
+      this.dynamicMaterials.set(manifest.id, material)
+      this.runnerPools.set(manifest.id, mysql.createPool({
+        host: this.options.host,
+        port: this.options.port,
+        user: this.options.runnerUser,
+        password: this.options.runnerPassword,
+        database: manifest.schema,
+        waitForConnections: true,
+        connectionLimit: Math.max(1, Math.floor(this.options.runnerPoolSize / 3)),
+        enableKeepAlive: true,
+      }))
+    } catch (error) {
+      throw new LabError('dynamic_case_registration_failed', '动态 MySQL 案例环境注册失败', 503, true, { cause: error instanceof Error ? error.message : 'unknown' })
+    } finally {
+      connection.release()
     }
   }
 
@@ -107,18 +154,24 @@ export class MySqlLabStore implements LabStore {
   }
 
   async reset(caseId: CaseId): Promise<void> {
-    const manifest = getManifest(caseId)
+    const manifest = this.manifestFor(caseId)
     const connection = await this.adminPool.getConnection()
     try {
       await connection.query(`USE ${quoteIdentifier(manifest.schema)}`)
       await connection.beginTransaction()
-      for (const table of manifest.tables) {
-        await connection.query(`DELETE FROM ${quoteIdentifier(manifest.schema)}.${quoteIdentifier(table)}`)
+      const dynamic = this.dynamicMaterials.get(caseId)
+      if (dynamic) {
+        for (const table of manifest.tables) await connection.query(`DROP TABLE IF EXISTS ${quoteIdentifier(manifest.schema)}.${quoteIdentifier(table)}`)
+        await connection.query(dynamic.schemaSql)
+        await this.seedDynamicOrders(connection, manifest.schema, dynamic.rowCount, dynamic.distribution)
+        if (!/^\s*\/\*/.test(dynamic.faultSql)) await connection.query(dynamic.faultSql)
+      } else {
+        for (const table of manifest.tables) await connection.query(`DELETE FROM ${quoteIdentifier(manifest.schema)}.${quoteIdentifier(table)}`)
+        const script = await this.readFixtureScript(caseId)
+        for (const statement of splitSqlScript(script)) await connection.query(statement)
       }
-      const script = await this.readFixtureScript(caseId)
-      for (const statement of splitSqlScript(script)) await connection.query(statement)
       await connection.commit()
-      await this.restoreIndexes(connection, manifest)
+      if (!dynamic) await this.restoreIndexes(connection, manifest)
     } catch (error) {
       await connection.rollback().catch(() => undefined)
       throw new LabError('fixture_reset_failed', '案例环境重置失败', 503, true, { caseId, cause: error instanceof Error ? error.message : 'unknown' })
@@ -192,6 +245,21 @@ export class MySqlLabStore implements LabStore {
       this.adminPool.end(),
       ...[...this.runnerPools.values()].map((pool) => pool.end()),
     ])
+  }
+
+  private async seedDynamicOrders(connection: Connection, schema: string, rowCount: number, distribution: 'uniform' | 'skewed'): Promise<void> {
+    const batchSize = 2_000
+    for (let start = 1; start <= rowCount; start += batchSize) {
+      const end = Math.min(start + batchSize, rowCount + 1)
+      const values: Array<number | string> = []
+      const placeholders: string[] = []
+      for (let id = start; id < end; id += 1) {
+        const userId = distribution === 'skewed' ? (id % 20) + 1 : (id % 10_000) + 1
+        placeholders.push('(?, ?, FROM_UNIXTIME(?), ?)')
+        values.push(id, userId, 1_700_000_000 + id, (id % 10_000) + 100)
+      }
+      await connection.query(`INSERT INTO ${quoteIdentifier(schema)}.${quoteIdentifier('orders')} (id, user_id, created_at, total_cents) VALUES ${placeholders.join(',')}`, values)
+    }
   }
 
   private async readFixtureScript(caseId: CaseId): Promise<string> {
