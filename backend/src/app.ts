@@ -185,7 +185,10 @@ function registerPlanningRoutes(app: FastifyInstance, service: PlanningService, 
     const sessionId = String((request.params as { sessionId: string }).sessionId)
     const file = await request.file()
     if (!file || file.fieldname !== 'resume') throw new LabError('resume_required', '请选择 PDF 格式的简历', 422)
-    reply.code(201).send(await service.uploadResume(learnerId(request), sessionId, { filename: file.filename, mimetype: file.mimetype, file: file.file }))
+    const learner = learnerId(request)
+    const attachment = await service.uploadResume(learner, sessionId, { filename: file.filename, mimetype: file.mimetype, file: file.file })
+    if (agent?.isAgentSession(learner, sessionId)) await agent.attachResume(learner, sessionId)
+    reply.code(201).send(attachment)
   })
   app.post('/api/product/planning-sessions/:sessionId/adjustments', async (request, reply) => {
     const body = productBody(request)
@@ -217,15 +220,19 @@ function registerPlanningRoutes(app: FastifyInstance, service: PlanningService, 
     reply.send(service.completeNode(learnerId(request), String((request.params as { roadmapId: string }).roadmapId), String((request.params as { nodeId: string }).nodeId), { revision: numberField(body, 'revision'), status }))
   })
 
-  if (agent) registerAgentPlanningRoutes(app, agent)
+  if (agent) registerAgentPlanningRoutes(app, agent, service)
 }
 
-function registerAgentPlanningRoutes(app: FastifyInstance, service: AgentPlanningService): void {
+function registerAgentPlanningRoutes(app: FastifyInstance, service: AgentPlanningService, planningService: PlanningService): void {
   const stream = async (request: FastifyRequest, reply: FastifyReply, action: (send: (event: PlanningStreamEvent) => Promise<void>) => Promise<void>) => {
     reply.hijack(); reply.raw.writeHead(200, { 'Content-Type': 'text/event-stream; charset=utf-8', 'Cache-Control': 'no-cache, no-transform', Connection: 'keep-alive', 'X-Accel-Buffering': 'no' })
     const send = async (event: PlanningStreamEvent) => { if (!reply.raw.destroyed && !reply.raw.writableEnded) reply.raw.write(`event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`) }
     try { await action(send) } catch (error) { if (!reply.raw.destroyed && !reply.raw.writableEnded) await send({ type: 'failed', invocationId: 'unknown', code: error instanceof Error ? error.name : 'planning_failed', message: error instanceof Error ? error.message : '规划调用失败', retryable: true }) } finally { if (!reply.raw.writableEnded) reply.raw.end() }
   }
+  app.post('/api/product/planning-sessions/agent', async (request, reply) => {
+    const body = productBody(request)
+    reply.code(201).send(service.createSession(learnerId(request), { message: stringField(body, 'message'), clientRequestId: optionalString(body, 'clientRequestId') ?? randomUUID() }))
+  })
   app.post('/api/product/planning-sessions/stream', async (request, reply) => { const body = productBody(request); const message = stringField(body, 'message'); const requestId = optionalString(body, 'clientRequestId') ?? randomUUID(); await stream(request, reply, (send) => service.createAndStream(learnerId(request), message, requestId, send)) })
   app.get('/api/product/planning/state', async (request, reply) => reply.send(service.planningState(learnerId(request))))
   app.post('/api/product/planning-sessions/:sessionId/messages/stream', async (request, reply) => { const body = productBody(request); const sessionId = String((request.params as { sessionId: string }).sessionId); const message = stringField(body, 'message'); const requestId = optionalString(body, 'clientRequestId') ?? randomUUID(); await stream(request, reply, (send) => service.streamMessage(learnerId(request), sessionId, message, requestId, send)) })

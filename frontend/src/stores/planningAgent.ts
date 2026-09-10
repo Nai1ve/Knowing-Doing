@@ -1,7 +1,7 @@
 import { defineStore } from 'pinia'
 import { onBeforeUnmount } from 'vue'
 import { ref } from 'vue'
-import { createAgentPlanningSession, createAgentRoadmap, getAgentPlanningSession, getAgentPlanningState, getAgentRoadmapGeneration, retryAgentInvocation, retryAgentRoadmap, sendAgentPlanningMessage, uploadPlanningResume } from '@/api/planningService'
+import { createAgentPlanningSession, createAgentPlanningSessionDraft, createAgentRoadmap, getAgentPlanningSession, getAgentPlanningState, getAgentRoadmapGeneration, retryAgentInvocation, retryAgentRoadmap, sendAgentPlanningMessage, uploadPlanningResume } from '@/api/planningService'
 import type { AgentPlanningSession, AgentPlanningState, AgentRoadmapGeneration, PlanningStreamEvent } from '@/types/product'
 import { createClientId } from '@/utils/client-id'
 
@@ -56,7 +56,23 @@ export const usePlanningAgentStore = defineStore('planningAgent', () => {
   }
   function apply(event: PlanningStreamEvent) { if (event.type === 'assistant_delta') streamingAssistant.value += event.delta; if (event.type === 'roadmap_readiness') canGenerateRoadmap.value = event.readiness === 'ready'; if (event.type === 'next_question') { question.value = event.question; canGenerateRoadmap.value = event.canGenerateRoadmap }; if (event.type === 'completed') { session.value = event.session; streamingAssistant.value = '' } if (event.type === 'failed') { error.value = event.message; failedInvocationId.value = event.invocationId } }
   async function run(request: (onEvent: (event: PlanningStreamEvent) => void) => Promise<void>) { streaming.value = true; error.value = null; failedInvocationId.value = null; streamingAssistant.value = ''; try { await request(apply) } catch (cause) { error.value = cause instanceof Error ? cause.message : '规划服务不可用'; throw cause } finally { streaming.value = false } }
-  async function start(message: string, resume?: File) { await run((onEvent) => createAgentPlanningSession(message, createClientId(), onEvent)); if (session.value && resume) session.value.resume = await uploadPlanningResume(session.value.id, resume) as AgentPlanningSession['resume']; return session.value }
+  async function start(message: string, resume?: File) {
+    const requestId = createClientId()
+    streaming.value = true; error.value = null
+    try {
+      if (resume) {
+        session.value = await createAgentPlanningSessionDraft(message, requestId)
+        session.value.resume = await uploadPlanningResume(session.value.id, resume) as AgentPlanningSession['resume']
+        await run((onEvent) => sendAgentPlanningMessage(session.value!.id, message, requestId, onEvent))
+      } else {
+        await run((onEvent) => createAgentPlanningSession(message, requestId, onEvent))
+      }
+      return session.value
+    } catch (cause) {
+      error.value = cause instanceof Error ? cause.message : '规划会话创建失败'
+      throw cause
+    } finally { streaming.value = false }
+  }
   async function load(id: string) { stopPolling(); streaming.value = true; error.value = null; loadError.value = null; try { session.value = await getAgentPlanningSession(id); resumeGeneration(session.value.roadmapGeneration); return session.value } catch (cause) { loadError.value = cause instanceof Error ? cause.message : '规划会话加载失败'; throw cause } finally { streaming.value = false } }
   async function loadState(force = false) { if (state.value && !force) return state.value; stateLoading.value = true; loadError.value = null; try { state.value = await getAgentPlanningState(); hydrateGeneration(state.value.generation); if (state.value.generation && !terminalStatuses.has(state.value.generation.status)) { generating.value = true; void pollGeneration(state.value.generation.id) } return state.value } catch (cause) { loadError.value = cause instanceof Error ? cause.message : '规划状态加载失败'; throw cause } finally { stateLoading.value = false } }
   async function send(message: string) { if (!session.value) throw new Error('规划会话尚未加载'); const requestId = createClientId(); await run((onEvent) => sendAgentPlanningMessage(session.value!.id, message, requestId, onEvent)); return session.value }

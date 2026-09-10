@@ -33,6 +33,38 @@ describe('AgentPlanningService', () => {
     expect(repository.db.prepare('SELECT COUNT(*) AS count FROM planning_agent_invocations').get()).toMatchObject({ count: 2 })
   }))
 
+  it('treats an uploaded resume as explicit planner context and profile evidence', async () => {
+    let streamedResume: string | null = null
+    let streamedFacts: string[] = []
+    let interpretedResume: string | null = null
+    const provider: PlanningProvider = {
+      providerName: 'resume-test', modelName: 'test-model',
+      async stream(input, onDelta) {
+        streamedResume = input.resumeText ?? null
+        streamedFacts = input.context?.explicitFacts.map((item) => item.content) ?? []
+        await onDelta('我已经结合简历中的经历继续确认。')
+        return '我已经结合简历中的经历继续确认。'
+      },
+      async interpret(input) {
+        interpretedResume = input.resumeText ?? null
+        return { coveredTopics: [], dimensions: [], evidence: [], followUpTopic: 'projects' }
+      },
+    }
+    await withService(async (service, repository) => {
+      const learnerId = 'resume-agent-learner'
+      const session = service.createSession(learnerId, { message: '我想成为高级后端工程师', clientRequestId: 'resume-agent-start' })
+      const attachment = repository.replacePlanningResumeAttachment({ id: 'resume-attachment-1', learnerId, planningSessionId: session.id, originalFilename: 'resume.pdf', storedFilename: 'resume-attachment-1.pdf', sizeBytes: 128, sha256: 'resume-hash', pageCount: 1, extractedText: '在支付平台负责订单服务、MySQL 性能和发布决策。' })
+      await service.attachResume(learnerId, session.id)
+      const context = new PlanningContextCompiler(repository.db).current(learnerId, session.id)
+      expect(context?.explicitFacts).toEqual(expect.arrayContaining([expect.objectContaining({ content: '在支付平台负责订单服务、MySQL 性能和发布决策。', confidence: 1, importance: 5 })]))
+      await service.streamMessage(learnerId, session.id, session.goal, 'resume-agent-start', async () => undefined)
+      expect(streamedResume).toContain('支付平台负责订单服务')
+      expect(streamedFacts).toContain('在支付平台负责订单服务、MySQL 性能和发布决策。')
+      expect(interpretedResume).toContain('MySQL 性能')
+      expect(service.getSession(learnerId, session.id).profile?.evidence).toEqual(expect.arrayContaining([expect.objectContaining({ sourceType: 'resume', sourceId: 'resume-attachment-1' })]))
+    }, provider)
+  })
+
   it('exposes resumable planning state and coalesces concurrent roadmap generation', async () => withService(async (service, repository) => {
     const learnerId = 'state-learner'
     const session = service.createSession(learnerId, { message: '我想学习 MySQL 慢查询和索引优化', clientRequestId: 'state-start' })

@@ -102,7 +102,11 @@ function text(row: Row, key: string): string { return String(row[key]) }
 function nullable(row: Row, key: string): string | null { return row[key] == null ? null : String(row[key]) }
 function number(row: Row, key: string): number { return Number(row[key]) }
 function json<T>(value: unknown, fallback: T): T { if (typeof value !== 'string') return fallback; try { return JSON.parse(value) as T } catch { return fallback } }
-function resumeText(db: Database.Database, sessionId: string): string | null { const row = db.prepare('SELECT extracted_text FROM planning_resume_attachments WHERE planning_session_id = ? ORDER BY updated_at DESC LIMIT 1').get(sessionId) as Row | undefined; return row?.extracted_text == null ? null : String(row.extracted_text) }
+function resumeAttachment(db: Database.Database, sessionId: string): { id: string; text: string } | null {
+  const row = db.prepare('SELECT id, extracted_text FROM planning_resume_attachments WHERE planning_session_id = ? ORDER BY updated_at DESC LIMIT 1').get(sessionId) as Row | undefined
+  return row?.extracted_text == null ? null : { id: text(row, 'id'), text: String(row.extracted_text) }
+}
+function resumeText(db: Database.Database, sessionId: string): string | null { return resumeAttachment(db, sessionId)?.text ?? null }
 function generationFrom(row: Row | undefined): AgentRoadmapGeneration | null {
   if (!row) return null
   return { id: text(row, 'id'), status: text(row, 'status') as AgentRoadmapGeneration['status'], phase: text(row, 'phase') as AgentRoadmapGeneration['phase'], attemptCount: number(row, 'attempt_count'), roadmapId: nullable(row, 'roadmap_id'), failureCode: nullable(row, 'failure_code'), failureMessage: nullable(row, 'failure_message'), updatedAt: text(row, 'updated_at') }
@@ -139,7 +143,7 @@ export class DeepSeekPlanningAgent implements PlanningProvider {
       { role: 'system', content: '你是知行 Planner。用自然中文与用户讨论学习目标、经历、职责、能力、时间和产出。每次只提出一个最有价值的追问，也可以确认目前共识。不要展示思维过程、不要输出 JSON、不要假装已经理解用户未说过的内容。用户可以随时要求生成路线，未覆盖的信息只标记为待验证。' },
       ...(input.context ? [{ role: 'system' as const, content: `这是当前已编译的规划上下文，只能把 explicitFacts 视为用户明确提供的信息，hypotheses 必须继续验证：${JSON.stringify(input.context)}` }] : []),
       ...conversation,
-      { role: 'user', content: JSON.stringify({ goal: input.goal, requiredTopics: input.requiredTopics.map((topic) => ({ key: topic.key, label: topic.label, status: topic.status })), resume: input.context ? undefined : input.resumeText ? input.resumeText.slice(0, 12000) : null }) },
+      { role: 'user', content: JSON.stringify({ goal: input.goal, requiredTopics: input.requiredTopics.map((topic) => ({ key: topic.key, label: topic.label, status: topic.status })), resume: (input.resumeText ?? input.context?.resumeExcerpt)?.slice(0, 12000) ?? null }) },
     ] })
     let result = ''
     if (response.body && response.headers.get('content-type')?.toLowerCase().includes('text/event-stream')) {
@@ -202,7 +206,7 @@ export class DeepSeekPlanningAgent implements PlanningProvider {
   async interpret(input: { userMessage: string; assistantMessage: string; messages: AgentPlanningMessage[]; resumeText?: string | null; context?: PlanningContextPacket | null }): Promise<ProfileDelta> {
     const response = await this.call({ stream: false, temperature: 0, response_format: { type: 'json_object' }, messages: [
       { role: 'system', content: '你是学习画像解释器。只返回 JSON，不写解释。根据用户原话提取结构化增量，不把阅读或模型推测写成已掌握。格式：{"coveredTopics":string[],"dimensions":[{"key":string,"level":"unknown|exposed|applied|independent|advanced","confidence":number,"summary":string,"nextValidation":string}],"evidence":[{"topicKey":string|null,"sourceType":"user_message|resume|reading|concept|lab","sourceId":string,"excerpt":string}],"followUpTopic":string|null}。只能引用输入中存在的用户消息或简历。' },
-      { role: 'user', content: JSON.stringify({ userMessage: input.userMessage, assistantMessage: input.assistantMessage, context: input.context, messages: input.messages.slice(-12), resume: input.context ? undefined : input.resumeText?.slice(0, 12000) ?? null }) },
+      { role: 'user', content: JSON.stringify({ userMessage: input.userMessage, assistantMessage: input.assistantMessage, context: input.context, messages: input.messages.slice(-12), resume: (input.resumeText ?? input.context?.resumeExcerpt)?.slice(0, 12000) ?? null }) },
     ] })
     let value: unknown
     try { value = JSON.parse(stripThinking(contentFrom(await response.json()).replace(/^```json\s*/i, '').replace(/\s*```$/, ''))) } catch { throw new PlanningAgentError('profile_invalid_json', '画像解释器返回的 JSON 无效') }
@@ -260,6 +264,23 @@ export class AgentPlanningService {
 
   getSession(learnerId: string, sessionId: string): AgentPlanningSession { return this.sessionFrom(this.sessionRow(learnerId, sessionId)) }
 
+  async attachResume(learnerId: string, sessionId: string): Promise<PlanningContextPacket | null> {
+    const session = this.sessionRow(learnerId, sessionId)
+    const attachment = resumeAttachment(this.db, sessionId)
+    if (!attachment) return this.contextCompiler.current(learnerId, sessionId)
+    const packet = await this.updateContext({
+      learnerId,
+      sessionId,
+      goal: text(session, 'goal'),
+      messageId: null,
+      clientRequestId: `resume:${attachment.id}`,
+      resumeText: attachment.text,
+      delta: { coveredTopics: [], dimensions: [], followUpTopic: null, evidence: [{ topicKey: null, sourceType: 'resume', sourceId: attachment.id, excerpt: attachment.text }] },
+    })
+    this.db.prepare('UPDATE planning_sessions SET updated_at = ? WHERE id = ? AND learner_id = ?').run(new Date().toISOString(), sessionId, learnerId)
+    return packet
+  }
+
   private invocation(sessionId: string, learnerId: string, clientRequestId: string, kind: 'planner' | 'profile_interpreter'): Row | undefined { return this.db.prepare('SELECT * FROM planning_agent_invocations WHERE session_id = ? AND learner_id = ? AND client_request_id = ? AND kind = ?').get(sessionId, learnerId, clientRequestId, kind) as Row | undefined }
 
   async createAndStream(learnerId: string, message: string, clientRequestId: string, send: SendEvent): Promise<void> {
@@ -294,9 +315,13 @@ export class AgentPlanningService {
     })
     transaction(); await send({ type: 'accepted', invocationId, sessionId })
     try {
-      const messages = this.getSession(learnerId, sessionId).messages; const topics = this.topics(sessionId); const attachedResumeText = resumeText(this.db, sessionId); const context = this.contextCompiler.current(learnerId, sessionId); let assistant = ''
+      const messages = this.getSession(learnerId, sessionId).messages; const topics = this.topics(sessionId); const attachedResume = resumeAttachment(this.db, sessionId); const attachedResumeText = attachedResume?.text ?? null; const context = this.contextCompiler.current(learnerId, sessionId); let assistant = ''
       assistant = await this.provider.stream({ goal: text(current, 'goal'), messages, requiredTopics: topics, resumeText: attachedResumeText, context }, async (delta) => { await send({ type: 'assistant_delta', invocationId, delta }) })
-      const delta = await this.provider.interpret({ userMessage: content, assistantMessage: assistant, messages, resumeText: attachedResumeText, context }); const snapshotId = this.saveProfile(learnerId, sessionId, delta, content)
+      const interpreted = await this.provider.interpret({ userMessage: content, assistantMessage: assistant, messages, resumeText: attachedResumeText, context })
+      const delta: ProfileDelta = attachedResume
+        ? { ...interpreted, evidence: [...interpreted.evidence.filter((item) => !(item.sourceType === 'resume' && item.sourceId === attachedResume.id)), { topicKey: null, sourceType: 'resume', sourceId: attachedResume.id, excerpt: attachedResume.text.slice(0, 6000) }] }
+        : interpreted
+      const snapshotId = this.saveProfile(learnerId, sessionId, delta, content)
       const messageRow = this.db.prepare('SELECT id FROM planning_messages WHERE session_id = ? AND client_request_id = ? AND role = \'user\' ORDER BY sequence DESC LIMIT 1').get(sessionId, clientRequestId) as Row | undefined ?? (suppressUserMessage ? this.db.prepare("SELECT id FROM planning_messages WHERE session_id = ? AND role = 'user' ORDER BY sequence DESC LIMIT 1").get(sessionId) as Row | undefined : undefined)
       const contextInput = { learnerId, sessionId, goal: text(current, 'goal'), messageId: messageRow ? text(messageRow, 'id') : null, clientRequestId, delta, resumeText: attachedResumeText }
       await this.updateContext(contextInput)

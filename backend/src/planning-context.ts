@@ -73,14 +73,15 @@ export class PlanningContextCompiler {
     }
 
     for (const evidence of input.delta.evidence ?? []) {
-      const content = evidence.excerpt.trim().slice(0, 2000); if (!content) continue
-      const sourceKey = `${evidence.sourceType}:${evidence.sourceId || hash(content)}`
+      const isResume = evidence.sourceType === 'resume'
+      const content = evidence.excerpt.trim().slice(0, isResume ? 6000 : 2000); if (!content) continue
+      const sourceKey = isResume ? 'resume:current' : `${evidence.sourceType}:${evidence.sourceId || hash(content)}`
       const existing = merged.get(sourceKey)
       merged.set(sourceKey, {
         id: existing?.id ?? randomUUID(), key: sourceKey, kind: topicKind(evidence.topicKey), content,
-        status: evidence.sourceType === 'user_message' || evidence.sourceType === 'resume' ? 'explicit' : 'inferred',
-        confidence: existing?.confidence ?? (evidence.sourceType === 'user_message' || evidence.sourceType === 'resume' ? 1 : 0.5),
-        importance: evidence.topicKey ? 4 : 2,
+        status: evidence.sourceType === 'user_message' || isResume ? 'explicit' : 'inferred',
+        confidence: existing?.confidence ?? (evidence.sourceType === 'user_message' || isResume ? 1 : 0.5),
+        importance: isResume ? 5 : evidence.topicKey ? 4 : 2,
         sourceRefs: [evidence.sourceId ? `${evidence.sourceType}:${evidence.sourceId}` : `planning_message:${input.messageId ?? input.clientRequestId}`],
       })
     }

@@ -29,6 +29,7 @@ async function streamRequest(path: string, body: Record<string, unknown>, onEven
 }
 
 export function createAgentPlanningSession(message: string, clientRequestId: string, onEvent: (event: PlanningStreamEvent) => void): Promise<void> { return streamRequest('/product/planning-sessions/stream', { message, clientRequestId }, onEvent) }
+export function createAgentPlanningSessionDraft(message: string, clientRequestId: string): Promise<AgentPlanningSession> { return request<AgentPlanningSession>('/product/planning-sessions/agent', { method: 'POST', body: JSON.stringify({ message, clientRequestId }) }) }
 export function sendAgentPlanningMessage(sessionId: string, message: string, clientRequestId: string, onEvent: (event: PlanningStreamEvent) => void): Promise<void> { return streamRequest(`/product/planning-sessions/${sessionId}/messages/stream`, { message, clientRequestId }, onEvent) }
 export function getAgentPlanningSession(sessionId: string): Promise<AgentPlanningSession> { return request<AgentPlanningSession>(`/product/planning-sessions/${sessionId}`) }
 export function getAgentPlanningState(): Promise<AgentPlanningState> { return request<AgentPlanningState>('/product/planning/state') }
