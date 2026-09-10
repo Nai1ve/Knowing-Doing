@@ -37,6 +37,7 @@ export interface LabConfig {
   zhihuCliPath: string
   zhihuAccessSecret: string
   zhihuApiBaseUrl: string
+  zhihuArticlePath: string
   retrievalTimeoutMs: number
   retrievalCacheTtlMs: number
   caseIds: CaseId[]
@@ -83,6 +84,7 @@ export function loadConfig(): LabConfig {
     zhihuCliPath: process.env.ZHIXING_ZHIHU_CLI_PATH ?? '',
     zhihuAccessSecret: process.env.ZHIXING_ZHIHU_ACCESS_SECRET ?? '',
     zhihuApiBaseUrl: process.env.ZHIXING_ZHIHU_API_BASE_URL ?? 'https://developer.zhihu.com',
+    zhihuArticlePath: process.env.ZHIXING_ZHIHU_ARTICLE_PATH ?? '/api/v1/content/zhihu_article',
     retrievalTimeoutMs: numberEnv('ZHIXING_RETRIEVAL_TIMEOUT_MS', 15_000),
     retrievalCacheTtlMs: numberEnv('ZHIXING_RETRIEVAL_CACHE_TTL_MS', 24 * 60 * 60 * 1000),
     identityMode: process.env.ZHIXING_IDENTITY_MODE === 'shared_demo' || process.env.NODE_ENV === 'production' ? 'shared_demo' : 'client',

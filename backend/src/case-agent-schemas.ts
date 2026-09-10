@@ -11,6 +11,7 @@ export const caseIntentSchema = z.object({
   difficulty: z.enum(['introductory', 'applied', 'advanced']),
   scope: z.array(boundedString(400)).min(1).max(8),
   constraints: z.array(boundedString(400)).max(8),
+  sourceAnchors: z.array(z.object({ snapshotId: boundedString(160), segment: z.number().int().nonnegative().max(10_000), purpose: boundedString(400) })).max(20).default([]),
 })
 
 export const caseBlueprintSchema = z.object({
@@ -35,6 +36,7 @@ export const caseBlueprintSchema = z.object({
     likelyMisconceptions: z.array(boundedString(400)).max(20),
     evidenceToNotice: z.array(boundedString(400)).max(20),
   }),
+  sourceAnchors: z.array(z.object({ snapshotId: boundedString(160), segment: z.number().int().nonnegative().max(10_000), purpose: boundedString(400) })).max(20).default([]),
 })
 
 export function parseCaseIntent(value: unknown): CaseIntent { return caseIntentSchema.parse(value) as CaseIntent }

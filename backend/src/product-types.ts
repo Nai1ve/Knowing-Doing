@@ -84,7 +84,7 @@ export type LearningMode = 'lab' | 'workspace' | 'knowledge' | 'unavailable'
 export type CaseInputKind = 'brief' | 'zhihu_article'
 export type CaseDifficulty = 'introductory' | 'applied' | 'advanced'
 export type CaseGenerationStatus = 'generating' | 'ready' | 'failed' | 'archived'
-export type CaseGenerationJobStatus = 'queued' | 'running' | 'preflighting' | 'succeeded' | 'failed' | 'interrupted'
+export type CaseGenerationJobStatus = 'preparing_source' | 'queued' | 'running' | 'preflighting' | 'succeeded' | 'failed' | 'interrupted'
 export type WorkspaceRunStatus = 'provisioning' | 'active' | 'executing' | 'failed' | 'ended' | 'expired'
 export type WorkspaceExecutionStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'timed_out' | 'rejected'
 export type PracticeKind = 'mysql_lab' | 'code_workspace'
@@ -116,6 +116,44 @@ export interface CaseRequest {
   clientRequestId: string
 }
 
+export interface CaseSourceSnapshot {
+  id: string
+  learnerId: string
+  sourceItemId: string
+  provider: string
+  externalId: string | null
+  sourceUrl: string
+  title: string
+  author: string | null
+  contentMarkdown: string
+  contentChecksum: string
+  contentLength: number
+  extractionStatus: 'pending' | 'ready' | 'failed'
+  extractionError: string | null
+  retrievedAt: string
+  expiresAt: string | null
+  createdAt: string
+}
+
+export interface CaseSourceProvenance {
+  id: string
+  sourceItemId: string
+  provider: string
+  externalId: string | null
+  sourceUrl: string
+  title: string
+  author: string | null
+  contentChecksum: string
+  contentLength: number
+  extractionStatus: 'pending' | 'ready' | 'failed'
+  extractionError: string | null
+  retrievedAt: string
+  expiresAt: string | null
+  createdAt: string
+  injectedRange: { start: number; end: number }
+  segmentCount: number
+}
+
 export interface CaseSpec {
   title: string
   scenario: string
@@ -127,6 +165,7 @@ export interface CaseSpec {
   tasks: Array<{ key: string; instruction: string; recommendedCommands: string[]; expectedObservation: string }>
   verification: { commands: string[]; successSignals: string[] }
   tutorContext: { concepts: string[]; likelyMisconceptions: string[]; evidenceToNotice: string[] }
+  sourceAnchors?: Array<{ snapshotId: string; segment: number; purpose: string }>
 }
 
 /** Environment-neutral case contract interpreted by a registered runtime. */
@@ -198,6 +237,7 @@ export interface LearningCase {
   spec: CaseSpec | null
   specVersion?: number
   preflightStatus?: 'not_required' | 'queued' | 'running' | 'passed' | 'failed'
+  sourceSnapshot?: CaseSourceProvenance | null
   failureCode: string | null
   failureMessage: string | null
   createdAt: string

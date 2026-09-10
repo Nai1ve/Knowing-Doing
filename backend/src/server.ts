@@ -16,6 +16,7 @@ import { FixtureCaseBuilder, StagedModelCaseBuilder } from './case-builder.js'
 import { FakeWorkspaceRunnerClient, HttpWorkspaceRunnerClient } from './workspace-runner-client.js'
 import { DockerWorkspaceRuntimeAdapter } from './runtime-adapter.js'
 import { WorkspaceCompletionService } from './workspace-completion-service.js'
+import { SourceSnapshotService, ZhihuSourceContentProvider } from './case-source-snapshot.js'
 
 const config = loadConfig()
 const productRepository = new ProductRepository(config.productDbPath)
@@ -26,7 +27,7 @@ curation.resume()
 const writingService = new WritingService(productRepository, curation, new DeepSeekWritingAgent(config))
 writingService.resumeGenerations()
 const planningService = new PlanningService(productRepository, { resumeStoragePath: config.resumeStoragePath, resumeMaxBytes: config.resumeMaxBytes })
-const zhihuOpenApi = new ZhihuOpenApiClient({ accessSecret: config.zhihuAccessSecret, baseUrl: config.zhihuApiBaseUrl, timeoutMs: config.retrievalTimeoutMs })
+const zhihuOpenApi = new ZhihuOpenApiClient({ accessSecret: config.zhihuAccessSecret, baseUrl: config.zhihuApiBaseUrl, timeoutMs: config.retrievalTimeoutMs, articlePath: config.zhihuArticlePath })
 const agentPlanningService = new AgentPlanningService(productRepository, new DeepSeekPlanningAgent(config), { modelName: config.modelName }, zhihuOpenApi)
 agentPlanningService.recoverRoadmapGenerations()
 const workspaceRunner = config.workspaceRunnerFake
@@ -35,7 +36,8 @@ const workspaceRunner = config.workspaceRunnerFake
 const workspaceRuntime = new DockerWorkspaceRuntimeAdapter(workspaceRunner)
 const caseBuilder = config.caseBuilderProvider === 'model' ? new StagedModelCaseBuilder(config) : new FixtureCaseBuilder()
 const workspaceCompletion = new WorkspaceCompletionService(productRepository, planningService, (runId) => { writingService.enqueueAutoDraft(runId) })
-const caseWorkspaceService = new CaseWorkspaceService(productRepository, caseBuilder, workspaceRuntime, workspaceCompletion)
+const sourceSnapshots = new SourceSnapshotService(productRepository.db, new ZhihuSourceContentProvider(zhihuOpenApi))
+const caseWorkspaceService = new CaseWorkspaceService(productRepository, caseBuilder, workspaceRuntime, workspaceCompletion, undefined, sourceSnapshots)
 await caseWorkspaceService.resumeCaseJobs()
 await caseWorkspaceService.resumeWorkspaces()
 workspaceCompletion.resumePending()

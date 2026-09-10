@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import type { CaseRequest, CaseSpec, SourceItem } from './product-types.js'
+import type { CaseRequest, CaseSourceSnapshot, CaseSpec, SourceItem } from './product-types.js'
 import { parseCaseGenerationOutput, parseCaseSpec } from './case-schemas.js'
 import type { LabConfig } from './config.js'
 import { resolveEnvironmentCommand } from './environment-registry.js'
@@ -26,6 +26,7 @@ export interface CaseBuilderAttemptEvent {
 export interface CaseBuilderInput {
   request: CaseRequest
   source: SourceItem | null
+  sourceSnapshot?: CaseSourceSnapshot | null
   context?: CaseBuilderContext
   onAttempt?: (event: CaseBuilderAttemptEvent) => void
   onReferenceSolution?: (solution: ReferenceSolution) => void
@@ -49,12 +50,13 @@ export class FixtureCaseBuilder implements CaseBuilderProvider {
   async build(input: CaseBuilderInput): Promise<CaseSpec> {
     const context = input.request.input.kind === 'brief'
       ? input.request.input.brief ?? '完成一次 Python 测试修复实践。'
-      : `参考材料：${input.source?.title ?? '已选知乎材料'}\n${input.source?.excerpt ?? ''}`
+      : `参考材料：${input.source?.title ?? '已选知乎材料'}\n${input.sourceSnapshot?.contentMarkdown ?? input.source?.excerpt ?? ''}`
+    const caseInputLabel = input.sourceSnapshot ? `参考材料“${input.source?.title ?? '已选知乎材料'}”的冻结正文已作为案例上下文读取。` : `本次输入：${context.slice(0, 1200)}`
     const isList = input.context?.roadmapNode.capabilityKey === 'python.collections.list' || /(python\s*list|python\s*列表|列表|切片|可变性)/i.test(context)
     if (isList) {
       const spec = parseCaseSpec({
         title: 'Python list 的创建、索引、切片与可变性',
-        scenario: `你需要维护一个处理待办标签的 Python 小模块。先运行测试，观察 list 的索引、切片和可变性行为，再用最小修改修复实现。\n\n本次输入：${context.slice(0, 1200)}`,
+        scenario: `你需要维护一个处理待办标签的 Python 小模块。先运行测试，观察 list 的索引、切片和可变性行为，再用最小修改修复实现。\n\n${caseInputLabel}`,
         learningGoal: input.request.desiredOutcome?.trim() || '通过一个可运行案例理解 Python list 的创建、索引、切片和原地修改。',
         difficulty: input.request.difficulty ?? 'introductory',
         environment: { key: 'python-pytest-v1', version: '1', templateKey: 'python-pytest-v1', services: [] },
@@ -76,7 +78,7 @@ export class FixtureCaseBuilder implements CaseBuilderProvider {
     }
     const spec = parseCaseSpec({
       title: '订单汇总器中的边界条件修复',
-      scenario: `你接手了一个负责汇总订单金额的 Python 小模块。当前实现可以处理大多数订单，但边界条件测试失败。请先运行测试、阅读已有实现，再用最小修改修复问题。\n\n本次输入：${context.slice(0, 1200)}`,
+      scenario: `你接手了一个负责汇总订单金额的 Python 小模块。当前实现可以处理大多数订单，但边界条件测试失败。请先运行测试、阅读已有实现，再用最小修改修复问题。\n\n${caseInputLabel}`,
       learningGoal: input.request.desiredOutcome?.trim() || '通过阅读代码、运行测试和小步修改，完成一次可验证的 Python 问题修复。',
       difficulty: input.request.difficulty ?? 'applied',
       environment: { key: 'python-pytest-v1', version: '1', templateKey: 'python-pytest-v1', services: [] },
@@ -139,7 +141,7 @@ export class ModelCaseBuilder implements CaseBuilderProvider {
   }
 
   async build(input: CaseBuilderInput): Promise<CaseSpec> {
-    const context = JSON.stringify({ request: input.request, source: input.source, context: input.context ?? null, preflightDiagnostics: input.preflightDiagnostics ?? null })
+    const context = JSON.stringify({ request: input.request, source: input.source, sourceSnapshot: input.sourceSnapshot ?? null, context: input.context ?? null, preflightDiagnostics: input.preflightDiagnostics ?? null })
     const selected = input.context?.roadmapNode.capabilityKey ?? 'unknown'
     const environmentKey = input.context ? '已由服务端冻结' : 'python-pytest-v1'
     const system = `你是知行的案例构建器。只为服务端已经选定的运行环境构造真实可实践的工程案例。当前能力是 ${selected}，环境是 ${environmentKey}。只输出完整 CaseSpec JSON，不输出解释、Markdown、Dockerfile、Compose、shell、镜像、宿主机路径、网络配置、密钥或未经允许的命令。不得自行更换运行环境。案例必须能通过阅读代码、运行允许的测试命令、修改代码、再次验证完成。`
@@ -227,10 +229,10 @@ export class StagedModelCaseBuilder implements CaseBuilderProvider {
     const { compileCaseContext, contextForPrompt } = await import('./case-context.js')
     const { parseCaseBlueprint, parseCaseIntent } = await import('./case-agent-schemas.js')
     const context = compileCaseContext(input); const promptContext = JSON.stringify({ frozenContext: JSON.parse(contextForPrompt(context)), preflightDiagnostics: input.preflightDiagnostics ?? null })
-    const intent = await this.phase<CaseIntent>('intent', '你是案例意图分析器。根据冻结上下文提炼一个可实践的工程问题。只输出 CaseIntent JSON，不选择或修改运行环境，不输出 Docker 或基础设施配置。', promptContext, parseCaseIntent, input, context.fingerprint)
+    const intent = await this.phase<CaseIntent>('intent', '你是案例意图分析器。根据冻结上下文提炼一个可实践的工程问题。只输出 CaseIntent JSON，不选择或修改运行环境，不输出 Docker 或基础设施配置。若冻结上下文包含 sourceContent，只能引用其中的 snapshotId 和 segment，并在 sourceAnchors 中说明用途。', promptContext, parseCaseIntent, input, context.fingerprint)
     if (intent.targetCapability !== context.roadmapNode.capabilityKey) throw new CaseBuilderError('intent_capability_mismatch', '案例意图没有保持路线节点能力')
     if (context.roadmapNode.capabilityKey === 'python.collections.list' && !/(list|列表|索引|切片|可变性)/i.test(`${intent.scenario} ${intent.desiredObservation} ${intent.scope.join(' ')}`)) throw new CaseBuilderError('intent_scope_mismatch', 'Python list 案例意图没有覆盖当前学习范围')
-    const blueprint = await this.phase<CaseBlueprint>('blueprint', '你是案例蓝图设计器。根据冻结上下文和 CaseIntent 设计任务顺序、案例资产和验证计划。只能使用服务端提供的运行环境能力，命令必须使用逻辑 command key。只输出 CaseBlueprint JSON。', { context: promptContext, intent }, parseCaseBlueprint, input, context.fingerprint)
+    const blueprint = await this.phase<CaseBlueprint>('blueprint', '你是案例蓝图设计器。根据冻结上下文和 CaseIntent 设计任务顺序、案例资产和验证计划。只能使用服务端提供的运行环境能力，命令必须使用逻辑 command key。若使用 sourceContent，保留合法的 sourceAnchors。只输出 CaseBlueprint JSON。', { context: promptContext, intent }, parseCaseBlueprint, input, context.fingerprint)
     try {
       for (const commandKey of blueprint.verificationPlan.commandKeys) {
         if (!resolveEnvironmentCommand(context.environment.key, context.environment.version, commandKey)) throw new Error(`unsupported_command_key:${commandKey}`)
@@ -249,9 +251,12 @@ export class StagedModelCaseBuilder implements CaseBuilderProvider {
       input.onAttempt?.({ phase: 'blueprint', status: 'failed', modelName: this.config.modelName, promptVersion: this.promptVersion, contextFingerprint: context.fingerprint, diagnostics: { validationError: error instanceof Error ? error.message : 'invalid_blueprint_boundary' } })
       throw new CaseBuilderError('blueprint_boundary_violation', error instanceof Error ? error.message : '案例蓝图超出环境能力')
     }
-    const generated = await this.phase<{ spec: CaseSpec; referenceSolution: ReferenceSolution | null }>('generate', '你是案例实现器。根据冻结上下文、CaseIntent 和 CaseBlueprint 生成案例。只输出包含 exerciseSpec 和可选 referenceSolution 的 JSON；referenceSolution 仅供服务端预检，不能写入 starterFiles，也不能包含 Docker 或宿主机配置。环境必须原样使用上下文中的 key 和 version；不得输出 Dockerfile、Compose、镜像、宿主机路径、网络配置、密钥或任意 shell。exerciseSpec 的命令使用环境允许的逻辑 command key。', { context: promptContext, intent, blueprint, outputContract: CASE_GENERATION_CONTRACT }, (value) => {
+    const generated = await this.phase<{ spec: CaseSpec; referenceSolution: ReferenceSolution | null }>('generate', '你是案例实现器。根据冻结上下文、CaseIntent 和 CaseBlueprint 生成案例。只输出包含 exerciseSpec 和可选 referenceSolution 的 JSON；referenceSolution 仅供服务端预检，不能写入 starterFiles，也不能包含 Docker 或宿主机配置。环境必须原样使用上下文中的 key 和 version；不得输出 Dockerfile、Compose、镜像、宿主机路径、网络配置、密钥或任意 shell。exerciseSpec 的命令使用环境允许的逻辑 command key；若使用 sourceContent，保留合法的 sourceAnchors。', { context: promptContext, intent, blueprint, outputContract: CASE_GENERATION_CONTRACT }, (value) => {
       const parsed = parseCaseGenerationOutput(value)
       if (parsed.spec.environment.key !== context.environment.key || parsed.spec.environment.version !== context.environment.version) throw new Error('environment_substitution_rejected')
+      const anchors = parsed.spec.sourceAnchors ?? []
+      if (anchors.length > 0 && !context.sourceContent) throw new Error('source_anchor_without_snapshot')
+      if (context.sourceContent && anchors.some((anchor) => anchor.snapshotId !== context.sourceContent!.snapshotId || anchor.segment >= context.sourceContent!.segments.length)) throw new Error('source_anchor_out_of_range')
       return parsed
     }, input, context.fingerprint, true)
     if (generated.referenceSolution) input.onReferenceSolution?.(generated.referenceSolution)
@@ -259,4 +264,4 @@ export class StagedModelCaseBuilder implements CaseBuilderProvider {
   }
 }
 
-const CASE_GENERATION_CONTRACT = '{"exerciseSpec":{"title":"string","scenario":"string","learningGoal":"string","difficulty":"introductory|applied|advanced","environment":{"key":"string","version":"string","templateKey":"string","services":["string"]},"starterFiles":[{"path":"relative .py/.json/.md/.txt path","content":"string"}],"tasks":[{"key":"string","instruction":"string","recommendedCommands":["registered command key"],"expectedObservation":"string"}],"verification":{"commands":["registered command key"],"successSignals":["string"]},"tutorContext":{"concepts":["string"],"likelyMisconceptions":["string"],"evidenceToNotice":["string"]}},"referenceSolution":{"files":[{"path":"relative path","content":"private solution file"}],"verificationCommandKeys":["registered command key"]}}'
+const CASE_GENERATION_CONTRACT = '{"exerciseSpec":{"title":"string","scenario":"string","learningGoal":"string","difficulty":"introductory|applied|advanced","environment":{"key":"string","version":"string","templateKey":"string","services":["string"]},"starterFiles":[{"path":"relative .py/.json/.md/.txt path","content":"string"}],"tasks":[{"key":"string","instruction":"string","recommendedCommands":["registered command key"],"expectedObservation":"string"}],"verification":{"commands":["registered command key"],"successSignals":["string"]},"tutorContext":{"concepts":["string"],"likelyMisconceptions":["string"],"evidenceToNotice":["string"]},"sourceAnchors":[{"snapshotId":"string","segment":0,"purpose":"string"}]},"referenceSolution":{"files":[{"path":"relative path","content":"private solution file"}],"verificationCommandKeys":["registered command key"]}}'

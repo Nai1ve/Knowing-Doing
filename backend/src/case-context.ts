@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto'
 import { resolveCapability } from './environment-registry.js'
 import { CaseBuilderError, type CaseBuilderContext, type CaseBuilderInput } from './case-builder.js'
-import type { EnvironmentTemplate, SourceItem } from './product-types.js'
+import type { CaseSourceSnapshot, EnvironmentTemplate, SourceItem } from './product-types.js'
 
 export interface FrozenCaseContext {
   fingerprint: string
@@ -17,6 +17,7 @@ export interface FrozenCaseContext {
   rationale: CaseBuilderContext['roadmapRationale']
   learnerProfile: CaseBuilderContext['learnerProfile']
   source: { id: string; title: string; author: string | null; url: string; excerpt: string; retrievedAt: string } | null
+  sourceContent: { snapshotId: string; checksum: string; contentLength: number; contentMarkdown: string; segments: Array<{ segment: number; content: string }> } | null
 }
 
 function stableJson(value: unknown): string {
@@ -30,6 +31,12 @@ function hash(value: unknown): string { return createHash('sha256').update(stabl
 function sourceSnapshot(source: SourceItem | null): FrozenCaseContext['source'] {
   if (!source) return null
   return { id: source.id, title: source.title, author: source.author, url: source.url, excerpt: source.excerpt.slice(0, 6000), retrievedAt: source.retrievedAt }
+}
+
+function snapshotContent(snapshot: CaseSourceSnapshot | null): FrozenCaseContext['sourceContent'] {
+  if (!snapshot) return null
+  const segments = snapshot.contentMarkdown.split(/\n{2,}/).map((content) => content.trim()).filter(Boolean).map((content, segment) => ({ segment, content: content.slice(0, 4000) }))
+  return { snapshotId: snapshot.id, checksum: snapshot.contentChecksum, contentLength: snapshot.contentLength, contentMarkdown: snapshot.contentMarkdown.slice(0, 60000), segments }
 }
 
 export function compileCaseContext(input: CaseBuilderInput): FrozenCaseContext {
@@ -52,6 +59,7 @@ export function compileCaseContext(input: CaseBuilderInput): FrozenCaseContext {
     rationale: builderContext.roadmapRationale,
     learnerProfile: builderContext.learnerProfile,
     source: sourceSnapshot(input.source),
+    sourceContent: snapshotContent(input.sourceSnapshot ?? null),
   }
   return { ...frozen, fingerprint: hash(frozen) }
 }

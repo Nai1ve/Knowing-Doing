@@ -12,6 +12,7 @@ export interface ZhihuOpenApiConfig {
   accessSecret: string
   baseUrl: string
   timeoutMs: number
+  articlePath?: string
 }
 
 function text(value: unknown): string | null {
@@ -74,6 +75,16 @@ export class ZhihuOpenApiClient {
     return arrayFrom(payload).map((item, index) => mapSearchItem(item, normalized, index)).filter((item): item is SourceItem => item !== null)
   }
 
+  async fetchArticle(source: Pick<SourceItem, 'externalId' | 'url'>): Promise<string> {
+    const externalId = source.externalId?.trim()
+    if (!externalId) throw new ZhihuOpenApiError('zhihu_external_id_missing', '知乎材料缺少可读取的 externalId', false)
+    const path = this.config.articlePath ?? '/api/v1/content/zhihu_article'
+    const payload = await this.request(`${path}?Id=${encodeURIComponent(externalId)}`, { method: 'GET' })
+    const content = findContent(payload)
+    if (!content) throw new ZhihuOpenApiError('zhihu_content_unavailable', '知乎开放 API 没有返回文章正文')
+    return content
+  }
+
   async research(input: { goal: string; profileSummary: string; nodeTitle: string }): Promise<string> {
     const payload = await this.request('/v1/chat/completions', { method: 'POST', body: JSON.stringify({ model: 'zhida-agent', stream: false, messages: [
       { role: 'system', content: '你是知乎知识路径研究者。只输出简洁的知识地形、典型问题和 2 至 3 个公开搜索意图，不输出思维过程。' },
@@ -85,4 +96,23 @@ export class ZhihuOpenApiClient {
     if (!result.trim()) throw new ZhihuOpenApiError('zhihu_empty_research', '知乎直答没有返回研究结果')
     return result.replace(/<think(?:ing)?>([\s\S]*?)<\/(?:think|thinking)>/gi, '').trim()
   }
+}
+
+function findContent(value: unknown): string | null {
+  if (typeof value === 'string' && value.trim().length > 0) return value.trim()
+  if (!value || typeof value !== 'object') return null
+  if (Array.isArray(value)) {
+    for (const item of value) { const result = findContent(item); if (result) return result }
+    return null
+  }
+  const object = value as Record<string, unknown>
+  for (const key of ['content_markdown', 'contentMarkdown', 'body', 'content', 'text', 'html']) {
+    const candidate = object[key]
+    if (typeof candidate === 'string' && candidate.trim().length > 0) return candidate.trim()
+  }
+  for (const key of ['data', 'result', 'article']) {
+    const result = findContent(object[key])
+    if (result) return result
+  }
+  return null
 }

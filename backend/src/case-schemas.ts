@@ -27,6 +27,7 @@ export const caseSpecSchema = z.object({
   tasks: z.array(z.object({ key: z.string().trim().min(1).max(80), instruction: z.string().trim().min(1).max(4000), recommendedCommands: z.array(z.string().trim().min(1).max(240)).min(1).max(8), expectedObservation: z.string().trim().min(1).max(2000) })).min(1).max(12),
   verification: z.object({ commands: z.array(z.string().trim().min(1).max(240)).min(1).max(8), successSignals: z.array(z.string().trim().min(1).max(240)).min(1).max(12) }),
   tutorContext: z.object({ concepts: z.array(z.string().trim().min(1).max(240)).max(20), likelyMisconceptions: z.array(z.string().trim().min(1).max(400)).max(20), evidenceToNotice: z.array(z.string().trim().min(1).max(400)).max(20) }),
+  sourceAnchors: z.array(z.object({ snapshotId: z.string().trim().min(1).max(160), segment: z.number().int().nonnegative().max(10_000), purpose: z.string().trim().min(1).max(400) })).max(20).optional(),
 })
 
 const referenceSolutionSchema = z.object({
@@ -54,6 +55,7 @@ export const exerciseSpecV2Schema = z.object({
   tasks: z.array(z.object({ key: z.string().trim().min(1).max(80), instruction: z.string().trim().min(1).max(4000), recommendedCommandKeys: z.array(z.string().trim().min(1).max(120)).min(1).max(8), expectedObservation: z.string().trim().min(1).max(2000) })).min(1).max(12),
   verification: z.object({ commandKeys: z.array(z.string().trim().min(1).max(120)).min(1).max(8), successSignals: z.array(z.string().trim().min(1).max(240)).min(1).max(12) }),
   tutorContext: z.object({ concepts: z.array(z.string().trim().min(1).max(240)).max(20), likelyMisconceptions: z.array(z.string().trim().min(1).max(400)).max(20), evidenceToNotice: z.array(z.string().trim().min(1).max(400)).max(20) }),
+  sourceAnchors: z.array(z.object({ snapshotId: z.string().trim().min(1).max(160), segment: z.number().int().nonnegative().max(10_000), purpose: z.string().trim().min(1).max(400) })).max(20).optional(),
 })
 
 const referenceSolutionV2Schema = z.object({ assets: z.array(exerciseAssetSchema).min(1).max(16), verificationCommandKeys: z.array(z.string().trim().min(1).max(120)).min(1).max(8) })

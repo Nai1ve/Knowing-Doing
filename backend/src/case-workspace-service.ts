@@ -6,12 +6,13 @@ import { MAX_WORKSPACE_FILE_BYTES, MAX_WORKSPACE_TOTAL_BYTES, parseCaseRequest, 
 import { CaseBuilderError, type CaseBuilderAttemptEvent, type CaseBuilderAttemptPhase, type CaseBuilderContext, type CaseBuilderProvider } from './case-builder.js'
 import { CasePreflightError, CasePreflightService } from './case-preflight-service.js'
 import { LabError } from './errors.js'
-import type { CaseRequest, CaseSpec, EnvironmentTemplate, LearningCase, CaseGenerationJob, CasePreflightSummary, PracticeRun, ReferenceSolution, SourceItem, WorkspaceCompletion, WorkspaceExecution, WorkspaceFile, WorkspaceRun, WorkspaceTutorHistory } from './product-types.js'
+import type { CaseRequest, CaseSourceProvenance, CaseSpec, EnvironmentTemplate, LearningCase, CaseGenerationJob, CasePreflightSummary, PracticeRun, ReferenceSolution, SourceItem, WorkspaceCompletion, WorkspaceExecution, WorkspaceFile, WorkspaceRun, WorkspaceTutorHistory } from './product-types.js'
 import type { ProductRepository } from './product-repository.js'
 import type { RunnerFileInput, WorkspaceRunnerClient } from './workspace-runner-client.js'
 import { DockerWorkspaceRuntimeAdapter, type RuntimeAdapter } from './runtime-adapter.js'
 import { WorkspaceRunnerError } from './workspace-runner-client.js'
 import { getEnvironmentInterpreter } from './environment-interpreters.js'
+import { MAX_SOURCE_INJECT_CHARS, SourceSnapshotService } from './case-source-snapshot.js'
 
 type Row = Record<string, unknown>
 
@@ -31,12 +32,17 @@ function sourceFrom(row: Row): SourceItem {
 }
 
 function learningCaseFrom(row: Row): LearningCase {
+  const inputSnapshot = json<Record<string, unknown>>(row.input_snapshot_json, {})
+  const sourceMeta = inputSnapshot.sourceSnapshot && typeof inputSnapshot.sourceSnapshot === 'object' ? inputSnapshot.sourceSnapshot as Record<string, unknown> : {}
+  const sourceSnapshot = row.source_snapshot_id == null ? null : {
+    id: text(row, 'source_snapshot_id'), sourceItemId: text(row, 'source_item_id'), provider: text(row, 'source_provider'), externalId: nullable(row, 'source_external_id'), sourceUrl: text(row, 'source_url'), title: text(row, 'source_title'), author: nullable(row, 'source_author'), contentChecksum: text(row, 'source_content_checksum'), contentLength: number(row, 'source_content_length'), extractionStatus: text(row, 'source_extraction_status') as CaseSourceProvenance['extractionStatus'], extractionError: nullable(row, 'source_extraction_error'), retrievedAt: text(row, 'source_retrieved_at'), expiresAt: nullable(row, 'source_expires_at'), createdAt: text(row, 'source_created_at'), injectedRange: { start: Number(sourceMeta.injectedStart ?? 0), end: Number(sourceMeta.injectedEnd ?? 0) }, segmentCount: Number(sourceMeta.segmentCount ?? 0),
+  } satisfies CaseSourceProvenance
   return {
     id: text(row, 'id'), learnerId: text(row, 'learner_id'), roadmapNodeId: text(row, 'roadmap_node_id'), capabilityKey: text(row, 'capability_key'), templateKey: text(row, 'template_key'),
-    inputKind: text(row, 'input_kind') as LearningCase['inputKind'], inputSnapshot: json<Record<string, unknown>>(row.input_snapshot_json, {}), inputFingerprint: text(row, 'input_fingerprint'),
+    inputKind: text(row, 'input_kind') as LearningCase['inputKind'], inputSnapshot, inputFingerprint: text(row, 'input_fingerprint'),
     provider: text(row, 'provider') as LearningCase['provider'], version: number(row, 'version'), status: text(row, 'status') as LearningCase['status'], spec: row.case_spec_json === '{}' ? null : json<CaseSpec | null>(row.case_spec_json, null), specVersion: number(row, 'spec_version'), preflightStatus: text(row, 'preflight_status') as LearningCase['preflightStatus'],
     environmentKey: nullable(row, 'environment_key') ?? text(row, 'template_key'), environmentVersion: nullable(row, 'environment_version') ?? '1', runtimeKind: (nullable(row, 'runtime_kind') ?? 'docker_workspace') as LearningCase['runtimeKind'],
-    failureCode: nullable(row, 'failure_code'), failureMessage: nullable(row, 'failure_message'), createdAt: text(row, 'created_at'), updatedAt: text(row, 'updated_at'),
+    sourceSnapshot, failureCode: nullable(row, 'failure_code'), failureMessage: nullable(row, 'failure_message'), createdAt: text(row, 'created_at'), updatedAt: text(row, 'updated_at'),
   }
 }
 
@@ -73,7 +79,7 @@ export class CaseWorkspaceService {
   private readonly runner: RuntimeAdapter
   private readonly preflight: CasePreflightService
 
-  constructor(private readonly repository: ProductRepository, private readonly builder: CaseBuilderProvider, runner: RuntimeAdapter | WorkspaceRunnerClient, private readonly completionService?: { completionForWorkspace(learnerId: string, workspaceRunId: string): WorkspaceCompletion | null; evaluateExecution(learnerId: string, workspaceRunId: string, executionId: string): WorkspaceCompletion | null; recheck(learnerId: string, workspaceRunId: string): WorkspaceCompletion | null }, preflight?: CasePreflightService) {
+  constructor(private readonly repository: ProductRepository, private readonly builder: CaseBuilderProvider, runner: RuntimeAdapter | WorkspaceRunnerClient, private readonly completionService?: { completionForWorkspace(learnerId: string, workspaceRunId: string): WorkspaceCompletion | null; evaluateExecution(learnerId: string, workspaceRunId: string, executionId: string): WorkspaceCompletion | null; recheck(learnerId: string, workspaceRunId: string): WorkspaceCompletion | null }, preflight?: CasePreflightService, private readonly sourceSnapshots?: SourceSnapshotService) {
     this.runner = 'provision' in runner ? runner : new DockerWorkspaceRuntimeAdapter(runner)
     this.preflight = preflight ?? new CasePreflightService(repository, this.runner)
   }
@@ -87,7 +93,9 @@ export class CaseWorkspaceService {
   }
 
   private caseForLearner(learnerId: string, caseId: string): LearningCase {
-    const row = this.db.prepare('SELECT * FROM learning_cases WHERE id = ? AND learner_id = ?').get(caseId, learnerId) as Row | undefined
+    const row = this.db.prepare(`SELECT c.*, s.id AS source_snapshot_id, s.source_item_id, s.provider AS source_provider, s.external_id AS source_external_id, s.source_url, s.title AS source_title, s.author AS source_author, s.content_checksum AS source_content_checksum, s.content_length AS source_content_length, s.extraction_status AS source_extraction_status, s.extraction_error AS source_extraction_error, s.retrieved_at AS source_retrieved_at, s.expires_at AS source_expires_at, s.created_at AS source_created_at
+      FROM learning_cases c LEFT JOIN case_source_snapshots s ON s.id = c.source_snapshot_id
+      WHERE c.id = ? AND c.learner_id = ?`).get(caseId, learnerId) as Row | undefined
     if (!row) throw new LabError('case_not_found', '案例不存在', 404)
     return learningCaseFrom(row)
   }
@@ -143,7 +151,7 @@ export class CaseWorkspaceService {
     const environment = getEnvironmentTemplate(capability.environmentKey)
     if (!environment || environment.status !== 'available' || environment.runtimeKind !== 'docker_workspace') throw new LabError('workspace_environment_unavailable', '当前运行环境尚未开放', 409)
     const source = request.input.kind === 'zhihu_article' ? this.visibleSource(learnerId, request.input.sourceItemId!) : null
-    const inputSnapshot = request.input.kind === 'brief' ? { ...request.input, desiredOutcome: request.desiredOutcome ?? null, difficulty: request.difficulty ?? null } : { ...request.input, desiredOutcome: request.desiredOutcome ?? null, difficulty: request.difficulty ?? null, source: source ? { id: source.id, title: source.title, author: source.author, url: source.url, excerpt: source.excerpt, retrievedAt: source.retrievedAt } : null }
+    const inputSnapshot = request.input.kind === 'brief' ? { ...request.input, desiredOutcome: request.desiredOutcome ?? null, difficulty: request.difficulty ?? null } : { ...request.input, desiredOutcome: request.desiredOutcome ?? null, difficulty: request.difficulty ?? null, source: source ? { id: source.id, title: source.title, author: source.author, url: source.url, excerpt: source.excerpt, retrievedAt: source.retrievedAt } : null, sourceSnapshot: null }
     const rationale = (this.db.prepare('SELECT source_type, source_id, excerpt FROM roadmap_node_evidence WHERE roadmap_id = ? AND node_id = ? ORDER BY position ASC LIMIT 12').all(text(node, 'roadmap_id'), request.roadmapNodeId) as Row[]).map((item) => ({ sourceType: text(item, 'source_type'), sourceId: text(item, 'source_id'), excerpt: text(item, 'excerpt').slice(0, 1200) }))
     const profile = this.db.prepare("SELECT id FROM learner_profile_snapshots WHERE learner_id = ? AND status = 'current' ORDER BY version DESC LIMIT 1").get(learnerId) as Row | undefined
     const profileDimensions = profile ? (this.db.prepare('SELECT dimension_key, level, confidence, summary FROM learner_profile_dimensions WHERE snapshot_id = ? ORDER BY dimension_key').all(text(profile, 'id')) as Row[]).map((item) => ({ key: text(item, 'dimension_key'), level: text(item, 'level'), confidence: number(item, 'confidence'), summary: text(item, 'summary').slice(0, 600) })) : []
@@ -157,15 +165,15 @@ export class CaseWorkspaceService {
         if (text(requestJob, 'input_fingerprint') !== fingerprint) throw new LabError('idempotency_conflict', 'clientRequestId 已对应另一份案例请求', 409)
         return { caseId: text(requestJob, 'learning_case_id'), jobId: text(requestJob, 'id'), created: false }
       }
-        const existingCase = this.db.prepare('SELECT id FROM learning_cases WHERE learner_id = ? AND input_fingerprint = ?').get(learnerId, fingerprint) as Row | undefined
+      const existingCase = this.db.prepare('SELECT id FROM learning_cases WHERE learner_id = ? AND input_fingerprint = ?').get(learnerId, fingerprint) as Row | undefined
       const caseId = existingCase ? text(existingCase, 'id') : randomUUID()
       if (!existingCase) this.db.prepare(`INSERT INTO learning_cases(id, learner_id, roadmap_node_id, capability_key, template_key, environment_key, environment_version, runtime_kind, input_kind, input_snapshot_json, input_fingerprint, provider, version, status, case_spec_json, created_at, updated_at)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 'generating', '{}', ?, ?)`).run(caseId, learnerId, request.roadmapNodeId, capability.capabilityKey, capability.templateKey, environment.key, environment.version, environment.runtimeKind, request.input.kind, JSON.stringify(frozenSnapshot), fingerprint, this.builder.providerName, now, now)
       const existingCaseJob = this.db.prepare('SELECT id FROM case_generation_jobs WHERE learner_id = ? AND learning_case_id = ? AND input_fingerprint = ? ORDER BY created_at ASC LIMIT 1').get(learnerId, caseId, fingerprint) as Row | undefined
       if (existingCaseJob) return { caseId, jobId: text(existingCaseJob, 'id'), created: false }
-      const jobId = randomUUID()
+      const jobId = randomUUID(); const jobStatus = request.input.kind === 'zhihu_article' ? 'preparing_source' : 'queued'
       this.db.prepare(`INSERT INTO case_generation_jobs(id, learner_id, learning_case_id, client_request_id, input_fingerprint, provider, status, attempt_count, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, 'queued', 0, ?, ?)`).run(jobId, learnerId, caseId, request.clientRequestId, fingerprint, this.builder.providerName, now, now)
+        VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?)`).run(jobId, learnerId, caseId, request.clientRequestId, fingerprint, this.builder.providerName, jobStatus, now, now)
       return { caseId, jobId, created: true }
     })
     let persisted: { caseId: string; jobId: string; created: boolean }
@@ -179,8 +187,37 @@ export class CaseWorkspaceService {
       persisted = { caseId: text(existing, 'case_id'), jobId: text(existing, 'job_id'), created: false }
     }
     const job = this.jobForLearner(learnerId, persisted.jobId); const savedCase = this.caseForLearner(learnerId, persisted.caseId)
-    if (persisted.created) void this.processCaseJob(persisted.jobId).catch((error) => { console.error('[zhixing-case] generation_unhandled', { jobId: persisted.jobId, error: error instanceof Error ? error.message : String(error) }) })
+    if (persisted.created && request.input.kind === 'zhihu_article') void this.prepareArticleSource(learnerId, persisted.jobId, request.input.sourceItemId!).catch((error) => { console.error('[zhixing-case] source_prepare_unhandled', { jobId: persisted.jobId, error: error instanceof Error ? error.message : String(error) }) })
+    if (persisted.created && request.input.kind === 'brief') void this.processCaseJob(persisted.jobId).catch((error) => { console.error('[zhixing-case] generation_unhandled', { jobId: persisted.jobId, error: error instanceof Error ? error.message : String(error) }) })
     return { case: savedCase, job }
+  }
+
+  private async prepareArticleSource(learnerId: string, jobId: string, sourceItemId: string): Promise<void> {
+    const job = this.jobForLearner(learnerId, jobId)
+    const item = this.caseForLearner(learnerId, job.learningCaseId)
+    const source = this.visibleSource(learnerId, sourceItemId)
+    try {
+      if (!this.sourceSnapshots) throw new Error('source_snapshot_unavailable:service_not_configured')
+      const snapshot = await this.sourceSnapshots.freeze(learnerId, source)
+      const sourceMeta = { snapshotId: snapshot.id, checksum: snapshot.contentChecksum, contentLength: snapshot.contentLength, injectedStart: 0, injectedEnd: Math.min(snapshot.contentMarkdown.length, MAX_SOURCE_INJECT_CHARS), segmentCount: snapshot.contentMarkdown.split(/\n{2,}/).map((part) => part.trim()).filter(Boolean).length }
+      const nextInput = { ...item.inputSnapshot, sourceSnapshotId: snapshot.id, sourceSnapshot: sourceMeta }
+      const now = new Date().toISOString()
+      const changed = this.db.transaction(() => {
+        const caseChanged = this.db.prepare("UPDATE learning_cases SET source_snapshot_id = ?, input_snapshot_json = ?, failure_code = NULL, failure_message = NULL, updated_at = ? WHERE id = ? AND learner_id = ? AND status = 'generating'").run(snapshot.id, JSON.stringify(nextInput), now, item.id, learnerId)
+        const jobChanged = this.db.prepare("UPDATE case_generation_jobs SET status = 'queued', failure_code = NULL, failure_message = NULL, updated_at = ? WHERE id = ? AND learner_id = ? AND status = 'preparing_source'").run(now, jobId, learnerId)
+        return caseChanged.changes > 0 && jobChanged.changes > 0
+      })()
+      if (!changed) return
+      await this.processCaseJob(jobId)
+    } catch (error) {
+      const code = error instanceof Error && error.message.startsWith('source_snapshot_unavailable:') ? error.message.slice('source_snapshot_unavailable:'.length) : 'source_snapshot_unavailable'
+      const message = error instanceof Error ? error.message.slice(0, 500) : '来源正文快照失败'
+      const now = new Date().toISOString()
+      this.db.transaction(() => {
+        this.db.prepare("UPDATE case_generation_jobs SET status = 'failed', failure_code = ?, failure_message = ?, completed_at = ?, updated_at = ? WHERE id = ? AND learner_id = ? AND status = 'preparing_source'").run(code, message, now, now, jobId, learnerId)
+        this.db.prepare("UPDATE learning_cases SET status = 'failed', failure_code = ?, failure_message = ?, updated_at = ? WHERE id = ? AND learner_id = ? AND status = 'generating'").run(code, message, now, item.id, learnerId)
+      })()
+    }
   }
 
   private visibleSource(learnerId: string, sourceId: string): SourceItem {
@@ -220,6 +257,8 @@ export class CaseWorkspaceService {
     if (!row) return
     const item = learningCaseFrom(row); const snapshot = item.inputSnapshot; const sourceData = snapshot.source
     const source = sourceData && typeof sourceData === 'object' ? sourceData as SourceItem : null
+    const sourceSnapshotId = typeof snapshot.sourceSnapshotId === 'string' ? snapshot.sourceSnapshotId : typeof (snapshot.sourceSnapshot as Record<string, unknown> | null)?.snapshotId === 'string' ? String((snapshot.sourceSnapshot as Record<string, unknown>).snapshotId) : null
+    const sourceSnapshot = sourceSnapshotId && this.sourceSnapshots ? this.sourceSnapshots.get(item.learnerId, sourceSnapshotId) : null
     const context = snapshot.context && typeof snapshot.context === 'object' ? snapshot.context as { roadmapNode?: CaseBuilderContext['roadmapNode']; roadmapRationale?: CaseBuilderContext['roadmapRationale']; learnerProfile?: CaseBuilderContext['learnerProfile'] } : undefined
     const contextFingerprint = checksum(stableJson(snapshot.context ?? {})); const attemptNumber = number(row, 'attempt_count')
     if (!this.builder.staged) this.saveCaseAttempt(jobId, attemptNumber, 'generate', 'running', contextFingerprint)
@@ -227,7 +266,8 @@ export class CaseWorkspaceService {
     try {
       const buildCase = async (preflightDiagnostics?: Record<string, unknown>): Promise<CaseSpec> => {
         referenceSolution = null
-        const built = parseCaseSpec(await this.builder.build({ request: this.requestFromCase(item), source, context: context?.roadmapNode ? { roadmapNode: context.roadmapNode, roadmapRationale: context.roadmapRationale ?? [], learnerProfile: context.learnerProfile ?? { snapshotId: null, dimensions: [] } } : undefined, preflightDiagnostics, onAttempt: (event) => this.saveCaseAttempt(jobId, attemptNumber, event.phase, event.status, event.contextFingerprint ?? contextFingerprint, event), onReferenceSolution: (solution) => { referenceSolution = solution } }))
+        if (item.inputKind === 'zhihu_article' && !sourceSnapshot) throw new CasePreflightError('source_snapshot_missing', '案例缺少已冻结的来源正文')
+        const built = parseCaseSpec(await this.builder.build({ request: this.requestFromCase(item), source, sourceSnapshot, context: context?.roadmapNode ? { roadmapNode: context.roadmapNode, roadmapRationale: context.roadmapRationale ?? [], learnerProfile: context.learnerProfile ?? { snapshotId: null, dimensions: [] } } : undefined, preflightDiagnostics, onAttempt: (event) => this.saveCaseAttempt(jobId, attemptNumber, event.phase, event.status, event.contextFingerprint ?? contextFingerprint, event), onReferenceSolution: (solution) => { referenceSolution = solution } }))
         if (!this.builder.staged) this.saveCaseAttempt(jobId, attemptNumber, 'generate', 'succeeded', contextFingerprint)
         return built
       }
@@ -272,21 +312,26 @@ export class CaseWorkspaceService {
 
   retryCaseGeneration(learnerId: string, jobId: string): { case: LearningCase; job: CaseGenerationJob } {
     const job = this.jobForLearner(learnerId, jobId)
-    if (!['failed', 'interrupted'].includes(job.status)) { if (['queued', 'running'].includes(job.status)) return this.getCaseGenerationJob(learnerId, jobId); throw new LabError('case_generation_not_retryable', '当前案例生成任务不能重试', 409) }
+    if (!['failed', 'interrupted'].includes(job.status)) { if (['preparing_source', 'queued', 'running', 'preflighting'].includes(job.status)) return this.getCaseGenerationJob(learnerId, jobId); throw new LabError('case_generation_not_retryable', '当前案例生成任务不能重试', 409) }
+    const item = this.caseForLearner(learnerId, job.learningCaseId)
+    const sourceNeeded = item.inputKind === 'zhihu_article' && !item.inputSnapshot.sourceSnapshot
     const now = new Date().toISOString(); const updated = this.db.transaction(() => {
-      const changed = this.db.prepare("UPDATE case_generation_jobs SET status = 'queued', failure_code = NULL, failure_message = NULL, completed_at = NULL, updated_at = ? WHERE id = ? AND learner_id = ? AND status IN ('failed', 'interrupted')").run(now, jobId, learnerId)
+      const changed = this.db.prepare(`UPDATE case_generation_jobs SET status = '${sourceNeeded ? 'preparing_source' : 'queued'}', failure_code = NULL, failure_message = NULL, completed_at = NULL, updated_at = ? WHERE id = ? AND learner_id = ? AND status IN ('failed', 'interrupted')`).run(now, jobId, learnerId)
       if (changed.changes === 0) return false
       this.db.prepare("UPDATE learning_cases SET status = 'generating', failure_code = NULL, failure_message = NULL, updated_at = ? WHERE id = ? AND learner_id = ?").run(now, job.learningCaseId, learnerId)
       return true
     })()
     if (!updated) return this.getCaseGenerationJob(learnerId, jobId)
-    void this.processCaseJob(jobId).catch((error) => console.error('[zhixing-case] retry_unhandled', { jobId, error: error instanceof Error ? error.message : String(error) }))
+    if (sourceNeeded) void this.prepareArticleSource(learnerId, jobId, String(item.inputSnapshot.sourceItemId)).catch((error) => console.error('[zhixing-case] retry_source_unhandled', { jobId, error: error instanceof Error ? error.message : String(error) }))
+    else void this.processCaseJob(jobId).catch((error) => console.error('[zhixing-case] retry_unhandled', { jobId, error: error instanceof Error ? error.message : String(error) }))
     return this.getCaseGenerationJob(learnerId, jobId)
   }
 
   async resumeCaseJobs(): Promise<void> {
     await this.preflight.recover()
     const cutoff = new Date(Date.now() - 30_000).toISOString(); const interruptedAt = new Date().toISOString()
+    this.db.prepare("UPDATE case_generation_jobs SET status = 'interrupted', failure_code = 'source_service_restarted', failure_message = '服务在来源正文准备完成前重启', completed_at = ?, updated_at = ? WHERE status = 'preparing_source'").run(interruptedAt, interruptedAt)
+    this.db.prepare("UPDATE learning_cases SET status = 'failed', failure_code = 'source_service_restarted', failure_message = '服务在来源正文准备完成前重启', updated_at = ? WHERE id IN (SELECT learning_case_id FROM case_generation_jobs WHERE status = 'interrupted' AND failure_code = 'source_service_restarted') AND status = 'generating' AND input_kind = 'zhihu_article'").run(interruptedAt)
     this.db.prepare("UPDATE case_generation_jobs SET status = 'interrupted', failure_code = 'service_restarted', failure_message = '服务在案例生成完成前重启', completed_at = ?, updated_at = ? WHERE status = 'running' AND updated_at < ?").run(interruptedAt, interruptedAt, cutoff)
     this.db.prepare("UPDATE learning_cases SET status = 'generating', preflight_status = 'queued', failure_code = NULL, failure_message = NULL, updated_at = ? WHERE id IN (SELECT learning_case_id FROM case_generation_jobs WHERE status = 'interrupted' AND failure_code = 'service_restarted') AND status = 'failed'").run(new Date().toISOString())
     this.db.prepare("UPDATE case_generation_jobs SET status = 'queued', worker_token = NULL, completed_at = NULL, updated_at = ? WHERE status = 'interrupted' AND failure_code = 'service_restarted'").run(new Date().toISOString())
