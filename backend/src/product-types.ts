@@ -125,6 +125,30 @@ export interface CaseSpec {
   tutorContext: { concepts: string[]; likelyMisconceptions: string[]; evidenceToNotice: string[] }
 }
 
+export interface CaseIntent {
+  targetCapability: string
+  learnerRole: string
+  scenario: string
+  desiredObservation: string
+  difficulty: CaseDifficulty
+  scope: string[]
+  constraints: string[]
+}
+
+export interface CaseBlueprint {
+  title: string
+  learningGoal: string
+  taskSequence: Array<{ key: string; instruction: string; expectedObservation: string }>
+  assetPlan: Array<{ kind: 'file' | 'fixture' | 'dataset_seed' | 'schema' | 'fault_seed'; key: string; purpose: string }>
+  verificationPlan: { commandKeys: string[]; successSignals: string[] }
+  tutorFocus: { concepts: string[]; likelyMisconceptions: string[]; evidenceToNotice: string[] }
+}
+
+export interface ReferenceSolution {
+  files: Array<{ path: string; content: string }>
+  verificationCommands: string[]
+}
+
 export interface LearningCase {
   id: string
   learnerId: string

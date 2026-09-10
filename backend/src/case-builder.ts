@@ -1,9 +1,11 @@
 import { createHash } from 'node:crypto'
 import type { CaseRequest, CaseSpec, SourceItem } from './product-types.js'
-import { parseCaseSpec } from './case-schemas.js'
+import { parseCaseGenerationOutput, parseCaseSpec } from './case-schemas.js'
 import type { LabConfig } from './config.js'
+import { resolveEnvironmentCommand } from './environment-registry.js'
+import type { CaseBlueprint, CaseIntent, ReferenceSolution } from './product-types.js'
 
-export type CaseBuilderAttemptPhase = 'repair'
+export type CaseBuilderAttemptPhase = 'intent' | 'blueprint' | 'generate' | 'repair'
 export type CaseBuilderAttemptStatus = 'running' | 'succeeded' | 'failed'
 export interface CaseBuilderContext {
   roadmapNode: { id: string; title: string; summary: string; completionStandard: string; capabilityKey: string }
@@ -26,11 +28,13 @@ export interface CaseBuilderInput {
   source: SourceItem | null
   context?: CaseBuilderContext
   onAttempt?: (event: CaseBuilderAttemptEvent) => void
+  onReferenceSolution?: (solution: ReferenceSolution) => void
 }
 
 export interface CaseBuilderProvider {
   readonly providerName: 'fixture' | 'model'
   readonly modelName?: string
+  readonly staged?: boolean
   build(input: CaseBuilderInput): Promise<CaseSpec>
 }
 
@@ -131,3 +135,97 @@ export class ModelCaseBuilder implements CaseBuilderProvider {
     }
   }
 }
+
+export class StagedModelCaseBuilder implements CaseBuilderProvider {
+  readonly providerName = 'model' as const
+  readonly staged = true as const
+  private readonly promptVersion = 'case-builder-staged-v1'
+
+  constructor(private readonly config: Pick<LabConfig, 'modelBaseUrl' | 'modelApiKey' | 'modelName' | 'modelTimeoutMs'>) {}
+
+  private async call(messages: Array<{ role: 'system' | 'user'; content: string }>): Promise<{ raw: string; responseFingerprint: string }> {
+    if (!this.config.modelBaseUrl || !this.config.modelApiKey) throw new CaseBuilderError('model_not_configured', '案例模型尚未配置')
+    const controller = new AbortController(); const timer = setTimeout(() => controller.abort(), this.config.modelTimeoutMs)
+    try {
+      const response = await fetch(`${this.config.modelBaseUrl.replace(/\/$/, '')}/chat/completions`, { method: 'POST', signal: controller.signal, headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${this.config.modelApiKey}` }, body: JSON.stringify({ model: this.config.modelName, temperature: 0.2, stream: false, thinking: { type: 'disabled' }, response_format: { type: 'json_object' }, messages }) })
+      if (!response.ok) throw new CaseBuilderError(`model_http_${response.status}`, `案例模型返回 HTTP ${response.status}`)
+      const payload = await response.json() as { choices?: Array<{ message?: { content?: unknown } }> }
+      const value = payload.choices?.[0]?.message?.content
+      const raw = typeof value === 'string' ? value.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim() : ''
+      if (!raw) throw new CaseBuilderError('model_empty_output', '案例模型没有返回内容')
+      return { raw, responseFingerprint: hash(raw) }
+    } catch (error) {
+      if (error instanceof Error && error.name === 'AbortError') throw new CaseBuilderError('model_timeout', '案例模型请求超时')
+      throw error
+    } finally { clearTimeout(timer) }
+  }
+
+  private async phase<T>(phase: 'intent' | 'blueprint' | 'generate', system: string, payload: unknown, parse: (value: unknown) => T, input: CaseBuilderInput, contextFingerprint: string, repair = false): Promise<T> {
+    input.onAttempt?.({ phase, status: 'running', modelName: this.config.modelName, promptVersion: this.promptVersion, contextFingerprint })
+    let result: { raw: string; responseFingerprint: string }
+    try {
+      result = await this.call([{ role: 'system', content: system }, { role: 'user', content: JSON.stringify(payload) }])
+    } catch (error) {
+      input.onAttempt?.({ phase, status: 'failed', modelName: this.config.modelName, promptVersion: this.promptVersion, contextFingerprint, diagnostics: { error: error instanceof Error ? error.message : 'phase_failed' } })
+      throw error instanceof CaseBuilderError ? error : new CaseBuilderError(`case_${phase}_failed`, `${phase} 阶段请求失败`)
+    }
+    try {
+      const parsed = parse(JSON.parse(result.raw))
+      input.onAttempt?.({ phase, status: 'succeeded', modelName: this.config.modelName, promptVersion: this.promptVersion, contextFingerprint, responseFingerprint: result.responseFingerprint })
+      return parsed
+    } catch (error) {
+      const validationError = error instanceof Error ? error.message : 'invalid_output'
+      input.onAttempt?.({ phase, status: 'failed', modelName: this.config.modelName, promptVersion: this.promptVersion, contextFingerprint, responseFingerprint: result.responseFingerprint, diagnostics: { validationError } })
+      if (!repair) throw new CaseBuilderError(`case_${phase}_invalid_output`, `${phase} 阶段输出无法通过结构校验`)
+      input.onAttempt?.({ phase: 'repair', status: 'running', modelName: this.config.modelName, promptVersion: this.promptVersion, contextFingerprint, responseFingerprint: result.responseFingerprint, diagnostics: { validationError } })
+      try {
+        const repaired = await this.call([
+          { role: 'system', content: `${system}\n\n你正在修复一次结构校验失败的输出。只输出完整 JSON，不要解释。完整合约：${CASE_GENERATION_CONTRACT}` },
+          { role: 'user', content: JSON.stringify({ draft: result.raw, validationError }) },
+        ])
+        const parsed = parse(JSON.parse(repaired.raw))
+        input.onAttempt?.({ phase: 'repair', status: 'succeeded', modelName: this.config.modelName, promptVersion: this.promptVersion, contextFingerprint, responseFingerprint: repaired.responseFingerprint })
+        input.onAttempt?.({ phase, status: 'succeeded', modelName: this.config.modelName, promptVersion: this.promptVersion, contextFingerprint, responseFingerprint: repaired.responseFingerprint, diagnostics: { repaired: true } })
+        return parsed
+      } catch (repairError) {
+        input.onAttempt?.({ phase: 'repair', status: 'failed', modelName: this.config.modelName, promptVersion: this.promptVersion, contextFingerprint, diagnostics: { validationError: repairError instanceof Error ? repairError.message : 'repair_failed' } })
+        throw new CaseBuilderError('case_invalid_output', '案例模型输出在一次修复后仍无法通过结构校验')
+      }
+    }
+  }
+
+  async build(input: CaseBuilderInput): Promise<CaseSpec> {
+    const { compileCaseContext, contextForPrompt } = await import('./case-context.js')
+    const { parseCaseBlueprint, parseCaseIntent } = await import('./case-agent-schemas.js')
+    const context = compileCaseContext(input); const promptContext = contextForPrompt(context)
+    const intent = await this.phase<CaseIntent>('intent', '你是案例意图分析器。根据冻结上下文提炼一个可实践的工程问题。只输出 CaseIntent JSON，不选择或修改运行环境，不输出 Docker 或基础设施配置。', promptContext, parseCaseIntent, input, context.fingerprint)
+    const blueprint = await this.phase<CaseBlueprint>('blueprint', '你是案例蓝图设计器。根据冻结上下文和 CaseIntent 设计任务顺序、案例资产和验证计划。只能使用服务端提供的运行环境能力，命令必须使用逻辑 command key。只输出 CaseBlueprint JSON。', { context: promptContext, intent }, parseCaseBlueprint, input, context.fingerprint)
+    try {
+      for (const commandKey of blueprint.verificationPlan.commandKeys) {
+        if (!resolveEnvironmentCommand(context.environment.key, context.environment.version, commandKey)) throw new Error(`unsupported_command_key:${commandKey}`)
+      }
+      for (const asset of blueprint.assetPlan) {
+        const supported = asset.kind === 'file' || asset.kind === 'fixture'
+          ? context.environment.initializationContract.supportsStarterFiles
+          : asset.kind === 'schema'
+            ? context.environment.initializationContract.supportsSchemaSeed
+            : asset.kind === 'dataset_seed'
+              ? context.environment.initializationContract.supportsDatasetSeed
+              : context.environment.initializationContract.supportsFaultSeed
+        if (!supported) throw new Error(`unsupported_asset_kind:${asset.kind}`)
+      }
+    } catch (error) {
+      input.onAttempt?.({ phase: 'blueprint', status: 'failed', modelName: this.config.modelName, promptVersion: this.promptVersion, contextFingerprint: context.fingerprint, diagnostics: { validationError: error instanceof Error ? error.message : 'invalid_blueprint_boundary' } })
+      throw new CaseBuilderError('blueprint_boundary_violation', error instanceof Error ? error.message : '案例蓝图超出环境能力')
+    }
+    const generated = await this.phase<{ spec: CaseSpec; referenceSolution: ReferenceSolution | null }>('generate', '你是案例实现器。根据冻结上下文、CaseIntent 和 CaseBlueprint 生成案例。只输出包含 exerciseSpec 和可选 referenceSolution 的 JSON；referenceSolution 仅供服务端预检，不能写入 starterFiles，也不能包含 Docker 或宿主机配置。环境必须原样使用上下文中的 key 和 version；不得输出 Dockerfile、Compose、镜像、宿主机路径、网络配置、密钥或任意 shell。exerciseSpec 的命令使用环境允许的逻辑 command key。', { context: promptContext, intent, blueprint, outputContract: CASE_GENERATION_CONTRACT }, (value) => {
+      const parsed = parseCaseGenerationOutput(value)
+      if (parsed.spec.environment.key !== context.environment.key || parsed.spec.environment.version !== context.environment.version) throw new Error('environment_substitution_rejected')
+      return parsed
+    }, input, context.fingerprint, true)
+    if (generated.referenceSolution) input.onReferenceSolution?.(generated.referenceSolution)
+    return generated.spec
+  }
+}
+
+const CASE_GENERATION_CONTRACT = '{"exerciseSpec":{"title":"string","scenario":"string","learningGoal":"string","difficulty":"introductory|applied|advanced","environment":{"key":"string","version":"string","templateKey":"string","services":["string"]},"starterFiles":[{"path":"relative .py/.json/.md/.txt path","content":"string"}],"tasks":[{"key":"string","instruction":"string","recommendedCommands":["registered command key"],"expectedObservation":"string"}],"verification":{"commands":["registered command key"],"successSignals":["string"]},"tutorContext":{"concepts":["string"],"likelyMisconceptions":["string"],"evidenceToNotice":["string"]}},"referenceSolution":{"files":[{"path":"relative path","content":"private solution file"}],"verificationCommandKeys":["registered command key"]}}'

@@ -3,9 +3,9 @@ import type Database from 'better-sqlite3'
 import { getWorkspaceCapability } from './capability-registry.js'
 import { getEnvironmentTemplate } from './environment-registry.js'
 import { MAX_WORKSPACE_FILE_BYTES, MAX_WORKSPACE_TOTAL_BYTES, parseCaseRequest, parseCaseSpec, isAllowedPythonCommand } from './case-schemas.js'
-import { CaseBuilderError, type CaseBuilderAttemptEvent, type CaseBuilderContext, type CaseBuilderProvider } from './case-builder.js'
+import { CaseBuilderError, type CaseBuilderAttemptEvent, type CaseBuilderAttemptPhase, type CaseBuilderContext, type CaseBuilderProvider } from './case-builder.js'
 import { LabError } from './errors.js'
-import type { CaseRequest, CaseSpec, EnvironmentTemplate, LearningCase, CaseGenerationJob, PracticeRun, SourceItem, WorkspaceCompletion, WorkspaceExecution, WorkspaceFile, WorkspaceRun, WorkspaceTutorHistory } from './product-types.js'
+import type { CaseRequest, CaseSpec, EnvironmentTemplate, LearningCase, CaseGenerationJob, PracticeRun, ReferenceSolution, SourceItem, WorkspaceCompletion, WorkspaceExecution, WorkspaceFile, WorkspaceRun, WorkspaceTutorHistory } from './product-types.js'
 import type { ProductRepository } from './product-repository.js'
 import type { RunnerFileInput, WorkspaceRunnerClient } from './workspace-runner-client.js'
 import { DockerWorkspaceRuntimeAdapter, type RuntimeAdapter } from './runtime-adapter.js'
@@ -182,11 +182,17 @@ export class CaseWorkspaceService {
     return { roadmapNodeId: item.roadmapNodeId, input: { kind: 'zhihu_article', sourceItemId: typeof snapshot.sourceItemId === 'string' ? snapshot.sourceItemId : '' }, desiredOutcome: typeof snapshot.desiredOutcome === 'string' ? snapshot.desiredOutcome : undefined, difficulty: snapshot.difficulty as CaseRequest['difficulty'], clientRequestId: item.inputFingerprint }
   }
 
-  private saveCaseAttempt(jobId: string, attemptNumber: number, phase: 'generate' | 'repair', status: 'running' | 'succeeded' | 'failed', contextFingerprint: string, event: Partial<CaseBuilderAttemptEvent> = {}): void {
+  private saveCaseAttempt(jobId: string, attemptNumber: number, phase: CaseBuilderAttemptPhase, status: 'running' | 'succeeded' | 'failed', contextFingerprint: string, event: Partial<CaseBuilderAttemptEvent> = {}): void {
     const now = new Date().toISOString(); const diagnostics = event.diagnostics ?? {}
     this.db.prepare(`INSERT INTO case_generation_attempts(id, case_generation_job_id, attempt_number, phase, provider, model_name, prompt_version, context_fingerprint, response_fingerprint, status, diagnostics_json, started_at, completed_at, created_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      ON CONFLICT(case_generation_job_id, attempt_number, phase) DO UPDATE SET response_fingerprint = excluded.response_fingerprint, status = excluded.status, diagnostics_json = excluded.diagnostics_json, completed_at = excluded.completed_at`).run(
+      ON CONFLICT(case_generation_job_id, attempt_number, phase) DO UPDATE SET
+        model_name = COALESCE(excluded.model_name, case_generation_attempts.model_name),
+        prompt_version = COALESCE(excluded.prompt_version, case_generation_attempts.prompt_version),
+        response_fingerprint = COALESCE(excluded.response_fingerprint, case_generation_attempts.response_fingerprint),
+        status = excluded.status,
+        diagnostics_json = CASE WHEN excluded.diagnostics_json <> '{}' THEN excluded.diagnostics_json ELSE case_generation_attempts.diagnostics_json END,
+        completed_at = excluded.completed_at`).run(
       randomUUID(), jobId, attemptNumber, phase, this.builder.providerName, this.builder.modelName ?? null, event.promptVersion ?? null, contextFingerprint, event.responseFingerprint ?? null, status, JSON.stringify(diagnostics), now, status === 'running' ? null : now, now,
     )
   }
@@ -200,13 +206,14 @@ export class CaseWorkspaceService {
     const source = sourceData && typeof sourceData === 'object' ? sourceData as SourceItem : null
     const context = snapshot.context && typeof snapshot.context === 'object' ? snapshot.context as { roadmapNode?: CaseBuilderContext['roadmapNode']; roadmapRationale?: CaseBuilderContext['roadmapRationale']; learnerProfile?: CaseBuilderContext['learnerProfile'] } : undefined
     const contextFingerprint = checksum(stableJson(snapshot.context ?? {})); const attemptNumber = number(row, 'attempt_count')
-    this.saveCaseAttempt(jobId, attemptNumber, 'generate', 'running', contextFingerprint)
+    if (!this.builder.staged) this.saveCaseAttempt(jobId, attemptNumber, 'generate', 'running', contextFingerprint)
+    let referenceSolution: ReferenceSolution | null = null
     try {
-      const spec = parseCaseSpec(await this.builder.build({ request: this.requestFromCase(item), source, context: context?.roadmapNode ? { roadmapNode: context.roadmapNode, roadmapRationale: context.roadmapRationale ?? [], learnerProfile: context.learnerProfile ?? { snapshotId: null, dimensions: [] } } : undefined, onAttempt: (event) => this.saveCaseAttempt(jobId, attemptNumber, event.phase, event.status, event.contextFingerprint ?? contextFingerprint, event) }))
-      this.saveCaseAttempt(jobId, attemptNumber, 'generate', 'succeeded', contextFingerprint)
+      const spec = parseCaseSpec(await this.builder.build({ request: this.requestFromCase(item), source, context: context?.roadmapNode ? { roadmapNode: context.roadmapNode, roadmapRationale: context.roadmapRationale ?? [], learnerProfile: context.learnerProfile ?? { snapshotId: null, dimensions: [] } } : undefined, onAttempt: (event) => this.saveCaseAttempt(jobId, attemptNumber, event.phase, event.status, event.contextFingerprint ?? contextFingerprint, event), onReferenceSolution: (solution) => { referenceSolution = solution } }))
+      if (!this.builder.staged) this.saveCaseAttempt(jobId, attemptNumber, 'generate', 'succeeded', contextFingerprint)
       const completed = new Date().toISOString()
       const committed = this.db.transaction(() => {
-        const updatedCase = this.db.prepare("UPDATE learning_cases SET status = 'ready', case_spec_json = ?, failure_code = NULL, failure_message = NULL, updated_at = ? WHERE id = ? AND status = 'generating'").run(JSON.stringify(spec), completed, item.id)
+        const updatedCase = this.db.prepare("UPDATE learning_cases SET status = 'ready', case_spec_json = ?, reference_solution_json = ?, failure_code = NULL, failure_message = NULL, updated_at = ? WHERE id = ? AND status = 'generating'").run(JSON.stringify(spec), JSON.stringify(referenceSolution ?? {}), completed, item.id)
         if (updatedCase.changes === 0) return false
         const updatedJob = this.db.prepare("UPDATE case_generation_jobs SET status = 'succeeded', failure_code = NULL, failure_message = NULL, completed_at = ?, updated_at = ? WHERE id = ? AND status = 'running' AND worker_token = ?").run(completed, completed, jobId, token)
         if (updatedJob.changes === 0) throw new Error('case_generation_claim_lost')
@@ -215,7 +222,7 @@ export class CaseWorkspaceService {
       if (!committed) return
     } catch (error) {
       const code = error instanceof CaseBuilderError ? error.code : error instanceof Error && error.message.startsWith('unsupported_command:') ? 'unsupported_command' : 'case_generation_failed'; const message = error instanceof Error ? error.message.slice(0, 500) : '案例生成失败'; const failedAt = new Date().toISOString()
-      this.saveCaseAttempt(jobId, attemptNumber, 'generate', 'failed', contextFingerprint, { diagnostics: { code, message } })
+      if (!this.builder.staged) this.saveCaseAttempt(jobId, attemptNumber, 'generate', 'failed', contextFingerprint, { diagnostics: { code, message } })
       this.db.transaction(() => {
         const updatedJob = this.db.prepare("UPDATE case_generation_jobs SET status = 'failed', failure_code = ?, failure_message = ?, completed_at = ?, updated_at = ? WHERE id = ? AND status = 'running' AND worker_token = ?").run(code, message, failedAt, failedAt, jobId, token)
         if (updatedJob.changes > 0) this.db.prepare("UPDATE learning_cases SET status = 'failed', failure_code = ?, failure_message = ?, updated_at = ? WHERE id = ? AND status = 'generating'").run(code, message, failedAt, item.id)

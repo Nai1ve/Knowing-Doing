@@ -12,7 +12,7 @@ import { CurationService, ModelCurationSummarizer } from './curation-service.js'
 import { DeepSeekWritingAgent } from './writing-agent.js'
 import { PlanningService } from './planning.js'
 import { CaseWorkspaceService } from './case-workspace-service.js'
-import { FixtureCaseBuilder, ModelCaseBuilder } from './case-builder.js'
+import { FixtureCaseBuilder, StagedModelCaseBuilder } from './case-builder.js'
 import { FakeWorkspaceRunnerClient, HttpWorkspaceRunnerClient } from './workspace-runner-client.js'
 import { DockerWorkspaceRuntimeAdapter } from './runtime-adapter.js'
 import { WorkspaceCompletionService } from './workspace-completion-service.js'
@@ -33,7 +33,7 @@ const workspaceRunner = config.workspaceRunnerFake
   ? new FakeWorkspaceRunnerClient()
   : new HttpWorkspaceRunnerClient(config.workspaceRunnerUrl, config.workspaceRunnerToken, config.workspaceRunnerTimeoutMs)
 const workspaceRuntime = new DockerWorkspaceRuntimeAdapter(workspaceRunner)
-const caseBuilder = config.caseBuilderProvider === 'model' ? new ModelCaseBuilder(config) : new FixtureCaseBuilder()
+const caseBuilder = config.caseBuilderProvider === 'model' ? new StagedModelCaseBuilder(config) : new FixtureCaseBuilder()
 const workspaceCompletion = new WorkspaceCompletionService(productRepository, planningService, (runId) => { writingService.enqueueAutoDraft(runId) })
 const caseWorkspaceService = new CaseWorkspaceService(productRepository, caseBuilder, workspaceRuntime, workspaceCompletion)
 caseWorkspaceService.resumeCaseJobs()

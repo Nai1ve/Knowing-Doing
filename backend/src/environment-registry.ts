@@ -53,6 +53,24 @@ export function getEnvironmentTemplate(key: string, version = '1'): EnvironmentT
   return templates.find((item) => item.key === key && item.version === version) ?? null
 }
 
+const commandAliases: Record<string, Record<string, string>> = {
+  'python-pytest-v1': {
+    pytest: 'pytest -q',
+    pytest_quiet: 'pytest -q',
+    'pytest -q': 'pytest -q',
+    'python -m pytest -q': 'python -m pytest -q',
+  },
+}
+
+/** Resolves a model-owned logical command key to a platform-owned command. */
+export function resolveEnvironmentCommand(environmentKey: string, version: string, commandKey: string): string | null {
+  const template = getEnvironmentTemplate(environmentKey, version)
+  if (!template) return null
+  if (commandAliases[environmentKey]?.[commandKey]) return commandAliases[environmentKey][commandKey]
+  if (environmentKey === 'python-pytest-v1' && (commandKey === 'pytest -q' || commandKey === 'python -m pytest -q' || /^python -m pytest [\w./-]+(?: [\w./-]+)*$/.test(commandKey))) return commandKey
+  return template.commandPolicy.allowedCommandKeys.includes(commandKey) ? commandKey : null
+}
+
 export function getEnvironmentTemplateForCapability(capabilityKey: string): EnvironmentTemplate | null {
   const capability = getEnvironmentCapability(capabilityKey)
   return capability ? getEnvironmentTemplate(capability.environmentKey) : null
