@@ -12,7 +12,7 @@ export interface FrozenCaseContext {
     desiredOutcome: string | null
     difficulty: CaseBuilderInput['request']['difficulty'] | null
   }
-  environment: Pick<EnvironmentTemplate, 'key' | 'version' | 'runtimeKind' | 'displayName' | 'services' | 'resourceProfile' | 'initializationContract'>
+  environment: Pick<EnvironmentTemplate, 'key' | 'version' | 'runtimeKind' | 'displayName' | 'services' | 'resourceProfile' | 'initializationContract'> & { commandKeys: string[] }
   roadmapNode: CaseBuilderContext['roadmapNode']
   rationale: CaseBuilderContext['roadmapRationale']
   learnerProfile: CaseBuilderContext['learnerProfile']
@@ -47,7 +47,7 @@ export function compileCaseContext(input: CaseBuilderInput): FrozenCaseContext {
       desiredOutcome: input.request.desiredOutcome ?? null,
       difficulty: input.request.difficulty ?? null,
     },
-    environment: { key: environment.key, version: environment.version, runtimeKind: environment.runtimeKind, displayName: environment.displayName, services: environment.services, resourceProfile: environment.resourceProfile, initializationContract: environment.initializationContract },
+    environment: { key: environment.key, version: environment.version, runtimeKind: environment.runtimeKind, displayName: environment.displayName, services: environment.services, resourceProfile: environment.resourceProfile, initializationContract: environment.initializationContract, commandKeys: environment.commandPolicy.allowedCommandKeys },
     roadmapNode,
     rationale: builderContext.roadmapRationale,
     learnerProfile: builderContext.learnerProfile,

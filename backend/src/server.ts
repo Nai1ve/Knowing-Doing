@@ -36,7 +36,7 @@ const workspaceRuntime = new DockerWorkspaceRuntimeAdapter(workspaceRunner)
 const caseBuilder = config.caseBuilderProvider === 'model' ? new StagedModelCaseBuilder(config) : new FixtureCaseBuilder()
 const workspaceCompletion = new WorkspaceCompletionService(productRepository, planningService, (runId) => { writingService.enqueueAutoDraft(runId) })
 const caseWorkspaceService = new CaseWorkspaceService(productRepository, caseBuilder, workspaceRuntime, workspaceCompletion)
-caseWorkspaceService.resumeCaseJobs()
+await caseWorkspaceService.resumeCaseJobs()
 await caseWorkspaceService.resumeWorkspaces()
 workspaceCompletion.resumePending()
 const { app, scheduler } = buildApp({

@@ -84,13 +84,15 @@ export type LearningMode = 'lab' | 'workspace' | 'knowledge' | 'unavailable'
 export type CaseInputKind = 'brief' | 'zhihu_article'
 export type CaseDifficulty = 'introductory' | 'applied' | 'advanced'
 export type CaseGenerationStatus = 'generating' | 'ready' | 'failed' | 'archived'
-export type CaseGenerationJobStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'interrupted'
+export type CaseGenerationJobStatus = 'queued' | 'running' | 'preflighting' | 'succeeded' | 'failed' | 'interrupted'
 export type WorkspaceRunStatus = 'provisioning' | 'active' | 'executing' | 'failed' | 'ended' | 'expired'
 export type WorkspaceExecutionStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'timed_out' | 'rejected'
 export type PracticeKind = 'mysql_lab' | 'code_workspace'
 export type RuntimeKind = 'mysql_lab' | 'docker_workspace'
 export type ExerciseAssetKind = 'file' | 'fixture' | 'dataset_seed' | 'schema' | 'fault_seed'
 export type ExerciseKind = 'code_repair' | 'concept_drill' | 'data_diagnosis'
+export type CasePreflightStatus = 'queued' | 'provisioning' | 'verifying_starter' | 'verifying_reference' | 'passed' | 'failed' | 'interrupted'
+export type CasePreflightApiStatus = 'queued' | 'running' | 'passed' | 'failed'
 
 export interface EnvironmentTemplate {
   key: string
@@ -217,6 +219,12 @@ export interface CaseGenerationJob {
   updatedAt: string
   startedAt: string | null
   completedAt: string | null
+}
+
+export interface CasePreflightSummary {
+  status: CasePreflightApiStatus | null
+  updatedAt: string | null
+  userMessage: string | null
 }
 
 export interface WorkspaceRun {

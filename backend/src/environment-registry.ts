@@ -13,7 +13,7 @@ export type EnvironmentCapability = {
 const templates: EnvironmentTemplate[] = [
   {
     key: 'python-pytest-v1', version: '1', runtimeKind: 'docker_workspace', status: 'available', displayName: 'Python + pytest 工作区',
-    capabilityKeys: ['python.testing'], services: [{ key: 'python', role: 'runtime', displayName: 'Python 3.13' }], resourceProfile: 'small',
+    capabilityKeys: ['python.testing', 'python.collections.list'], services: [{ key: 'python', role: 'runtime', displayName: 'Python 3.13' }], resourceProfile: 'small',
     assetPolicy: { allowedExtensions: ['.py', '.json', '.md', '.txt'], maxFiles: 10, maxTotalBytes: 2 * 1024 * 1024 },
     commandPolicy: { allowedCommandKeys: ['pytest', 'pytest_quiet'] },
     initializationContract: { supportsStarterFiles: true, supportsDatasetSeed: false, supportsSchemaSeed: false, supportsFaultSeed: false },
@@ -44,6 +44,7 @@ function plannedTemplate(key: string, displayName: string, capabilityKey: string
 
 const capabilities: EnvironmentCapability[] = [
   { capabilityKey: 'python.testing', environmentKey: 'python-pytest-v1', environmentVersion: '1', provider: 'fixture', status: 'available', exerciseKinds: ['code_repair', 'concept_drill'], aliases: ['Python 测试', 'pytest'] },
+  { capabilityKey: 'python.collections.list', environmentKey: 'python-pytest-v1', environmentVersion: '1', provider: 'model', status: 'available', exerciseKinds: ['concept_drill', 'code_repair'], aliases: ['Python list', 'Python 列表', '列表', '索引', '切片', '可变性'] },
   { capabilityKey: 'mysql.performance', environmentKey: 'mysql-performance-v1', environmentVersion: '1', provider: 'fixture', status: 'available', exerciseKinds: ['data_diagnosis'], aliases: ['MySQL 性能'] },
   { capabilityKey: 'mysql.slow-query', environmentKey: 'mysql-performance-v1', environmentVersion: '1', provider: 'fixture', status: 'available', exerciseKinds: ['data_diagnosis'], aliases: ['MySQL 慢查询', 'EXPLAIN', '索引优化'] },
   { capabilityKey: 'go.testing', environmentKey: 'go-test-v1', environmentVersion: '1', provider: 'model', status: 'planned', exerciseKinds: ['code_repair', 'concept_drill'], aliases: ['Go 测试'] },

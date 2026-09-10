@@ -4,11 +4,13 @@ import path from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 import { FixtureCaseBuilder } from '../src/case-builder.js'
 import { CaseWorkspaceService } from '../src/case-workspace-service.js'
+import { CasePreflightService } from '../src/case-preflight-service.js'
 import { applyProductMigrations } from '../src/product-migrate.js'
 import { ProductRepository } from '../src/product-repository.js'
 import { PlanningService } from '../src/planning.js'
 import { FakeWorkspaceRunnerClient, type RunnerExecutionResult } from '../src/workspace-runner-client.js'
 import { WorkspaceCompletionService } from '../src/workspace-completion-service.js'
+import { DockerWorkspaceRuntimeAdapter } from '../src/runtime-adapter.js'
 
 function setup() {
   const directory = mkdtempSync(path.join(tmpdir(), 'zhixing-workspace-completion-')); const dbPath = path.join(directory, 'product.db'); applyProductMigrations(dbPath); const repository = new ProductRepository(dbPath); const learnerId = 'completion-learner'; const now = new Date().toISOString(); const roadmapId = 'completion-roadmap'; const nodeId = 'completion-node'
@@ -22,7 +24,8 @@ function setup() {
 
 async function createWorkspace(repository: ProductRepository, learnerId: string, nodeId: string, runner = new FakeWorkspaceRunnerClient(), onResolved?: (practiceRunId: string) => void) {
   const completion = new WorkspaceCompletionService(repository, new PlanningService(repository), onResolved)
-  const service = new CaseWorkspaceService(repository, new FixtureCaseBuilder(), runner, completion)
+  const preflightRuntime = new DockerWorkspaceRuntimeAdapter(new FakeWorkspaceRunnerClient())
+  const service = new CaseWorkspaceService(repository, new FixtureCaseBuilder(), runner, completion, new CasePreflightService(repository, preflightRuntime))
   const request = service.createCaseRequest(learnerId, { roadmapNodeId: nodeId, input: { kind: 'brief', brief: '练习测试修复与验证。' }, clientRequestId: 'completion-case' })
   await vi.waitFor(() => expect(service.getCaseGenerationJob(learnerId, request.job.id).job.status).toBe('succeeded'))
   return { service, workspace: await service.startPractice(learnerId, request.case.id) }

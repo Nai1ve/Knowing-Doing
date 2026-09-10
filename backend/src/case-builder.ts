@@ -29,6 +29,7 @@ export interface CaseBuilderInput {
   context?: CaseBuilderContext
   onAttempt?: (event: CaseBuilderAttemptEvent) => void
   onReferenceSolution?: (solution: ReferenceSolution) => void
+  preflightDiagnostics?: Record<string, unknown>
 }
 
 export interface CaseBuilderProvider {
@@ -49,7 +50,31 @@ export class FixtureCaseBuilder implements CaseBuilderProvider {
     const context = input.request.input.kind === 'brief'
       ? input.request.input.brief ?? '完成一次 Python 测试修复实践。'
       : `参考材料：${input.source?.title ?? '已选知乎材料'}\n${input.source?.excerpt ?? ''}`
-    return parseCaseSpec({
+    const isList = input.context?.roadmapNode.capabilityKey === 'python.collections.list' || /(python\s*list|python\s*列表|列表|切片|可变性)/i.test(context)
+    if (isList) {
+      const spec = parseCaseSpec({
+        title: 'Python list 的创建、索引、切片与可变性',
+        scenario: `你需要维护一个处理待办标签的 Python 小模块。先运行测试，观察 list 的索引、切片和可变性行为，再用最小修改修复实现。\n\n本次输入：${context.slice(0, 1200)}`,
+        learningGoal: input.request.desiredOutcome?.trim() || '通过一个可运行案例理解 Python list 的创建、索引、切片和原地修改。',
+        difficulty: input.request.difficulty ?? 'introductory',
+        environment: { key: 'python-pytest-v1', version: '1', templateKey: 'python-pytest-v1', services: [] },
+        starterFiles: [
+          { path: 'README.md', content: '# Python list 实践\n\n先运行 `pytest -q`，观察创建、索引、切片与可变性相关的测试结果。\n' },
+          { path: 'src/list_practice.py', content: "def mark_first_ready(items: list[str]) -> list[str]:\n    # zhixing-fixture: python-list-starter\n    copied = items[:]\n    copied[0] = 'ready'\n    return copied\n" },
+          { path: 'tests/test_list_practice.py', content: "from src.list_practice import mark_first_ready\n\ndef test_list_creation_and_indexing():\n    items = ['todo', 'review']\n    assert items[0] == 'todo'\n    assert len(items) == 2\n\ndef test_list_slicing():\n    items = ['todo', 'review', 'done']\n    assert items[1:] == ['review', 'done']\n\ndef test_list_mutation_is_visible_to_caller():\n    items = ['todo', 'review']\n    result = mark_first_ready(items)\n    assert result is items\n    assert items[0] == 'ready'\n" },
+        ],
+        tasks: [
+          { key: 'observe', instruction: '运行测试，记录通过项和失败项，不要先改代码。', recommendedCommands: ['pytest -q'], expectedObservation: '创建、索引和切片测试通过，可变性测试失败。' },
+          { key: 'inspect', instruction: '阅读切片表达式和测试，说明 copied 与原列表的关系。', recommendedCommands: ['pytest -q'], expectedObservation: 'items[:] 创建了新列表，修改 copied 不会让调用方的 items 发生变化。' },
+          { key: 'fix', instruction: '用最小修改保留调用方列表的原地修改行为，再运行测试验证。', recommendedCommands: ['pytest -q'], expectedObservation: '三个测试全部通过，且能解释索引、切片和可变性的差异。' },
+        ],
+        verification: { commands: ['pytest -q'], successSignals: ['3 passed', 'passed'] },
+        tutorContext: { concepts: ['list 创建', '索引', '切片', '可变性'], likelyMisconceptions: ['把切片得到的新列表当成原列表', '只看返回值而忽略对象身份'], evidenceToNotice: ['首次 pytest 输出', 'items[:] 的行为', 'result is items 的验证'] },
+      })
+      input.onReferenceSolution?.({ files: [{ path: 'src/list_practice.py', content: "def mark_first_ready(items: list[str]) -> list[str]:\n    items[0] = 'ready'\n    return items\n" }], verificationCommands: ['pytest -q'] })
+      return spec
+    }
+    const spec = parseCaseSpec({
       title: '订单汇总器中的边界条件修复',
       scenario: `你接手了一个负责汇总订单金额的 Python 小模块。当前实现可以处理大多数订单，但边界条件测试失败。请先运行测试、阅读已有实现，再用最小修改修复问题。\n\n本次输入：${context.slice(0, 1200)}`,
       learningGoal: input.request.desiredOutcome?.trim() || '通过阅读代码、运行测试和小步修改，完成一次可验证的 Python 问题修复。',
@@ -57,7 +82,7 @@ export class FixtureCaseBuilder implements CaseBuilderProvider {
       environment: { key: 'python-pytest-v1', version: '1', templateKey: 'python-pytest-v1', services: [] },
       starterFiles: [
         { path: 'README.md', content: '# 订单汇总器\n\n先运行 `pytest -q`，观察失败测试，再定位实现问题。\n' },
-        { path: 'src/order_summary.py', content: "from decimal import Decimal\n\ndef summarize_orders(orders: list[dict]) -> dict:\n    paid = [order for order in orders if order.get('status') == 'PAID']\n    total = sum(Decimal(str(order.get('amount', 0))) for order in paid)\n    return {'count': len(paid), 'total': str(total)}\n" },
+        { path: 'src/order_summary.py', content: "from decimal import Decimal\n\ndef summarize_orders(orders: list[dict]) -> dict:\n    # zhixing-fixture: order-starter\n    paid = [order for order in orders if order.get('status') == 'PAID']\n    total = sum(Decimal(str(order.get('amount', 0))) for order in paid)\n    return {'count': len(paid), 'total': str(total)}\n" },
         { path: 'tests/test_order_summary.py', content: "from src.order_summary import summarize_orders\n\ndef test_only_paid_orders_are_summarized():\n    assert summarize_orders([\n        {'status': 'PAID', 'amount': '10.50'},\n        {'status': 'PENDING', 'amount': '99.00'},\n    ]) == {'count': 1, 'total': '10.50'}\n\ndef test_missing_amount_is_not_silently_accepted():\n    assert summarize_orders([{'status': 'PAID'}]) == {'count': 0, 'total': '0'}\n" },
       ],
       tasks: [
@@ -68,6 +93,8 @@ export class FixtureCaseBuilder implements CaseBuilderProvider {
       verification: { commands: ['pytest -q'], successSignals: ['2 passed', 'passed'] },
       tutorContext: { concepts: ['边界条件', '测试驱动修复', 'Decimal 金额计算'], likelyMisconceptions: ['把测试通过当成无需理解原因', '只修 total 而忽略 count'], evidenceToNotice: ['首次失败输出', '修改前后文件差异', '最终 pytest 输出'] },
     })
+    input.onReferenceSolution?.({ files: [{ path: 'src/order_summary.py', content: "from decimal import Decimal\n\ndef summarize_orders(orders: list[dict]) -> dict:\n    paid = [order for order in orders if order.get('status') == 'PAID' and order.get('amount') is not None]\n    total = sum(Decimal(str(order['amount'])) for order in paid)\n    return {'count': len(paid), 'total': str(total)}\n" }], verificationCommands: ['pytest -q'] })
+    return spec
   }
 }
 
@@ -87,7 +114,7 @@ function hash(value: unknown): string { return createHash('sha256').update(typeo
 
 export class ModelCaseBuilder implements CaseBuilderProvider {
   readonly providerName = 'model' as const
-  private readonly promptVersion = 'case-builder-python-v1'
+  private readonly promptVersion = 'case-builder-environment-v1'
 
   constructor(private readonly config: Pick<LabConfig, 'modelBaseUrl' | 'modelApiKey' | 'modelName' | 'modelTimeoutMs'>) {}
 
@@ -112,8 +139,10 @@ export class ModelCaseBuilder implements CaseBuilderProvider {
   }
 
   async build(input: CaseBuilderInput): Promise<CaseSpec> {
-    const context = JSON.stringify({ request: input.request, source: input.source, context: input.context ?? null })
-    const system = '你是知行的案例构建器。只为服务端已经选定的 python-pytest-v1 环境构造真实可实践的工程案例。只输出完整 CaseSpec JSON，不输出解释、Markdown、Dockerfile、Compose、shell、镜像、宿主机路径、网络配置、密钥或未经允许的命令。environment 必须保留 key=python-pytest-v1、version=1；不得自行更换运行环境。案例必须能通过阅读代码、运行 pytest、修改代码、再次验证完成。'
+    const context = JSON.stringify({ request: input.request, source: input.source, context: input.context ?? null, preflightDiagnostics: input.preflightDiagnostics ?? null })
+    const selected = input.context?.roadmapNode.capabilityKey ?? 'unknown'
+    const environmentKey = input.context ? '已由服务端冻结' : 'python-pytest-v1'
+    const system = `你是知行的案例构建器。只为服务端已经选定的运行环境构造真实可实践的工程案例。当前能力是 ${selected}，环境是 ${environmentKey}。只输出完整 CaseSpec JSON，不输出解释、Markdown、Dockerfile、Compose、shell、镜像、宿主机路径、网络配置、密钥或未经允许的命令。不得自行更换运行环境。案例必须能通过阅读代码、运行允许的测试命令、修改代码、再次验证完成。`
     const result = await this.call([{ role: 'system', content: system }, { role: 'user', content: context }])
     try {
       return parseCaseSpec(JSON.parse(result.raw))
@@ -197,8 +226,10 @@ export class StagedModelCaseBuilder implements CaseBuilderProvider {
   async build(input: CaseBuilderInput): Promise<CaseSpec> {
     const { compileCaseContext, contextForPrompt } = await import('./case-context.js')
     const { parseCaseBlueprint, parseCaseIntent } = await import('./case-agent-schemas.js')
-    const context = compileCaseContext(input); const promptContext = contextForPrompt(context)
+    const context = compileCaseContext(input); const promptContext = JSON.stringify({ frozenContext: JSON.parse(contextForPrompt(context)), preflightDiagnostics: input.preflightDiagnostics ?? null })
     const intent = await this.phase<CaseIntent>('intent', '你是案例意图分析器。根据冻结上下文提炼一个可实践的工程问题。只输出 CaseIntent JSON，不选择或修改运行环境，不输出 Docker 或基础设施配置。', promptContext, parseCaseIntent, input, context.fingerprint)
+    if (intent.targetCapability !== context.roadmapNode.capabilityKey) throw new CaseBuilderError('intent_capability_mismatch', '案例意图没有保持路线节点能力')
+    if (context.roadmapNode.capabilityKey === 'python.collections.list' && !/(list|列表|索引|切片|可变性)/i.test(`${intent.scenario} ${intent.desiredObservation} ${intent.scope.join(' ')}`)) throw new CaseBuilderError('intent_scope_mismatch', 'Python list 案例意图没有覆盖当前学习范围')
     const blueprint = await this.phase<CaseBlueprint>('blueprint', '你是案例蓝图设计器。根据冻结上下文和 CaseIntent 设计任务顺序、案例资产和验证计划。只能使用服务端提供的运行环境能力，命令必须使用逻辑 command key。只输出 CaseBlueprint JSON。', { context: promptContext, intent }, parseCaseBlueprint, input, context.fingerprint)
     try {
       for (const commandKey of blueprint.verificationPlan.commandKeys) {

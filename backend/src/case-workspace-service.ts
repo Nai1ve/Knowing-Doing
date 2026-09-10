@@ -4,8 +4,9 @@ import { getWorkspaceCapability } from './capability-registry.js'
 import { getEnvironmentTemplate } from './environment-registry.js'
 import { MAX_WORKSPACE_FILE_BYTES, MAX_WORKSPACE_TOTAL_BYTES, parseCaseRequest, parseCaseSpec } from './case-schemas.js'
 import { CaseBuilderError, type CaseBuilderAttemptEvent, type CaseBuilderAttemptPhase, type CaseBuilderContext, type CaseBuilderProvider } from './case-builder.js'
+import { CasePreflightError, CasePreflightService } from './case-preflight-service.js'
 import { LabError } from './errors.js'
-import type { CaseRequest, CaseSpec, EnvironmentTemplate, LearningCase, CaseGenerationJob, PracticeRun, ReferenceSolution, SourceItem, WorkspaceCompletion, WorkspaceExecution, WorkspaceFile, WorkspaceRun, WorkspaceTutorHistory } from './product-types.js'
+import type { CaseRequest, CaseSpec, EnvironmentTemplate, LearningCase, CaseGenerationJob, CasePreflightSummary, PracticeRun, ReferenceSolution, SourceItem, WorkspaceCompletion, WorkspaceExecution, WorkspaceFile, WorkspaceRun, WorkspaceTutorHistory } from './product-types.js'
 import type { ProductRepository } from './product-repository.js'
 import type { RunnerFileInput, WorkspaceRunnerClient } from './workspace-runner-client.js'
 import { DockerWorkspaceRuntimeAdapter, type RuntimeAdapter } from './runtime-adapter.js'
@@ -70,9 +71,11 @@ export class CaseWorkspaceService {
   private readonly workspaceLocks = new Map<string, Promise<void>>()
 
   private readonly runner: RuntimeAdapter
+  private readonly preflight: CasePreflightService
 
-  constructor(private readonly repository: ProductRepository, private readonly builder: CaseBuilderProvider, runner: RuntimeAdapter | WorkspaceRunnerClient, private readonly completionService?: { completionForWorkspace(learnerId: string, workspaceRunId: string): WorkspaceCompletion | null; evaluateExecution(learnerId: string, workspaceRunId: string, executionId: string): WorkspaceCompletion | null; recheck(learnerId: string, workspaceRunId: string): WorkspaceCompletion | null }) {
+  constructor(private readonly repository: ProductRepository, private readonly builder: CaseBuilderProvider, runner: RuntimeAdapter | WorkspaceRunnerClient, private readonly completionService?: { completionForWorkspace(learnerId: string, workspaceRunId: string): WorkspaceCompletion | null; evaluateExecution(learnerId: string, workspaceRunId: string, executionId: string): WorkspaceCompletion | null; recheck(learnerId: string, workspaceRunId: string): WorkspaceCompletion | null }, preflight?: CasePreflightService) {
     this.runner = 'provision' in runner ? runner : new DockerWorkspaceRuntimeAdapter(runner)
+    this.preflight = preflight ?? new CasePreflightService(repository, this.runner)
   }
 
   private get db(): Database.Database { return this.repository.db }
@@ -93,6 +96,18 @@ export class CaseWorkspaceService {
     const row = this.db.prepare('SELECT * FROM case_generation_jobs WHERE id = ? AND learner_id = ?').get(jobId, learnerId) as Row | undefined
     if (!row) throw new LabError('case_generation_not_found', '案例生成任务不存在', 404)
     return jobFrom(row)
+  }
+
+  private preflightForJob(jobId: string): CasePreflightSummary {
+    const row = this.db.prepare('SELECT status, updated_at, failure_message FROM case_preflight_runs WHERE case_generation_job_id = ? ORDER BY attempt_number DESC LIMIT 1').get(jobId) as Row | undefined
+    if (!row) return { status: null, updatedAt: null, userMessage: null }
+    const raw = text(row, 'status'); const status = raw === 'passed' || raw === 'failed' ? raw : raw === 'queued' ? 'queued' : 'running'
+    return { status, updatedAt: text(row, 'updated_at'), userMessage: nullable(row, 'failure_message') }
+  }
+
+  private nextPreflightAttempt(jobId: string): number {
+    const row = this.db.prepare('SELECT COALESCE(MAX(attempt_number), 0) + 1 AS attempt_number FROM case_preflight_runs WHERE case_generation_job_id = ?').get(jobId) as Row
+    return number(row, 'attempt_number')
   }
 
   private workspaceRow(learnerId: string, workspaceId: string): Row {
@@ -210,29 +225,45 @@ export class CaseWorkspaceService {
     if (!this.builder.staged) this.saveCaseAttempt(jobId, attemptNumber, 'generate', 'running', contextFingerprint)
     let referenceSolution: ReferenceSolution | null = null
     try {
-      const spec = parseCaseSpec(await this.builder.build({ request: this.requestFromCase(item), source, context: context?.roadmapNode ? { roadmapNode: context.roadmapNode, roadmapRationale: context.roadmapRationale ?? [], learnerProfile: context.learnerProfile ?? { snapshotId: null, dimensions: [] } } : undefined, onAttempt: (event) => this.saveCaseAttempt(jobId, attemptNumber, event.phase, event.status, event.contextFingerprint ?? contextFingerprint, event), onReferenceSolution: (solution) => { referenceSolution = solution } }))
-      if (!this.builder.staged) this.saveCaseAttempt(jobId, attemptNumber, 'generate', 'succeeded', contextFingerprint)
+      const buildCase = async (preflightDiagnostics?: Record<string, unknown>): Promise<CaseSpec> => {
+        referenceSolution = null
+        const built = parseCaseSpec(await this.builder.build({ request: this.requestFromCase(item), source, context: context?.roadmapNode ? { roadmapNode: context.roadmapNode, roadmapRationale: context.roadmapRationale ?? [], learnerProfile: context.learnerProfile ?? { snapshotId: null, dimensions: [] } } : undefined, preflightDiagnostics, onAttempt: (event) => this.saveCaseAttempt(jobId, attemptNumber, event.phase, event.status, event.contextFingerprint ?? contextFingerprint, event), onReferenceSolution: (solution) => { referenceSolution = solution } }))
+        if (!this.builder.staged) this.saveCaseAttempt(jobId, attemptNumber, 'generate', 'succeeded', contextFingerprint)
+        return built
+      }
+      let spec = await buildCase()
+      let preflightRepairAttempted = false
+      while (true) {
+        try {
+          await this.preflight.run({ learnerId: item.learnerId, jobId, learningCaseId: item.id, jobAttemptNumber: attemptNumber, preflightAttemptNumber: this.nextPreflightAttempt(jobId), workerToken: token, environmentKey: item.environmentKey ?? item.templateKey, environmentVersion: item.environmentVersion ?? '1', runtimeKind: item.runtimeKind ?? 'docker_workspace', spec, referenceSolution })
+          break
+        } catch (error) {
+          if (!(error instanceof CasePreflightError) || preflightRepairAttempted) throw error
+          preflightRepairAttempted = true
+          spec = await buildCase({ code: error.code, message: error.message, ...error.details, repairAttempt: 1 })
+        }
+      }
       const completed = new Date().toISOString()
       const committed = this.db.transaction(() => {
-        const updatedCase = this.db.prepare("UPDATE learning_cases SET status = 'ready', case_spec_json = ?, reference_solution_json = ?, failure_code = NULL, failure_message = NULL, updated_at = ? WHERE id = ? AND status = 'generating'").run(JSON.stringify(spec), JSON.stringify(referenceSolution ?? {}), completed, item.id)
+        const updatedCase = this.db.prepare("UPDATE learning_cases SET status = 'ready', preflight_status = 'passed', case_spec_json = ?, reference_solution_json = ?, failure_code = NULL, failure_message = NULL, updated_at = ? WHERE id = ? AND status = 'generating'").run(JSON.stringify(spec), JSON.stringify(referenceSolution ?? {}), completed, item.id)
         if (updatedCase.changes === 0) return false
-        const updatedJob = this.db.prepare("UPDATE case_generation_jobs SET status = 'succeeded', failure_code = NULL, failure_message = NULL, completed_at = ?, updated_at = ? WHERE id = ? AND status = 'running' AND worker_token = ?").run(completed, completed, jobId, token)
+        const updatedJob = this.db.prepare("UPDATE case_generation_jobs SET status = 'succeeded', failure_code = NULL, failure_message = NULL, completed_at = ?, updated_at = ? WHERE id = ? AND status = 'preflighting' AND worker_token = ? AND attempt_count = ?").run(completed, completed, jobId, token, attemptNumber)
         if (updatedJob.changes === 0) throw new Error('case_generation_claim_lost')
         return true
       })()
       if (!committed) return
     } catch (error) {
-      const code = error instanceof CaseBuilderError ? error.code : error instanceof Error && error.message.startsWith('unsupported_command:') ? 'unsupported_command' : 'case_generation_failed'; const message = error instanceof Error ? error.message.slice(0, 500) : '案例生成失败'; const failedAt = new Date().toISOString()
+      const code = error instanceof CaseBuilderError || error instanceof CasePreflightError ? error.code : error instanceof Error && error.message.startsWith('unsupported_command:') ? 'unsupported_command' : 'case_generation_failed'; const message = error instanceof Error ? error.message.slice(0, 500) : '案例生成失败'; const failedAt = new Date().toISOString()
       if (!this.builder.staged) this.saveCaseAttempt(jobId, attemptNumber, 'generate', 'failed', contextFingerprint, { diagnostics: { code, message } })
       this.db.transaction(() => {
-        const updatedJob = this.db.prepare("UPDATE case_generation_jobs SET status = 'failed', failure_code = ?, failure_message = ?, completed_at = ?, updated_at = ? WHERE id = ? AND status = 'running' AND worker_token = ?").run(code, message, failedAt, failedAt, jobId, token)
-        if (updatedJob.changes > 0) this.db.prepare("UPDATE learning_cases SET status = 'failed', failure_code = ?, failure_message = ?, updated_at = ? WHERE id = ? AND status = 'generating'").run(code, message, failedAt, item.id)
+        const updatedJob = this.db.prepare("UPDATE case_generation_jobs SET status = 'failed', failure_code = ?, failure_message = ?, completed_at = ?, updated_at = ? WHERE id = ? AND status IN ('running', 'preflighting') AND worker_token = ? AND attempt_count = ?").run(code, message, failedAt, failedAt, jobId, token, attemptNumber)
+        if (updatedJob.changes > 0) this.db.prepare("UPDATE learning_cases SET status = 'failed', preflight_status = CASE WHEN preflight_status = 'not_required' THEN preflight_status ELSE 'failed' END, failure_code = ?, failure_message = ?, updated_at = ? WHERE id = ? AND status = 'generating'").run(code, message, failedAt, item.id)
       })()
     }
   }
 
-  getCaseGenerationJob(learnerId: string, jobId: string): { case: LearningCase; job: CaseGenerationJob } {
-    const job = this.jobForLearner(learnerId, jobId); return { case: this.caseForLearner(learnerId, job.learningCaseId), job }
+  getCaseGenerationJob(learnerId: string, jobId: string): { case: LearningCase; job: CaseGenerationJob; preflight: CasePreflightSummary } {
+    const job = this.jobForLearner(learnerId, jobId); return { case: this.caseForLearner(learnerId, job.learningCaseId), job, preflight: this.preflightForJob(jobId) }
   }
 
   getLearningCase(learnerId: string, caseId: string): LearningCase {
@@ -253,9 +284,11 @@ export class CaseWorkspaceService {
     return this.getCaseGenerationJob(learnerId, jobId)
   }
 
-  resumeCaseJobs(): void {
+  async resumeCaseJobs(): Promise<void> {
+    await this.preflight.recover()
     const cutoff = new Date(Date.now() - 30_000).toISOString(); const interruptedAt = new Date().toISOString()
     this.db.prepare("UPDATE case_generation_jobs SET status = 'interrupted', failure_code = 'service_restarted', failure_message = '服务在案例生成完成前重启', completed_at = ?, updated_at = ? WHERE status = 'running' AND updated_at < ?").run(interruptedAt, interruptedAt, cutoff)
+    this.db.prepare("UPDATE learning_cases SET status = 'generating', preflight_status = 'queued', failure_code = NULL, failure_message = NULL, updated_at = ? WHERE id IN (SELECT learning_case_id FROM case_generation_jobs WHERE status = 'interrupted' AND failure_code = 'service_restarted') AND status = 'failed'").run(new Date().toISOString())
     this.db.prepare("UPDATE case_generation_jobs SET status = 'queued', worker_token = NULL, completed_at = NULL, updated_at = ? WHERE status = 'interrupted' AND failure_code = 'service_restarted'").run(new Date().toISOString())
     const jobs = this.db.prepare("SELECT id FROM case_generation_jobs WHERE status = 'queued' ORDER BY created_at ASC LIMIT 20").all() as Row[]
     for (const row of jobs) void this.processCaseJob(text(row, 'id'))
@@ -306,7 +339,8 @@ export class CaseWorkspaceService {
           for (const file of item.spec!.starterFiles) insertFile.run(randomUUID(), workspaceId, file.path, file.content, checksum(file.content), activatedAt, activatedAt)
         })()
         this.repository.appendEvent({ learnerId, practiceRunId: practiceId, actor: 'workspace', type: 'workspace_created', stage: 'observe', payload: { learningCaseId: caseId, templateKey: item.templateKey, environmentKey: item.environmentKey ?? item.templateKey, environmentVersion: item.environmentVersion ?? '1', runtimeKind: item.runtimeKind ?? 'docker_workspace', provider: item.provider }, artifactRefs: [], clientRequestId: `workspace-created:${workspaceId}` })
-        this.repository.createArtifact({ learnerId, practiceRunId: practiceId, kind: 'external_text', sourceKind: 'workspace', verificationStatus: 'not_applicable', content: item.spec.scenario, metadata: { learningCaseId: caseId, provider: item.provider, ...(item.provider === 'fixture' ? { fixtureVersion: 'python-order-summary-v1' } : {}) } })
+        const fixtureVersion = item.capabilityKey === 'python.collections.list' ? 'python-list-v1' : 'python-order-summary-v1'
+        this.repository.createArtifact({ learnerId, practiceRunId: practiceId, kind: 'external_text', sourceKind: 'workspace', verificationStatus: 'not_applicable', content: item.spec.scenario, metadata: { learningCaseId: caseId, provider: item.provider, ...(item.provider === 'fixture' ? { fixtureVersion } : {}) } })
       } catch (error) {
         const failedAt = new Date().toISOString(); this.db.prepare("UPDATE workspace_runs SET status = 'failed', ended_reason = ?, updated_at = ?, ended_at = ? WHERE id = ? AND status = 'provisioning'").run(error instanceof WorkspaceRunnerError ? error.code : 'runner_unavailable', failedAt, failedAt, workspaceId)
         throw new LabError('workspace_provision_failed', '代码工作区启动失败', 503, true)

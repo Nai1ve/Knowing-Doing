@@ -39,7 +39,8 @@ const RoadmapNodeDraftSchema = z.object({
   standard: z.string().min(1).max(500),
   minutes: z.number().int().positive().max(600),
   priority: z.number().int().positive().max(100),
-  mode: z.enum(['knowledge', 'lab', 'unavailable']),
+  mode: z.enum(['knowledge', 'lab', 'workspace', 'unavailable']),
+  capabilityKey: z.string().trim().min(1).max(160).nullable().optional(),
   caseIntent: z.string().nullable().default(null),
   contextKeys: z.array(z.string()).max(8).default([]),
 })
@@ -108,7 +109,7 @@ function generationFrom(row: Row | undefined): AgentRoadmapGeneration | null {
 }
 
 const ROADMAP_JSON_CONTRACT = JSON.stringify({
-  nodes: [{ key: 'domain-key', parentKey: null, type: 'domain', title: '能力域', summary: '说明当前能力域与目标的关系', points: ['关键点'], standard: '可观察的完成标准', minutes: 120, priority: 1, mode: 'knowledge', caseIntent: null, contextKeys: ['goal'] }],
+  nodes: [{ key: 'domain-key', parentKey: null, type: 'domain', title: '能力域', summary: '说明当前能力域与目标的关系', points: ['关键点'], standard: '可观察的完成标准', minutes: 120, priority: 1, mode: 'knowledge', capabilityKey: null, caseIntent: null, contextKeys: ['goal'] }],
   unitKeys: ['domain-key'],
   dependencies: [{ nodeKey: 'child-key', dependsOnKey: 'domain-key' }],
 })
@@ -431,22 +432,34 @@ export class AgentPlanningService {
     return /(mysql|MySQL|慢查询|慢查|explain|执行计划|联合索引|索引优化)/i.test(value)
   }
 
+  private hasPythonListIntent(value: string): boolean {
+    return /(python\s*list|python\s*列表|python.*列表|列表|list|切片|可变性)/i.test(value)
+  }
+
   private localRoadmap(session: AgentPlanningSession, context: PlanningContextPacket | null): RoadmapPlan {
-    const mysql = this.hasMysqlIntent(`${session.goal} ${context?.explicitFacts.map((item) => item.content).join(' ') ?? ''}`)
+    const allText = `${session.goal} ${context?.explicitFacts.map((item) => item.content).join(' ') ?? ''}`
+    const mysql = this.hasMysqlIntent(allText)
+    const pythonList = this.hasPythonListIntent(allText)
     const focus = context?.currentFocus || session.goal
-    const nodes: RoadmapPlan['nodes'] = [{ key: 'goal', parentKey: null, type: 'domain', title: session.goal.slice(0, 120), summary: '从当前目标出发组织后续能力与实践。', points: ['目标', '约束', '产出'], standard: '能够说明当前目标、现实约束和阶段性产出。', minutes: 60, priority: 1, mode: 'knowledge', caseIntent: null, contextKeys: ['goal'] }]
+    const nodes: RoadmapPlan['nodes'] = [{ key: 'goal', parentKey: null, type: 'domain', title: session.goal.slice(0, 120), summary: '从当前目标出发组织后续能力与实践。', points: ['目标', '约束', '产出'], standard: '能够说明当前目标、现实约束和阶段性产出。', minutes: 60, priority: 1, mode: 'knowledge', capabilityKey: null, caseIntent: null, contextKeys: ['goal'] }]
     if (mysql) {
-      nodes.push({ key: 'mysql-performance', parentKey: 'goal', type: 'capability', title: '数据访问与性能', summary: focus.slice(0, 500), points: ['现象', '执行计划', '验证'], standard: '能从真实现象出发说明判断、尝试和验证。', minutes: 120, priority: 1, mode: 'knowledge', caseIntent: null, contextKeys: [] })
-      nodes.push({ key: 'mysql-slow-query', parentKey: 'mysql-performance', type: 'lab', title: 'MySQL 慢查询与索引', summary: '通过真实实验观察慢查询，使用 EXPLAIN 和索引验证优化判断。', points: ['慢查询', 'EXPLAIN', '索引'], standard: '完成一次慢查询排查，并用实验结果验证结论。', minutes: 120, priority: 1, mode: 'lab', caseIntent: 'mysql.slow-query-index', contextKeys: [] })
+      nodes.push({ key: 'mysql-performance', parentKey: 'goal', type: 'capability', title: '数据访问与性能', summary: focus.slice(0, 500), points: ['现象', '执行计划', '验证'], standard: '能从真实现象出发说明判断、尝试和验证。', minutes: 120, priority: 1, mode: 'knowledge', capabilityKey: null, caseIntent: null, contextKeys: [] })
+      nodes.push({ key: 'mysql-slow-query', parentKey: 'mysql-performance', type: 'lab', title: 'MySQL 慢查询与索引', summary: '通过真实实验观察慢查询，使用 EXPLAIN 和索引验证优化判断。', points: ['慢查询', 'EXPLAIN', '索引'], standard: '完成一次慢查询排查，并用实验结果验证优化判断。', minutes: 120, priority: 1, mode: 'lab', capabilityKey: 'mysql.slow-query', caseIntent: 'mysql.slow-query-index', contextKeys: [] })
       return { nodes, unitKeys: ['mysql-slow-query'], dependencies: [], }
     }
-    nodes.push({ key: 'current-focus', parentKey: 'goal', type: 'capability', title: '当前重点', summary: focus.slice(0, 500), points: ['理解问题', '形成方法', '完成产出'], standard: '能围绕当前目标完成一个可回看的最小学习产出。', minutes: 120, priority: 1, mode: 'knowledge', caseIntent: null, contextKeys: [] })
+    if (pythonList) {
+      nodes.push({ key: 'python-collections', parentKey: 'goal', type: 'capability', title: 'Python 容器与数据操作', summary: focus.slice(0, 500), points: ['创建', '索引', '切片', '可变性'], standard: '能在代码中正确创建、读取、切片和修改 list，并通过测试说明行为。', minutes: 90, priority: 1, mode: 'knowledge', capabilityKey: null, caseIntent: null, contextKeys: [] })
+      nodes.push({ key: 'python-list', parentKey: 'python-collections', type: 'concept', title: 'Python list：创建、索引、切片与可变性', summary: '通过一个可运行案例观察 list 的创建、索引、切片和原地修改。', points: ['创建', '索引', '切片', '可变性'], standard: '完成 Python list 工作区案例，并能解释测试结果。', minutes: 120, priority: 1, mode: 'workspace', capabilityKey: 'python.collections.list', caseIntent: 'python.collections.list', contextKeys: [] })
+      return { nodes, unitKeys: ['python-list'], dependencies: [] }
+    }
+    nodes.push({ key: 'current-focus', parentKey: 'goal', type: 'capability', title: '当前重点', summary: focus.slice(0, 500), points: ['理解问题', '形成方法', '完成产出'], standard: '能围绕当前目标完成一个可回看的最小学习产出。', minutes: 120, priority: 1, mode: 'knowledge', capabilityKey: null, caseIntent: null, contextKeys: [] })
     return { nodes, unitKeys: ['current-focus'], dependencies: [] }
   }
 
   private normalizeRoadmap(plan: RoadmapPlan, session: AgentPlanningSession, context: PlanningContextPacket | null): RoadmapPlan {
     const allText = `${session.goal} ${context?.explicitFacts.map((item) => item.content).join(' ') ?? ''} ${context?.recentMessages.map((item) => item.content).join(' ') ?? ''}`
     const mysql = this.hasMysqlIntent(allText)
+    const pythonList = this.hasPythonListIntent(allText)
     const nodes = [...plan.nodes]
     const keys = new Set<string>()
     for (const node of nodes) {
@@ -458,12 +471,22 @@ export class AgentPlanningService {
     if (mysql && !nodes.some((node) => node.caseIntent === 'mysql.slow-query-index')) {
       const parent = nodes.find((node) => node.type === 'capability') ?? nodes.find((node) => node.parentKey === null)
       if (!parent) throw new PlanningAgentError('roadmap_no_parent', '无法为 MySQL 实验建立路线父节点', false)
-      nodes.push({ key: 'mysql-slow-query', parentKey: parent.key, type: 'lab', title: 'MySQL 慢查询与索引', summary: '通过真实实验观察慢查询，使用 EXPLAIN 和索引验证优化判断。', points: ['慢查询', 'EXPLAIN', '索引'], standard: '完成一次慢查询排查，并用实验结果验证结论。', minutes: 120, priority: 1, mode: 'lab', caseIntent: 'mysql.slow-query-index', contextKeys: [] })
+      nodes.push({ key: 'mysql-slow-query', parentKey: parent.key, type: 'lab', title: 'MySQL 慢查询与索引', summary: '通过真实实验观察慢查询，使用 EXPLAIN 和索引验证优化判断。', points: ['慢查询', 'EXPLAIN', '索引'], standard: '完成一次慢查询排查，并用实验结果验证结论。', minutes: 120, priority: 1, mode: 'lab', capabilityKey: 'mysql.slow-query', caseIntent: 'mysql.slow-query-index', contextKeys: [] })
+    }
+    if (pythonList && !nodes.some((node) => node.caseIntent === 'python.collections.list')) {
+      const parent = nodes.find((node) => node.type === 'capability') ?? nodes.find((node) => node.parentKey === null)
+      if (!parent) throw new PlanningAgentError('roadmap_no_parent', '无法为 Python list 案例建立路线父节点', false)
+      nodes.push({ key: 'python-list', parentKey: parent.key, type: 'concept', title: 'Python list：创建、索引、切片与可变性', summary: '通过一个可运行案例观察 list 的创建、索引、切片和原地修改。', points: ['创建', '索引', '切片', '可变性'], standard: '完成 Python list 工作区案例，并能解释测试结果。', minutes: 120, priority: 1, mode: 'workspace', capabilityKey: 'python.collections.list', caseIntent: 'python.collections.list', contextKeys: [] })
     }
     const unitKeys = [...new Set(plan.unitKeys.filter((key) => nodes.some((node) => node.key === key)))]
     if (mysql) unitKeys.unshift('mysql-slow-query')
+    if (pythonList) unitKeys.unshift('python-list')
     if (unitKeys.length === 0) throw new PlanningAgentError('roadmap_no_units', '路线没有可执行的学习单元', false)
-    return { nodes: nodes.map((node) => node.caseIntent === 'mysql.slow-query-index' ? { ...node, type: 'lab' as const, mode: 'lab' as const } : node), unitKeys: [...new Set(unitKeys)], dependencies: plan.dependencies.filter((item) => nodes.some((node) => node.key === item.nodeKey) && nodes.some((node) => node.key === item.dependsOnKey)) }
+    return { nodes: nodes.map((node) => node.caseIntent === 'mysql.slow-query-index'
+      ? { ...node, type: 'lab' as const, mode: 'lab' as const, capabilityKey: 'mysql.slow-query' }
+      : node.caseIntent === 'python.collections.list'
+        ? { ...node, mode: 'workspace' as const, capabilityKey: 'python.collections.list' }
+        : node), unitKeys: [...new Set(unitKeys)], dependencies: plan.dependencies.filter((item) => nodes.some((node) => node.key === item.nodeKey) && nodes.some((node) => node.key === item.dependsOnKey)) }
   }
 
   private async buildRoadmap(learnerId: string, sessionId: string, generationId: string, inputFingerprint: string): Promise<void> {
@@ -496,9 +519,9 @@ export class AgentPlanningService {
         this.db.prepare("INSERT INTO learning_roadmaps(id, learner_id, template_key, goal, status, revision, input_snapshot_json, based_on_roadmap_id, created_at, updated_at) VALUES (?, ?, 'agent-roadmap-v2', ?, 'draft', 1, ?, NULL, ?, ?)").run(roadmapId, learnerId, session.goal, JSON.stringify({ sessionId, profileSnapshotId: session.profile?.id ?? null, contextSnapshotId: context?.snapshotId ?? null, mode: 'agent', generatorVersion: 'agent-roadmap-v2', inputFingerprint, unitKeys: plan.unitKeys }), generatedAt, generatedAt)
         const ids = new Map<string, string>(); const remaining = new Map(plan.nodes.map((node, index) => [node.key, { node, index }])); const ordered: Array<{ node: RoadmapPlan['nodes'][number]; index: number }> = []
         while (remaining.size > 0) { const next = [...remaining.values()].find(({ node }) => node.parentKey === null || ids.has(node.parentKey)); if (!next) throw new PlanningAgentError('roadmap_cycle', '路线节点存在循环依赖', false); ordered.push(next); ids.set(next.node.key, randomUUID()); remaining.delete(next.node.key) }
-        const insertNode = this.db.prepare('INSERT INTO roadmap_nodes(id, roadmap_id, parent_id, node_key, node_type, title, summary, knowledge_card_json, completion_standard, estimated_minutes, priority, position, learning_mode, case_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
-        const mysql = this.hasMysqlIntent(`${session.goal} ${context?.explicitFacts.map((item) => item.content).join(' ') ?? ''}`); const activeKeys = new Set(plan.unitKeys)
-        for (const item of ordered) { const node = item.node; let parent = node.parentKey ? ids.get(node.parentKey) ?? null : null; let caseId: string | null = null; let mode = node.mode; if (node.caseIntent === 'mysql.slow-query-index' && mysql) { caseId = 'mysql-order-list-index-001'; mode = 'lab'; activeKeys.add(node.key) }; insertNode.run(ids.get(node.key), roadmapId, parent, node.key, node.type, node.title, node.summary, JSON.stringify({ keyPoints: node.points, contextKeys: node.contextKeys }), node.standard, node.minutes, node.priority, item.index + 1, mode, caseId, generatedAt) }
+        const insertNode = this.db.prepare('INSERT INTO roadmap_nodes(id, roadmap_id, parent_id, node_key, node_type, title, summary, knowledge_card_json, completion_standard, estimated_minutes, priority, position, learning_mode, capability_key, case_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+        const mysql = this.hasMysqlIntent(`${session.goal} ${context?.explicitFacts.map((item) => item.content).join(' ') ?? ''}`); const pythonList = this.hasPythonListIntent(`${session.goal} ${context?.explicitFacts.map((item) => item.content).join(' ') ?? ''}`); const activeKeys = new Set(plan.unitKeys)
+        for (const item of ordered) { const node = item.node; let parent = node.parentKey ? ids.get(node.parentKey) ?? null : null; let caseId: string | null = null; let mode = node.mode; let capabilityKey = node.capabilityKey ?? null; if (node.caseIntent === 'mysql.slow-query-index' && mysql) { caseId = 'mysql-order-list-index-001'; mode = 'lab'; capabilityKey = 'mysql.slow-query'; activeKeys.add(node.key) }; if (node.caseIntent === 'python.collections.list' && pythonList) { mode = 'workspace'; capabilityKey = 'python.collections.list'; activeKeys.add(node.key) }; insertNode.run(ids.get(node.key), roadmapId, parent, node.key, node.type, node.title, node.summary, JSON.stringify({ keyPoints: node.points, contextKeys: node.contextKeys }), node.standard, node.minutes, node.priority, item.index + 1, mode, capabilityKey, caseId, generatedAt) }
         const insertProgress = this.db.prepare("INSERT INTO roadmap_node_progress(roadmap_id, node_id, status, source, completed_at, verified_at, revision, updated_at) VALUES (?, ?, ?, 'agent', NULL, NULL, 1, ?)")
         for (const item of ordered) { let available = item.node.parentKey === null || activeKeys.has(item.node.key); let parent = item.node.parentKey; while (parent) { if (activeKeys.has(parent)) available = true; parent = plan.nodes.find((node) => node.key === parent)?.parentKey ?? null }; insertProgress.run(roadmapId, ids.get(item.node.key), available ? 'available' : 'locked', generatedAt) }
         const insertDependency = this.db.prepare('INSERT OR IGNORE INTO roadmap_node_dependencies(roadmap_id, node_id, depends_on_node_id) VALUES (?, ?, ?)'); for (const dependency of plan.dependencies) { if (ids.has(dependency.nodeKey) && ids.has(dependency.dependsOnKey)) insertDependency.run(roadmapId, ids.get(dependency.nodeKey), ids.get(dependency.dependsOnKey)) }
