@@ -31,9 +31,9 @@ function statusLabel(item: ProductPracticeHistoryItem): string {
 }
 
 function labLabel(item: ProductPracticeHistoryItem): string {
-  if (item.labState === 'active') return 'Lab 可用'
-  if (item.labState === 'reopen_required') return 'Lab 已结束'
-  return '无 Lab'
+  if (item.labState === 'active') return '实验室可用'
+  if (item.labState === 'reopen_required') return '实验室已结束'
+  return '无实验室'
 }
 
 function updatedAt(value: string): string {

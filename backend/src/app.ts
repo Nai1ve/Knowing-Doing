@@ -209,6 +209,12 @@ function registerPlanningRoutes(app: FastifyInstance, service: PlanningService, 
   app.get('/api/product/roadmaps/current', async (request, reply) => {
     reply.send(service.current(learnerId(request)))
   })
+  app.get('/api/product/roadmaps/:roadmapId/tree', async (request, reply) => {
+    const params = request.params as { roadmapId: string }
+    const query = request.query as { depth?: string; focusNodeId?: string }
+    const depth = query.depth == null ? 2 : Number(query.depth)
+    reply.send(service.tree(learnerId(request), params.roadmapId, { depth, focusNodeId: query.focusNodeId || null }))
+  })
   app.get('/api/product/roadmaps/:roadmapId/nodes', async (request, reply) => {
     const query = request.query as { parentId?: string; depth?: string }
     const depth = query.depth == null ? 1 : Number(query.depth)

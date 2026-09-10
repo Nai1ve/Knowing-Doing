@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ArrowRight, CalendarDays, Crosshair, Target } from 'lucide-vue-next'
 import { computed, onMounted } from 'vue'
+import type { RouteLocationRaw } from 'vue-router'
 import { RouterLink } from 'vue-router'
 import PageHeader from '@/components/shared/PageHeader.vue'
 import AsyncState from '@/components/shared/AsyncState.vue'
@@ -8,29 +9,56 @@ import SectionHeading from '@/components/shared/SectionHeading.vue'
 import ProgressSummary from '@/components/overview/ProgressSummary.vue'
 import RouteSnapshot from '@/components/overview/RouteSnapshot.vue'
 import { usePlanStore } from '@/stores/plan'
+import { useRoadmapStore } from '@/stores/roadmap'
 
 const planStore = usePlanStore()
+const roadmapStore = useRoadmapStore()
 const plan = computed(() => planStore.plan)
-const productPlan = computed(() => planStore.productPlan)
+const productPlan = computed(() => roadmapStore.current?.currentPlan ?? planStore.productPlan)
 const milestone = computed(() => planStore.currentMilestone)
 const node = computed(() => planStore.currentNode)
-const nextUnit = computed(() => productPlan.value?.units.find((unit) => unit.status === 'current') ?? productPlan.value?.units.find((unit) => unit.status === 'upcoming') ?? null)
-const currentUnit = computed(() => productPlan.value?.units.find((unit) => unit.status === 'current' && unit.availability === 'available') ?? null)
-onMounted(() => void planStore.loadPlan())
+const currentLearning = computed(() => roadmapStore.current?.currentLearning ?? null)
+const currentUnit = computed(() => productPlan.value?.units.find((unit) => unit.id === currentLearning.value?.planUnitId) ?? null)
+const loading = computed(() => planStore.loading || roadmapStore.loading)
+const loadError = computed(() => roadmapStore.error ?? planStore.error)
+const entryLabel = computed(() => {
+  switch (currentLearning.value?.entryKind) {
+    case 'gym': return '进入知行 Gym'
+    case 'workspace_setup': return '构建代码实践'
+    case 'roadmap_node': return '查看路线节点'
+    default: return '查看整体路线'
+  }
+})
+const entryTo = computed<RouteLocationRaw>(() => {
+  const learning = currentLearning.value
+  if (learning?.entryKind === 'gym') return { name: 'lesson', query: { planUnitId: learning.planUnitId } }
+  if (learning?.entryKind === 'workspace_setup' && learning.roadmapId && learning.roadmapNodeId) return { name: 'case-setup', params: { roadmapId: learning.roadmapId, nodeId: learning.roadmapNodeId } }
+  if (learning?.entryKind === 'roadmap_node' && learning.roadmapId && learning.roadmapNodeId) return { name: 'roadmap-node', params: { roadmapId: learning.roadmapId, nodeId: learning.roadmapNodeId } }
+  return { name: 'roadmap' }
+})
+const actionDescription = computed(() => {
+  switch (currentLearning.value?.entryKind) {
+    case 'gym': return '进入 MySQL 实验室，先观察现象，再提交一次最小尝试。'
+    case 'workspace_setup': return '先准备一次代码实践，案例完成后会进入 Python 实验室。'
+    case 'roadmap_node': return '先阅读当前节点的知识卡和完成标准，再确认这一部分是否完成。'
+    default: return '当前节点还没有可进入的环境，先查看路线图和筹备状态。'
+  }
+})
+onMounted(() => { void Promise.all([planStore.loadPlan(), roadmapStore.loadCurrent()]) })
 </script>
 
 <template>
   <div class="page overview-page">
-    <AsyncState :loading="planStore.loading" :error="planStore.error">
+    <AsyncState :loading="loading" :error="loadError">
     <template #default>
     <PageHeader eyebrow="01 · Orient" title="先知道要去哪里，再开始学习。" description="知行把一项技术拆成可解释的路线、当前节点和可回看的实践证据。今天只需要完成一个清晰的动作。" :meta="productPlan ? [`计划 ${productPlan.title}`, `${productPlan.units.length} 个节点`, '真实计划'] : ['还没有学习计划']" />
     <section v-if="!productPlan" class="plan-empty" aria-labelledby="plan-empty-title"><div><div class="eyebrow">Start a learning plan</div><h2 id="plan-empty-title">从一个目标开始建立你的路线</h2><p>先完成几项诊断，再确认一份真正属于当前学习方向的计划。</p></div><RouterLink to="/start"><ArrowRight :size="14" aria-hidden="true" />开始建立计划</RouterLink></section>
     <template v-else-if="plan">
     <section id="goal" class="goal-block" aria-labelledby="goal-title"><div class="section-marker"><Target :size="16" aria-hidden="true" /><span>总目标</span></div><h2 id="goal-title">{{ plan.goal }}</h2><p>不是把知识点全部看完，而是能从真实问题开始，解释它为什么这样运行，并在出错时找到下一条证据。</p></section>
-    <ProgressSummary :plan="plan" :milestone="milestone" :node="node" />
-    <section id="status" class="status-section" aria-labelledby="status-title"><SectionHeading title="当前状况" detail="What is true now" /><div class="status-grid"><div><small>{{ currentUnit ? '正在进行' : '下一节点' }}</small><strong>{{ nextUnit?.title }}</strong><p>{{ nextUnit?.availability === 'coming_soon' ? '内容已记录在路线中，实验能力将在后续阶段开放。' : nextUnit?.objective }}</p></div><div><small>当前所在节点</small><strong>{{ node?.title }}</strong><p>{{ currentUnit ? '这是当前唯一可操作的实践节点。' : '这是路线中的下一节点，当前尚未开放实践。' }}</p></div><div><small>下一次行动</small><strong>{{ currentUnit ? '打开当前学习' : '回看整体路线' }}</strong><p>{{ currentUnit ? '进入实验工作台，先观察现象，再提交一次最小尝试。' : '先回看已完成实践，等待下一节点开放。' }}</p></div></div></section>
+    <ProgressSummary :plan="plan" :milestone="milestone" :node="node" :entry-to="entryTo" :entry-label="entryLabel" />
+    <section id="status" class="status-section" aria-labelledby="status-title"><SectionHeading title="当前状况" detail="What is true now" /><div class="status-grid"><div><small>{{ currentUnit ? '正在进行' : '当前节点' }}</small><strong>{{ currentUnit?.title ?? '尚未选择' }}</strong><p>{{ currentUnit?.availability === 'coming_soon' ? '内容已记录在路线中，环境能力将在后续阶段开放。' : currentUnit?.objective ?? '先完成规划并确认一份学习路线。' }}</p></div><div><small>当前所在节点</small><strong>{{ currentUnit?.title ?? node?.title ?? '尚未选择' }}</strong><p>{{ currentUnit ? '当前正式计划只从这一单元进入学习。' : '路线图会显示下一步可以推进的方向。' }}</p></div><div><small>下一次行动</small><strong>{{ entryLabel }}</strong><p>{{ actionDescription }}</p></div></div></section>
     <RouteSnapshot :milestones="planStore.milestones" />
-    <section id="current-node" class="current-node" aria-labelledby="current-node-title"><div><div class="eyebrow">{{ currentUnit ? 'Current node' : 'Next node' }} · {{ milestone?.index }}</div><h2 id="current-node-title">{{ nextUnit?.title }}</h2><p>{{ nextUnit?.objective }}</p></div><RouterLink v-if="currentUnit" :to="{ name: 'lesson', query: { planUnitId: currentUnit.id } }">进入当前学习 <ArrowRight :size="14" aria-hidden="true" /></RouterLink><span v-else class="route-hint">{{ productPlan?.planState === 'pending_content' ? '内容筹备中' : '即将开放' }}</span></section>
+    <section id="current-node" class="current-node" aria-labelledby="current-node-title"><div><div class="eyebrow">{{ currentUnit ? 'Current node' : 'Route state' }} · {{ milestone?.index }}</div><h2 id="current-node-title">{{ currentUnit?.title ?? '尚未选择当前学习' }}</h2><p>{{ currentUnit?.objective ?? '先回到路线图查看可推进的节点。' }}</p></div><RouterLink :to="entryTo">{{ entryLabel }} <ArrowRight :size="14" aria-hidden="true" /></RouterLink></section>
     <div class="overview-foot"><span><CalendarDays :size="13" aria-hidden="true" />本周安排 {{ plan.weeklyMinutes }} 分钟</span><span><Crosshair :size="13" aria-hidden="true" />当前进度会根据实践证据调整</span></div>
     </template>
     </template>

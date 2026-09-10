@@ -5,7 +5,8 @@ export type PlanningSessionStatus = 'draft' | 'ready' | 'proposed' | 'confirmed'
 export type RoadmapStatus = 'draft' | 'active' | 'archived' | 'superseded'
 export type RoadmapNodeStatus = 'locked' | 'available' | 'in_progress' | 'completed' | 'verified' | 'self_reported'
 export type RoadmapNodeType = 'domain' | 'capability' | 'concept' | 'lab' | 'project'
-export type RoadmapLearningMode = 'lab' | 'knowledge' | 'unavailable'
+export type RoadmapLearningMode = 'lab' | 'workspace' | 'knowledge' | 'unavailable'
+export type RoadmapEntryKind = 'gym' | 'workspace_setup' | 'roadmap_node' | 'unavailable'
 
 export interface PlanningTurn {
   id: string
@@ -83,4 +84,25 @@ export interface RoadmapNodePage {
   parentId: string | null
   depth: number
   nodes: RoadmapNode[]
+}
+
+export interface CurrentLearning {
+  planId: string
+  planUnitId: string
+  roadmapId: string | null
+  roadmapNodeId: string | null
+  title: string
+  learningMode: RoadmapLearningMode
+  availability: 'available' | 'coming_soon'
+  caseId: string | null
+  entryKind: RoadmapEntryKind
+}
+
+export interface RoadmapTree {
+  roadmapId: string
+  depth: number
+  focusNodeId: string | null
+  nodes: RoadmapNode[]
+  defaultOpenNodeIds: string[]
+  currentPathNodeIds: string[]
 }

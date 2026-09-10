@@ -48,7 +48,7 @@ const emit = defineEmits<{
   verify: []
 }>()
 const stageLabel = computed(() => ({ observe: '观察', hypothesize: '假设', inspect: '检查', attempt: '尝试', verify: '验证', resolved: '已解决' } as Record<string, string>)[props.practice.stage] ?? props.practice.stage)
-const runStatus = computed(() => props.labRun ? '实验环境已连接' : '需要续开实验环境')
+const runStatus = computed(() => props.labRun ? '实验室已连接' : '需要续开实验室')
 const leaseLabel = computed(() => props.labRun ? new Date(props.labRun.idleExpiresAt).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }) : '—')
 const pinnedIds = computed(() => (props.snapshot?.pins ?? []).map((pin) => pin.targetId))
 const contextOpen = computed(() => !props.messages.length)
@@ -70,9 +70,9 @@ function pinResult() {
 <template>
   <div class="workspace">
     <header class="workspace-bar">
-      <div class="workspace-heading"><span class="workspace-icon"><Database :size="15" aria-hidden="true" /></span><div><div class="eyebrow">Practice workspace · {{ practice.caseId }}</div><h1>MySQL 慢查询与联合索引</h1></div></div>
+      <div class="workspace-heading"><span class="workspace-icon"><Database :size="15" aria-hidden="true" /></span><div><div class="eyebrow">知行 Gym · MySQL 实验室 · {{ practice.caseId }}</div><h1>MySQL 慢查询与联合索引</h1></div></div>
       <div class="workspace-metrics"><span class="metric-stage"><strong>{{ stageLabel }}</strong><small>阶段</small></span><span><strong>r{{ labRun?.revision ?? '—' }}</strong><small>revision</small></span><span><strong>{{ leaseLabel }}</strong><small>空闲回收</small></span><span class="lab-state" :class="{ ready: labRun }"><CircleCheck :size="12" aria-hidden="true" />{{ runStatus }}</span></div>
-      <div class="workspace-actions"><button v-if="!labRun && practice.status !== 'resolved'" type="button" class="secondary-button" :disabled="practiceStarting" @click="emit('reopen')"><RotateCcw :size="12" aria-hidden="true" />{{ practiceStarting ? '续开中…' : '继续实践' }}</button><button v-else-if="labRun" type="button" class="secondary-button" :disabled="labResetting || labEnding" @click="emit('reset')"><RotateCcw :size="12" aria-hidden="true" />{{ labResetting ? '重置中…' : '重置' }}</button><button v-if="labRun" type="button" class="danger-button" :disabled="labResetting || labEnding" @click="emit('end')"><Square :size="11" aria-hidden="true" />{{ labEnding ? '结束中…' : '结束环境' }}</button></div>
+      <div class="workspace-actions"><button v-if="!labRun && practice.status !== 'resolved'" type="button" class="secondary-button" :disabled="practiceStarting" @click="emit('reopen')"><RotateCcw :size="12" aria-hidden="true" />{{ practiceStarting ? '续开中…' : '继续实践' }}</button><button v-else-if="labRun" type="button" class="secondary-button" :disabled="labResetting || labEnding" @click="emit('reset')"><RotateCcw :size="12" aria-hidden="true" />{{ labResetting ? '重置中…' : '重置' }}</button><button v-if="labRun" type="button" class="danger-button" :disabled="labResetting || labEnding" @click="emit('end')"><Square :size="11" aria-hidden="true" />{{ labEnding ? '结束中…' : '结束实验室' }}</button></div>
     </header>
     <div class="workspace-columns">
       <section class="workbench-column" aria-label="实验工作台">

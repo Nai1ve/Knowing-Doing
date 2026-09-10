@@ -7,9 +7,9 @@ import type { Readable } from 'node:stream'
 import type Database from 'better-sqlite3'
 import { LabError } from './errors.js'
 import { parseResumePdf, ResumeParseError } from './resume-parser.js'
-import type { LearningPlan, ResumeAttachment } from './product-types.js'
+import type { LearningPlan, PlanUnit, ResumeAttachment } from './product-types.js'
 import type {
-  PlanningSession, PlanningTemplateKey, PlanningTurn, Roadmap, RoadmapDraft, RoadmapNode, RoadmapNodePage, RoadmapNodeStatus,
+  CurrentLearning, PlanningSession, PlanningTemplateKey, PlanningTurn, Roadmap, RoadmapDraft, RoadmapNode, RoadmapNodePage, RoadmapNodeStatus, RoadmapTree,
 } from './planning-types.js'
 import { ProductRepository } from './product-repository.js'
 
@@ -271,9 +271,9 @@ export class PlanningService {
       this.db.prepare('INSERT INTO intakes(id, learner_id, goal, technology, outcome, weekly_minutes, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, \'planned\', ?, ?)').run(intakeId, learnerId, str(draft, 'goal'), '后端 + AI 应用工程', typeof answers.outcome === 'string' ? answers.outcome : null, typeof answers.weekly_minutes === 'number' ? answers.weekly_minutes : null, now, now)
       const templateKey = str(draft, 'template_key') || TEMPLATE_KEY; const title = templateKey === 'agent-roadmap-v2' ? '基于规划对话的学习路线' : '高级后端 + AI 应用工程师路线'
       this.db.prepare("INSERT INTO learning_plans(id, learner_id, intake_id, roadmap_id, title, goal, source_status, status, plan_state, template_key, revision, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, 'local_catalog', 'active', 'active', ?, 1, ?, ?)").run(planId, learnerId, intakeId, id, title, str(draft, 'goal'), templateKey, now, now)
-      const allNodes = this.db.prepare("SELECT n.*, p.status AS progress_status FROM roadmap_nodes n INNER JOIN roadmap_node_progress p ON p.node_id = n.id AND p.roadmap_id = n.roadmap_id WHERE n.roadmap_id = ? ORDER BY n.position ASC").all(id) as Row[]; const unitKeys = Array.isArray(snapshot.unitKeys) ? snapshot.unitKeys.filter((key): key is string => typeof key === 'string') : []; const nodeByKey = new Map(allNodes.map((node) => [str(node, 'node_key'), node])); const selectedNodes = (unitKeys.length > 0 ? unitKeys.map((key) => nodeByKey.get(key)).filter((node): node is Row => Boolean(node)) : allNodes.filter((node) => ['concept', 'lab', 'project'].includes(str(node, 'node_type'))).slice(0, 4)); if (selectedNodes.length === 0) throw new LabError('roadmap_no_units', '路线没有可执行的学习单元', 409)
+        const allNodes = this.db.prepare("SELECT n.*, p.status AS progress_status FROM roadmap_nodes n INNER JOIN roadmap_node_progress p ON p.node_id = n.id AND p.roadmap_id = n.roadmap_id WHERE n.roadmap_id = ? ORDER BY n.position ASC").all(id) as Row[]; const unitKeys = Array.isArray(snapshot.unitKeys) ? snapshot.unitKeys.filter((key): key is string => typeof key === 'string') : []; const nodeByKey = new Map(allNodes.map((node) => [str(node, 'node_key'), node])); const actionableTypes = new Set(['concept', 'lab', 'project']); const invalidUnitKeys = unitKeys.filter((key) => { const node = nodeByKey.get(key); return !node || !actionableTypes.has(str(node, 'node_type')) }); if (invalidUnitKeys.length > 0) throw new LabError('roadmap_unit_not_actionable', `路线单元必须指向具体学习节点：${invalidUnitKeys.join(', ')}`, 409); const selectedNodes = (unitKeys.length > 0 ? unitKeys.map((key) => nodeByKey.get(key)).filter((node): node is Row => Boolean(node)) : allNodes.filter((node) => actionableTypes.has(str(node, 'node_type'))).slice(0, 4)); if (selectedNodes.length === 0) throw new LabError('roadmap_no_units', '路线没有可执行的学习单元', 409)
       const insertUnit = this.db.prepare('INSERT INTO plan_units(id, plan_id, roadmap_node_id, position, title, objective, case_id, status, availability, learning_mode, estimated_minutes, rationale, completed_at, source_refs_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, \'[]\')')
-      selectedNodes.forEach((node, index) => { const mode = str(node, 'learning_mode') as 'lab' | 'knowledge' | 'unavailable'; insertUnit.run(randomUUID(), planId, str(node, 'id'), index + 1, str(node, 'title'), str(node, 'summary'), nullable(node, 'case_id'), index === 0 ? 'current' : 'upcoming', 'available', mode, num(node, 'estimated_minutes'), '根据当前规划对话切出的一到两周学习单元。') })
+        selectedNodes.forEach((node, index) => { const mode = str(node, 'learning_mode') as PlanUnit['learningMode']; insertUnit.run(randomUUID(), planId, str(node, 'id'), index + 1, str(node, 'title'), str(node, 'summary'), nullable(node, 'case_id'), index === 0 ? 'current' : 'upcoming', 'available', mode, num(node, 'estimated_minutes'), '根据当前规划对话切出的一到两周学习单元。') })
       this.db.prepare("UPDATE planning_sessions SET status = 'confirmed', updated_at = ? WHERE id = ? AND learner_id = ?").run(now, sessionId, learnerId)
       this.db.prepare('INSERT INTO roadmap_events(id, learner_id, roadmap_id, node_id, type, payload_json, created_at) VALUES (?, ?, ?, NULL, \'roadmap_confirmed\', ?, ?)').run(randomUUID(), learnerId, id, JSON.stringify({ planId, previousPlan: current?.id ?? null }), now)
       this.db.prepare('INSERT INTO plan_events(id, learner_id, plan_id, plan_unit_id, practice_run_id, type, payload_json, created_at) VALUES (?, ?, ?, NULL, NULL, \'plan_created\', ?, ?)').run(randomUUID(), learnerId, planId, JSON.stringify({ templateKey, roadmapId: id, unitKeys }), now)
@@ -307,21 +307,86 @@ export class PlanningService {
     try { tx() } catch (error) { if (!(error instanceof Error) || !error.message.includes('UNIQUE')) throw error }
   }
 
-  current(learnerId: string): { roadmap: Roadmap | null; roots: RoadmapNode[]; currentPlan: LearningPlan | null } {
-    const plan = this.repository.getActivePlan(learnerId); let row = this.db.prepare("SELECT * FROM learning_roadmaps WHERE learner_id = ? AND status = 'active' ORDER BY updated_at DESC LIMIT 1").get(learnerId) as Row | undefined
-    if (!row && plan) {
-      const roadmapRef = this.db.prepare('SELECT roadmap_id FROM learning_plans WHERE id = ?').get(plan.id) as Row | undefined
-      const roadmapId = roadmapRef ? nullable(roadmapRef, 'roadmap_id') : null
-      if (roadmapId) row = this.db.prepare("SELECT * FROM learning_roadmaps WHERE id = ? AND learner_id = ?").get(roadmapId, learnerId) as Row | undefined
-      else { this.ensureLegacyRoadmap(learnerId, plan); row = this.db.prepare("SELECT * FROM learning_roadmaps WHERE learner_id = ? AND status = 'active' ORDER BY updated_at DESC LIMIT 1").get(learnerId) as Row | undefined }
+  current(learnerId: string): { roadmap: Roadmap | null; roots: RoadmapNode[]; currentPlan: LearningPlan | null; currentLearning: CurrentLearning | null } {
+    let plan = this.repository.getActivePlan(learnerId)
+    let row: Row | undefined
+    if (plan?.roadmapId) {
+      row = this.db.prepare("SELECT * FROM learning_roadmaps WHERE id = ? AND learner_id = ? AND status = 'active'").get(plan.roadmapId, learnerId) as Row | undefined
+    } else if (plan) {
+      this.ensureLegacyRoadmap(learnerId, plan)
+      plan = this.repository.getPlanForLearner(plan.id, learnerId)
+      if (plan.roadmapId) row = this.db.prepare("SELECT * FROM learning_roadmaps WHERE id = ? AND learner_id = ? AND status = 'active'").get(plan.roadmapId, learnerId) as Row | undefined
     }
-    if (!row) return { roadmap: null, roots: [], currentPlan: plan }
-    const roadmap = roadmapFrom(row, this.progress(str(row, 'id'))); return { roadmap, roots: this.listNodes(learnerId, roadmap.id, null, 1).nodes, currentPlan: plan }
+    if (!row || !plan) return { roadmap: null, roots: [], currentPlan: plan, currentLearning: this.currentLearning(plan, null) }
+    const roadmap = roadmapFrom(row, this.progress(str(row, 'id')))
+    return { roadmap, roots: this.listNodes(learnerId, roadmap.id, null, 1).nodes, currentPlan: plan, currentLearning: this.currentLearning(plan, roadmap) }
+  }
+
+  private currentLearning(plan: LearningPlan | null, roadmap: Roadmap | null): CurrentLearning | null {
+    const unit = plan?.units.find((candidate) => candidate.status === 'current')
+    if (!plan || !unit) return null
+    const entryKind: CurrentLearning['entryKind'] = unit.learningMode === 'lab' && unit.availability === 'available' && Boolean(unit.caseId)
+      ? 'gym'
+      : unit.learningMode === 'workspace' && unit.availability === 'available'
+        ? 'workspace_setup'
+        : unit.learningMode === 'knowledge'
+          ? 'roadmap_node'
+          : 'unavailable'
+    return {
+      planId: plan.id,
+      planUnitId: unit.id,
+      roadmapId: plan.roadmapId ?? roadmap?.id ?? null,
+      roadmapNodeId: unit.roadmapNodeId ?? null,
+      title: unit.title,
+      learningMode: unit.learningMode,
+      availability: unit.availability,
+      caseId: unit.caseId,
+      entryKind,
+    }
   }
 
   listNodes(learnerId: string, roadmapId: string, parentId: string | null, depth = 1): RoadmapNodePage {
     this.roadmapRow(roadmapId, learnerId); const allNodes = depth >= 99; const parentClause = allNodes ? '' : parentId == null ? 'AND n.parent_id IS NULL' : 'AND n.parent_id = ?'; const params = allNodes || parentId == null ? [roadmapId] : [roadmapId, parentId]; const rows = (this.db.prepare(`SELECT n.*, COALESCE(p.status, 'locked') AS progress_status, COALESCE(p.source, 'rule') AS progress_source, COALESCE(p.revision, 1) AS progress_revision, p.completed_at, p.verified_at, (SELECT COUNT(*) FROM roadmap_nodes c WHERE c.roadmap_id = n.roadmap_id AND c.parent_id = n.id) AS child_count, COALESCE((SELECT json_group_array(json_object('sourceType', e.source_type, 'sourceId', e.source_id, 'excerpt', e.excerpt)) FROM roadmap_node_evidence e WHERE e.roadmap_id = n.roadmap_id AND e.node_id = n.id), '[]') AS evidence_json FROM roadmap_nodes n LEFT JOIN roadmap_node_progress p ON p.node_id = n.id AND p.roadmap_id = n.roadmap_id WHERE n.roadmap_id = ? ${parentClause} ORDER BY n.position ASC`).all(...params) as Row[]).map(nodeFrom)
     return { roadmapId, parentId, depth, nodes: rows }
+  }
+
+  tree(learnerId: string, roadmapId: string, input: { depth?: number; focusNodeId?: string | null } = {}): RoadmapTree {
+    const depth = input.depth ?? 2
+    if (!Number.isInteger(depth) || depth < 1 || depth > 2) throw new LabError('invalid_request', '路线树 depth 必须是 1 或 2', 400)
+    const all = this.listNodes(learnerId, roadmapId, null, 99).nodes
+    const byId = new Map(all.map((node) => [node.id, node]))
+    const children = new Map<string | null, RoadmapNode[]>()
+    for (const node of all) {
+      const list = children.get(node.parentId) ?? []
+      list.push(node)
+      children.set(node.parentId, list)
+    }
+    const visible = new Set<string>()
+    const roots = children.get(null) ?? []
+    roots.forEach((node) => visible.add(node.id))
+    if (depth >= 2) roots.forEach((node) => (children.get(node.id) ?? []).forEach((child) => visible.add(child.id)))
+
+    const currentPathNodeIds: string[] = []
+    let cursor = input.focusNodeId ? byId.get(input.focusNodeId) : undefined
+    while (cursor) {
+      currentPathNodeIds.unshift(cursor.id)
+      visible.add(cursor.id)
+      ;(children.get(cursor.id) ?? []).forEach((child) => visible.add(child.id))
+      cursor = cursor.parentId ? byId.get(cursor.parentId) : undefined
+    }
+
+    const defaultOpenNodeIds = [...new Set([
+      ...roots.filter((node) => (children.get(node.id) ?? []).length > 0).map((node) => node.id),
+      ...currentPathNodeIds.slice(0, -1),
+    ])]
+    return {
+      roadmapId,
+      depth,
+      focusNodeId: input.focusNodeId ?? null,
+      nodes: all.filter((node) => visible.has(node.id)),
+      defaultOpenNodeIds,
+      currentPathNodeIds,
+    }
   }
 
   completeNode(learnerId: string, roadmapId: string, nodeId: string, input: { revision: number; status?: 'completed' | 'self_reported' }): RoadmapNode {

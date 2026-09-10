@@ -10,7 +10,7 @@ const navItems = [
   { name: 'start', label: '新建计划', icon: Plus },
   { name: 'overview', label: '总览', icon: Gauge },
   { name: 'route', label: '整体路线', icon: GitBranch },
-  { name: 'lesson', label: 'MySQL 实验', icon: BookOpen },
+  { name: 'lesson', label: '知行 Gym', icon: BookOpen },
   { name: 'writing', label: '写作沉淀', icon: FileText },
   { name: 'review', label: '周复盘', icon: Flag },
 ]

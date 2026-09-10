@@ -1,5 +1,5 @@
 import { apiClient } from './client'
-import type { AgentPlanningSession, AgentPlanningState, AgentRoadmapGeneration, CurrentRoadmapResponse, KnowledgeRoute, PlanningSession, PlanningStreamEvent, ProductResumeAttachment, RoadmapDraft, RoadmapNode, RoadmapNodePage } from '@/types/product'
+import type { AgentPlanningSession, AgentPlanningState, AgentRoadmapGeneration, CurrentRoadmapResponse, KnowledgeRoute, PlanningSession, PlanningStreamEvent, ProductResumeAttachment, RoadmapDraft, RoadmapNode, RoadmapNodePage, RoadmapTree } from '@/types/product'
 import { createClientId } from '@/utils/client-id'
 
 const learnerKey = 'zhixing.learner.id'
@@ -51,5 +51,6 @@ export function adjustPlanning(id: string, input: { revision: number; weeklyMinu
 export function getRoadmapDraft(id: string): Promise<RoadmapDraft> { return request<RoadmapDraft>(`/product/roadmap-drafts/${id}`) }
 export function confirmRoadmap(id: string, revision: number): Promise<unknown> { return request<unknown>(`/product/roadmap-drafts/${id}/confirm`, { method: 'POST', body: JSON.stringify({ revision }) }) }
 export function getCurrentRoadmap(): Promise<CurrentRoadmapResponse> { return request<CurrentRoadmapResponse>('/product/roadmaps/current') }
+export function getRoadmapTree(id: string, focusNodeId: string | null = null): Promise<RoadmapTree> { const query = new URLSearchParams({ depth: '2' }); if (focusNodeId) query.set('focusNodeId', focusNodeId); return request<RoadmapTree>(`/product/roadmaps/${id}/tree?${query.toString()}`) }
 export function getRoadmapNodes(id: string, parentId: string | null): Promise<RoadmapNodePage> { const suffix = parentId ? `?parentId=${encodeURIComponent(parentId)}&depth=1` : '?depth=1'; return request<RoadmapNodePage>(`/product/roadmaps/${id}/nodes${suffix}`) }
 export function completeRoadmapNode(roadmapId: string, nodeId: string, revision: number, status: 'completed' | 'self_reported' = 'completed'): Promise<RoadmapNode> { return request<RoadmapNode>(`/product/roadmaps/${roadmapId}/nodes/${nodeId}/complete`, { method: 'POST', body: JSON.stringify({ revision, status }) }) }

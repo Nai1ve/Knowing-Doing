@@ -30,7 +30,7 @@ function errorMessage(payload: unknown, status: number): string {
     const error = (payload as { error?: { message?: unknown } }).error
     if (typeof error?.message === 'string') return error.message
   }
-  return `Lab 请求失败（${status}）`
+  return `实验室请求失败（${status}）`
 }
 
 async function request<T>(path: string, init: RequestInit = {}, token?: string, acceptedErrorStatuses: number[] = []): Promise<T> {

@@ -79,7 +79,7 @@ export const usePracticeStore = defineStore('practice', () => {
       }
       window.localStorage.setItem(lastPracticeKey, practiceId)
       labStore.clear()
-      error.value = '上次实践的 Lab 运行已结束。历史记录已恢复为只读状态，可重新启动实验继续练习。'
+      error.value = '上次实践的实验室运行已结束。历史记录已恢复为只读状态，可重新启动实验继续练习。'
     } catch (cause) {
       if (cause instanceof ApiError && [401, 403, 404, 410].includes(cause.status)) {
         window.localStorage.removeItem(activePracticeKey)
@@ -204,7 +204,7 @@ export const usePracticeStore = defineStore('practice', () => {
       if (result.lab) await useLabStore().adoptRun(result.lab.run, result.lab.accessToken)
       if (result.queue) { error.value = `当前案例正在排队，第 ${result.queue.position ?? '—'} 位`; void pollLabAccess(practiceId) }
       hydrate(await getProductSnapshot(practiceId)); await loadHistory()
-    } catch (cause) { error.value = cause instanceof Error ? cause.message : 'Lab 续开失败' } finally { starting.value = false }
+    } catch (cause) { error.value = cause instanceof Error ? cause.message : '实验室续开失败' } finally { starting.value = false }
   }
 
   async function execute() {
@@ -214,7 +214,7 @@ export const usePracticeStore = defineStore('practice', () => {
       return
     }
     if (!labStore.run || !labStore.accessToken) {
-      error.value = '当前实践没有可执行的 Lab 运行，请重新启动实验。'
+      error.value = '当前实践没有可执行的实验室运行，请重新启动实验。'
       return
     }
     if (!labStore.sessionId || labStore.activeSession?.status !== 'open') {
@@ -236,7 +236,7 @@ export const usePracticeStore = defineStore('practice', () => {
         }
       }
       if (cause instanceof ApiError && [401, 403, 404, 409, 410].includes(cause.status)) labStore.clear()
-      error.value = cause instanceof Error ? cause.message : 'Lab 执行失败'
+      error.value = cause instanceof Error ? cause.message : '实验室执行失败'
     } finally { labStore.executing = false }
   }
 

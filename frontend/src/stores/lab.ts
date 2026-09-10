@@ -163,7 +163,7 @@ export const useLabStore = defineStore('lab', () => {
       }
     } catch (cause) {
       clearActiveState()
-      if (!isStaleRunError(cause)) error.value = messageOf(cause, '无法恢复 Lab 运行')
+      if (!isStaleRunError(cause)) error.value = messageOf(cause, '无法恢复实验室运行')
     }
   }
 
@@ -178,7 +178,7 @@ export const useLabStore = defineStore('lab', () => {
       initialized.value = true
       await restoreSavedState()
     } catch (cause) {
-      error.value = messageOf(cause, 'Lab 环境加载失败')
+      error.value = messageOf(cause, '实验室加载失败')
     } finally {
       loading.value = false
     }
@@ -224,7 +224,7 @@ export const useLabStore = defineStore('lab', () => {
         void pollQueueTicket(response.ticket.ticketId)
       }
     } catch (cause) {
-      error.value = messageOf(cause, '无法启动 Lab')
+      error.value = messageOf(cause, '无法启动实验室')
     } finally {
       starting.value = false
     }
@@ -244,7 +244,7 @@ export const useLabStore = defineStore('lab', () => {
 
   async function execute() {
     if (!run.value || !accessToken.value) {
-      error.value = '请先启动实验环境。'
+      error.value = '请先启动实验室。'
       return
     }
     if (!sessionId.value || activeSession.value?.status !== 'open') {
@@ -285,7 +285,7 @@ export const useLabStore = defineStore('lab', () => {
       await adoptRun(response.run, response.accessToken)
     } catch (cause) {
       if (isStaleRunError(cause)) clearActiveState()
-      error.value = messageOf(cause, 'Lab 重置失败')
+      error.value = messageOf(cause, '实验室重置失败')
     } finally {
       resetting.value = false
     }
@@ -300,7 +300,7 @@ export const useLabStore = defineStore('lab', () => {
       clearActiveState()
     } catch (cause) {
       if (isStaleRunError(cause)) clearActiveState()
-      error.value = messageOf(cause, '结束 Lab 失败')
+      error.value = messageOf(cause, '结束实验室失败')
     } finally {
       ending.value = false
     }

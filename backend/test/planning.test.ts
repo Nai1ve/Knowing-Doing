@@ -97,4 +97,30 @@ describe('PlanningService', () => {
     const labNode = service.listNodes('owner-learner', roadmapId, concept.parentId).nodes.find((node) => node.nodeKey === 'mysql-slow-query')!
     expect(labNode.status).toBe('verified')
   }))
+
+  it('derives the current entry from the exact current unit and returns the focused tree in one snapshot', () => withPlanning((service, repository) => {
+    const { draft } = completeConversation(service, 'entry-kind-learner')
+    const plan = service.confirm('entry-kind-learner', draft.id, draft.revision)
+    const unit = plan.units[0]
+    expect(unit.roadmapNodeId).toBeTruthy()
+
+    repository.db.prepare("UPDATE plan_units SET status = 'upcoming'").run()
+    repository.db.prepare("UPDATE plan_units SET status = 'current', availability = 'available', learning_mode = 'workspace', case_id = NULL WHERE id = ?").run(unit.id)
+    let current = service.current('entry-kind-learner')
+    expect(current.currentLearning).toMatchObject({ planUnitId: unit.id, entryKind: 'workspace_setup', roadmapId: plan.roadmapId, roadmapNodeId: unit.roadmapNodeId })
+
+    repository.db.prepare("UPDATE plan_units SET learning_mode = 'lab', case_id = 'mysql-order-list-index-001' WHERE id = ?").run(unit.id)
+    current = service.current('entry-kind-learner')
+    expect(current.currentLearning?.entryKind).toBe('gym')
+
+    repository.db.prepare("UPDATE plan_units SET learning_mode = 'unavailable', availability = 'coming_soon', case_id = NULL WHERE id = ?").run(unit.id)
+    current = service.current('entry-kind-learner')
+    expect(current.currentLearning?.entryKind).toBe('unavailable')
+
+    repository.db.prepare("UPDATE plan_units SET learning_mode = 'knowledge', availability = 'available' WHERE id = ?").run(unit.id)
+    const tree = service.tree('entry-kind-learner', plan.roadmapId!, { focusNodeId: unit.roadmapNodeId })
+    expect(tree.currentPathNodeIds).toContain(unit.roadmapNodeId)
+    expect(tree.defaultOpenNodeIds.length).toBeGreaterThan(0)
+    expect(tree.nodes.some((node) => node.id === unit.roadmapNodeId)).toBe(true)
+  }))
 })

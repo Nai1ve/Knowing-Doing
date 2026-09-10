@@ -1,11 +1,14 @@
 <script setup lang="ts">
 import { ArrowRight, CheckCircle2, CircleDot, Clock3 } from 'lucide-vue-next'
+import type { RouteLocationRaw } from 'vue-router'
 import type { LearningPlan, LearningNode, Milestone } from '@/types/domain'
 
 defineProps<{
   plan: LearningPlan
   milestone?: Milestone
   node?: LearningNode
+  entryTo: RouteLocationRaw
+  entryLabel: string
 }>()
 </script>
 
@@ -22,7 +25,7 @@ defineProps<{
       <div><dt><Clock3 :size="13" aria-hidden="true" />每周投入</dt><dd>{{ plan.weeklyMinutes }} 分钟</dd></div>
       <div><dt><CircleDot :size="13" aria-hidden="true" />当前节点</dt><dd>{{ node?.title ?? '尚未选择' }}</dd></div>
     </dl>
-    <RouterLink class="summary-action" :to="{ name: 'lesson' }">继续当前学习 <ArrowRight :size="14" aria-hidden="true" /></RouterLink>
+    <RouterLink class="summary-action" :to="entryTo">{{ entryLabel }} <ArrowRight :size="14" aria-hidden="true" /></RouterLink>
   </section>
 </template>
 

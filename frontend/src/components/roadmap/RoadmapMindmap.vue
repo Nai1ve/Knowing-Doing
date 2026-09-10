@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, markRaw, nextTick, watch } from 'vue'
-import { Panel, VueFlow, useVueFlow, type Edge, type Node, type NodeMouseEvent } from '@vue-flow/core'
+import { Panel, VueFlow, useVueFlow, type Edge, type Node } from '@vue-flow/core'
 import { Minus, Plus, RotateCcw } from 'lucide-vue-next'
 import type { RoadmapNode } from '@/types/product'
 import RoadmapMindmapNode from './RoadmapMindmapNode.vue'
@@ -12,6 +12,8 @@ interface FlowNodeData {
   selected?: boolean
   current?: boolean
   open?: boolean
+  onSelect?: () => void
+  onToggle?: () => void
 }
 
 type MindmapNode = Node<FlowNodeData>
@@ -111,6 +113,8 @@ const flowNodes = computed<MindmapNode[]>(() => [
       selected: node.id === props.selectedId,
       current: node.id === props.currentNodeId,
       open: props.openIds.includes(node.id),
+      onSelect: () => emit('select', node),
+      onToggle: () => emit('toggle', node),
     },
   })),
 ])
@@ -154,16 +158,6 @@ function zoomIn() { void flow.zoomIn({ duration: 180 }) }
 function zoomOut() { void flow.zoomOut({ duration: 180 }) }
 function fitView() { void flow.fitView({ padding: .2, duration: 240 }) }
 
-function handleNodeClick({ node, event }: NodeMouseEvent) {
-  const data = node.data as FlowNodeData
-  if (!data.node) return
-  const path = typeof event.composedPath === 'function' ? event.composedPath() : []
-  const target = event.target instanceof HTMLElement ? event.target : null
-  const clickedExpand = path.some((item) => item instanceof HTMLElement && item.dataset.action === 'expand') || Boolean(target?.closest('[data-action="expand"]'))
-  if (clickedExpand) emit('toggle', data.node)
-  else emit('select', data.node)
-}
-
 watch(() => props.nodes.map((node) => node.id).join(','), () => {
   void nextTick(() => fitView())
 })
@@ -179,7 +173,7 @@ watch(() => props.nodes.map((node) => node.id).join(','), () => {
       <div class="mindmap-status"><span class="map-dot" />{{ nodes.length }} 个已载入节点 · 可展开分支</div>
     </header>
     <div class="mindmap-viewport">
-      <VueFlow id="roadmap-mindmap" :nodes="flowNodes" :edges="flowEdges" :node-types="nodeTypes" :nodes-draggable="false" :nodes-connectable="false" :elements-selectable="false" :zoom-on-double-click="false" :pan-on-scroll="true" :min-zoom=".35" :max-zoom="1.5" :fit-view-on-init="true" :fit-view-on-init-options="{ padding: .2 }" aria-label="学习路线脑图" @node-click="handleNodeClick">
+      <VueFlow id="roadmap-mindmap" :nodes="flowNodes" :edges="flowEdges" :node-types="nodeTypes" :nodes-draggable="false" :nodes-connectable="false" :elements-selectable="false" :zoom-on-double-click="false" :pan-on-scroll="true" :min-zoom=".35" :max-zoom="1.5" :fit-view-on-init="true" :fit-view-on-init-options="{ padding: .2 }" aria-label="学习路线脑图">
         <Panel position="top-right" class="mindmap-controls" aria-label="路线图视图控制">
           <button type="button" title="缩小路线图" aria-label="缩小路线图" @click="zoomOut"><Minus :size="14" aria-hidden="true" /></button>
           <span>{{ zoomLabel }}</span>

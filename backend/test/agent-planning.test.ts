@@ -15,7 +15,14 @@ function withService<T>(callback: (service: AgentPlanningService, repository: Pr
   try { return Promise.resolve(callback(new AgentPlanningService(repository, providerOverride ?? provider), repository)).finally(() => repository.close()) } catch (error) { repository.close(); throw error }
 }
 
-const validRoadmap = { nodes: [{ key: 'root', parentKey: null, type: 'domain', title: '后端能力', summary: '围绕当前目标组织学习。', points: ['目标'], standard: '能够说明目标和下一步。', minutes: 60, priority: 1, mode: 'knowledge', caseIntent: null, contextKeys: [] }], unitKeys: ['root'], dependencies: [] }
+const validRoadmap = { nodes: [
+  { key: 'root', parentKey: null, type: 'domain', title: '后端能力', summary: '围绕当前目标组织学习。', points: ['目标'], standard: '能够说明目标和下一步。', minutes: 60, priority: 1, mode: 'knowledge', caseIntent: null, contextKeys: [] },
+  { key: 'root-2', parentKey: null, type: 'domain', title: '工程能力', summary: '补充工程目标。', points: ['工程'], standard: '能够说明工程目标。', minutes: 60, priority: 2, mode: 'knowledge', caseIntent: null, contextKeys: [] },
+  { key: 'module', parentKey: 'root', type: 'capability', title: '系统设计', summary: '系统设计能力。', points: ['设计'], standard: '能够说明系统设计。', minutes: 60, priority: 1, mode: 'knowledge', caseIntent: null, contextKeys: [] },
+  { key: 'module-2', parentKey: 'root-2', type: 'capability', title: '交付能力', summary: '交付能力。', points: ['交付'], standard: '能够说明交付能力。', minutes: 60, priority: 1, mode: 'knowledge', caseIntent: null, contextKeys: [] },
+  { key: 'concept', parentKey: 'module', type: 'concept', title: '具体学习节点', summary: '围绕当前目标推进一次学习。', points: ['观察'], standard: '能够说明目标和下一步。', minutes: 60, priority: 1, mode: 'knowledge', caseIntent: null, contextKeys: [] },
+  { key: 'concept-2', parentKey: 'module-2', type: 'concept', title: '交付学习节点', summary: '围绕交付推进一次学习。', points: ['实践'], standard: '能够说明交付和下一步。', minutes: 60, priority: 1, mode: 'knowledge', caseIntent: null, contextKeys: [] },
+], unitKeys: ['concept'], dependencies: [] }
 
 function modelResponse(value: unknown): Response { return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify(value) } }] }), { headers: { 'content-type': 'application/json' } }) }
 
@@ -85,21 +92,50 @@ describe('AgentPlanningService', () => {
   }))
 
   it('repairs one invalid critic response before returning a roadmap', async () => {
-    const responses = [{ domains: [] }, { modules: [] }, { units: [] }, { malformed: true }, validRoadmap]
+    const responses = [
+      { domains: [{ key: 'root', title: '后端能力', summary: '围绕当前目标组织学习。', points: ['目标'], standard: '能够说明目标和下一步。', minutes: 60, priority: 1, contextKeys: [] }, { key: 'root-2', title: '工程能力', summary: '补充工程目标。', points: ['工程'], standard: '能够说明工程目标。', minutes: 60, priority: 2, contextKeys: [] }] },
+      { modules: [{ key: 'module', domainKey: 'root', title: '系统设计', summary: '系统设计能力。', points: ['设计'], standard: '能够说明系统设计。', minutes: 60, priority: 1, contextKeys: [] }, { key: 'module-2', domainKey: 'root-2', title: '交付能力', summary: '交付能力。', points: ['交付'], standard: '能够说明交付能力。', minutes: 60, priority: 1, contextKeys: [] }] },
+      { units: [{ key: 'concept', parentKey: 'module', type: 'concept', title: '具体学习节点', summary: '围绕当前目标推进一次学习。', points: ['观察'], standard: '能够说明目标和下一步。', minutes: 60, priority: 1, mode: 'knowledge', capabilityKey: null, caseIntent: null, contextKeys: [] }, { key: 'concept-2', parentKey: 'module-2', type: 'concept', title: '交付学习节点', summary: '围绕交付推进一次学习。', points: ['实践'], standard: '能够说明交付和下一步。', minutes: 60, priority: 1, mode: 'knowledge', capabilityKey: null, caseIntent: null, contextKeys: [] }], unitKeys: ['concept'] },
+      { malformed: true },
+      { unitKeys: ['concept'], dependencies: [], revisions: [] },
+    ]
     const fetchMock = vi.fn(async () => modelResponse(responses.shift() ?? validRoadmap))
     vi.stubGlobal('fetch', fetchMock)
     try {
       const agent = new DeepSeekPlanningAgent({ modelBaseUrl: 'https://model.test', modelApiKey: 'test-key', modelName: 'test-model', modelTimeoutMs: 1000 })
       const phases: Array<{ phase: string; status: string }> = []
       const plan = await agent.generateRoadmap({ goal: '成为后端工程师', messages: [], context: null, onPhase: (event) => { phases.push(event) } })
-      expect(plan).toEqual(validRoadmap)
+      expect(plan).toMatchObject({ unitKeys: ['concept'], dependencies: [] })
+      expect(plan.nodes.map((node) => [node.key, node.parentKey, node.type])).toEqual(validRoadmap.nodes.map((node) => [node.key, node.parentKey, node.type]))
       expect(fetchMock).toHaveBeenCalledTimes(5)
-      expect(phases.filter((event) => event.phase === 'critic' && event.status === 'succeeded')).toHaveLength(2)
+      expect(phases.filter((event) => event.phase === 'critic' && event.status === 'succeeded')).toHaveLength(1)
+    } finally { vi.unstubAllGlobals() }
+  })
+
+  it('repairs missing module coverage before compiling the complete three-level tree', async () => {
+    const domain = (key: string) => ({ key, title: key, summary: '能力域说明', points: ['关键点'], standard: '完成标准', minutes: 60, priority: 1, contextKeys: [] })
+    const module = (key: string, domainKey: string) => ({ key, domainKey, title: key, summary: '能力分支说明', points: ['关键点'], standard: '完成标准', minutes: 60, priority: 1, contextKeys: [] })
+    const unit = (key: string, parentKey: string) => ({ key, parentKey, type: 'concept', title: key, summary: '具体学习节点', points: ['观察'], standard: '完成标准', minutes: 60, priority: 1, mode: 'knowledge', capabilityKey: null, caseIntent: null, contextKeys: [] })
+    const responses = [
+      { domains: [domain('domain-one'), domain('domain-two')] },
+      { modules: [module('module-one', 'domain-one')] },
+      { modules: [module('module-one', 'domain-one'), module('module-two', 'domain-two')] },
+      { units: [unit('unit-one', 'module-one'), unit('unit-two', 'module-two')], unitKeys: ['unit-one'] },
+      { unitKeys: ['unit-one'], dependencies: [], revisions: [] },
+    ]
+    vi.stubGlobal('fetch', vi.fn(async () => modelResponse(responses.shift() ?? {})))
+    try {
+      const agent = new DeepSeekPlanningAgent({ modelBaseUrl: 'https://model.test', modelApiKey: 'test-key', modelName: 'test-model', modelTimeoutMs: 1000 })
+      const plan = await agent.generateRoadmap({ goal: '成为后端工程师', messages: [], context: null, onPhase: () => undefined })
+      expect(plan.nodes).toHaveLength(6)
+      expect(plan.nodes.filter((node) => node.type === 'domain')).toHaveLength(2)
+      expect(plan.nodes.filter((node) => node.type === 'capability')).toHaveLength(2)
+      expect(plan.nodes.filter((node) => node.type === 'concept')).toHaveLength(2)
     } finally { vi.unstubAllGlobals() }
   })
 
   it('fails transparently after the critic repair is also invalid', async () => {
-    const responses = [{ domains: [] }, { modules: [] }, { units: [] }, { malformed: true }, { stillMalformed: true }]
+    const responses = [{ domains: [] }, { malformed: true }]
     vi.stubGlobal('fetch', vi.fn(async () => modelResponse(responses.shift() ?? {})))
     try {
       const agent = new DeepSeekPlanningAgent({ modelBaseUrl: 'https://model.test', modelApiKey: 'test-key', modelName: 'test-model', modelTimeoutMs: 1000 })
@@ -195,5 +231,38 @@ describe('AgentPlanningService', () => {
     expect(nodePlan.some((row) => row.detail.includes('idx_roadmap_nodes_parent_position'))).toBe(true)
     const evidencePlan = repository.db.prepare('EXPLAIN QUERY PLAN SELECT e.source_type, e.source_id FROM roadmap_node_evidence e WHERE e.roadmap_id = ? AND e.node_id = ? ORDER BY e.position').all(draft.id, draft.nodes.find((node) => node.caseId === 'mysql-order-list-index-001')?.id) as Array<{ detail: string }>
     expect(evidencePlan.some((row) => row.detail.includes('idx_roadmap_node_evidence_node_position'))).toBe(true)
+  }))
+
+  it('replaces only the active roadmap owned by the planning session and preserves its lineage', async () => withService(async (service, repository) => {
+    const learnerId = 'repair-learner'
+    const session = service.createSession(learnerId, { message: '我想学习 MySQL 慢查询和索引优化', clientRequestId: 'repair-start' })
+    const firstGeneration = await service.generateRoadmap(learnerId, session.id, 'repair-initial')
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    const oldRoadmapId = service.getRoadmapGeneration(learnerId, firstGeneration.id).roadmapId as string
+    const plan = new PlanningService(repository).confirm(learnerId, oldRoadmapId, 1)
+
+    const replacement = await service.repairCurrentRoadmap(learnerId, session.id, 'repair-replace')
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    const newRoadmapId = service.getRoadmapGeneration(learnerId, replacement.id).roadmapId as string
+    expect(newRoadmapId).not.toBe(oldRoadmapId)
+    expect(repository.db.prepare('SELECT status, based_on_roadmap_id FROM learning_roadmaps WHERE id = ?').get(oldRoadmapId)).toMatchObject({ status: 'archived' })
+    expect(repository.db.prepare('SELECT status, based_on_roadmap_id FROM learning_roadmaps WHERE id = ?').get(newRoadmapId)).toMatchObject({ status: 'active', based_on_roadmap_id: oldRoadmapId })
+    expect(repository.getActivePlan(learnerId)?.id).toBe(plan.id)
+    expect(repository.getActivePlan(learnerId)?.roadmapId).toBe(newRoadmapId)
+    expect(repository.db.prepare('SELECT COUNT(*) AS count FROM plan_units WHERE plan_id = ?').get(plan.id)).toMatchObject({ count: 1 })
+
+    const unrelated = service.createSession(learnerId, { message: '我想学习 Python list', clientRequestId: 'repair-unrelated' })
+    await expect(service.repairCurrentRoadmap(learnerId, unrelated.id, 'repair-unrelated-request')).rejects.toMatchObject({ code: 'roadmap_replace_session_mismatch' })
+  }))
+
+  it('rejects direct replacement once the active plan has a practice reference', async () => withService(async (service, repository) => {
+    const learnerId = 'repair-practice-learner'
+    const session = service.createSession(learnerId, { message: '我想学习 MySQL 慢查询', clientRequestId: 'repair-practice-start' })
+    const generation = await service.generateRoadmap(learnerId, session.id, 'repair-practice-initial')
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    const roadmapId = service.getRoadmapGeneration(learnerId, generation.id).roadmapId as string
+    const plan = new PlanningService(repository).confirm(learnerId, roadmapId, 1)
+    repository.startPlanUnitPractice({ learnerId, planId: plan.id, planUnitId: plan.units[0].id, caseId: 'mysql-order-list-index-001' })
+    await expect(service.repairCurrentRoadmap(learnerId, session.id, 'repair-practice-replace')).rejects.toMatchObject({ code: 'roadmap_replace_has_practice' })
   }))
 })

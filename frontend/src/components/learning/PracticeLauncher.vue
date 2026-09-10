@@ -38,11 +38,11 @@ const planUnitAvailable = computed(() => props.planUnit?.status === 'current' &&
 
 <template>
   <div class="launcher">
-    <header class="launcher-header"><div class="eyebrow">03 · MySQL Lab / choose a practice</div><h1>从一个真实问题开始</h1><p>选择一个案例，先观察证据，再把判断带进 SQL 实验。实践、Tutor 对话和固定内容会归档在同一个学习记录里。</p></header>
+    <header class="launcher-header"><div class="eyebrow">03 · 知行 Gym / MySQL 实验室</div><h1>从一个真实问题开始</h1><p>选择一个案例，先观察证据，再把判断带进 MySQL 实验室。实践、Tutor 对话和固定内容会归档在同一个学习记录里。</p></header>
     <section class="launcher-grid">
       <div class="launcher-main">
         <div class="section-heading"><div><div class="eyebrow">Start here</div><h2>选择一个实践案例</h2></div><span class="step-note">01 / 选择</span></div>
-        <div v-if="loading" class="launcher-state" role="status"><LoaderCircle class="spin" :size="15" aria-hidden="true" />正在检查实验环境…</div>
+        <div v-if="loading" class="launcher-state" role="status"><LoaderCircle class="spin" :size="15" aria-hidden="true" />正在检查实验室…</div>
         <div v-else class="planned-entry">
           <div class="planned-entry-icon"><Play :size="17" aria-hidden="true" /></div>
           <div class="planned-entry-copy"><small>{{ planUnit?.availability === 'coming_soon' ? '路线中的下一节点' : '当前计划节点' }}</small><strong>{{ planUnit?.title ?? '尚未选择学习计划' }}</strong><p>{{ planUnit?.objective ?? '请先在总览创建学习计划，再从当前节点进入实践。' }}</p><span :class="{ ready: health?.ready && planUnitAvailable }">{{ !planUnit ? '尚未选择学习计划' : !planUnitAvailable ? '即将开放' : health?.ready ? '实验环境已就绪' : '正在等待实验环境' }}</span></div>
@@ -55,12 +55,12 @@ const planUnitAvailable = computed(() => props.planUnit?.status === 'current' &&
         <div v-if="restoring" class="launcher-state"><LoaderCircle class="spin" :size="14" aria-hidden="true" />正在恢复实践…</div>
         <div v-else-if="hasHistory" class="history-list">
           <article v-for="item in history" :key="item.id" class="history-card">
-            <button type="button" class="history-open" @click="emit('history', item.id)"><strong>{{ caseTitle(item.caseId) }}</strong><span>{{ stageLabel(item.stage) }} · {{ dateLabel(item.lastActivityAt) }}</span><small>{{ item.lastTutorProvider ? '已有 Tutor 记录' : '等待第一次讨论' }} · {{ item.labState === 'active' ? 'Lab 可用' : '可续开 Lab' }}</small></button>
-            <button v-if="item.labState === 'reopen_required' || item.labState === 'none'" type="button" class="history-reopen" :aria-label="'继续实践：' + caseTitle(item.caseId)" title="续开实验环境" @click="emit('reopen', item.id)"><RotateCcw :size="13" aria-hidden="true" />继续</button>
+            <button type="button" class="history-open" @click="emit('history', item.id)"><strong>{{ caseTitle(item.caseId) }}</strong><span>{{ stageLabel(item.stage) }} · {{ dateLabel(item.lastActivityAt) }}</span><small>{{ item.lastTutorProvider ? '已有 Tutor 记录' : '等待第一次讨论' }} · {{ item.labState === 'active' ? '实验室可用' : '可续开实验室' }}</small></button>
+            <button v-if="item.labState === 'reopen_required' || item.labState === 'none'" type="button" class="history-reopen" :aria-label="'继续实践：' + caseTitle(item.caseId)" title="续开实验室" @click="emit('reopen', item.id)"><RotateCcw :size="13" aria-hidden="true" />继续</button>
           </article>
         </div>
         <div v-else class="history-empty"><Clock3 :size="17" aria-hidden="true" /><p>完成一次实践后，这里会保留你的问题、证据、路径和 Tutor 记录。</p></div>
-        <div class="archive-note"><Play :size="13" aria-hidden="true" /><span>选择历史记录后进入同一个工作空间；Lab 失效只影响执行权限，不会丢失学习轨迹。</span></div>
+        <div class="archive-note"><Play :size="13" aria-hidden="true" /><span>选择历史记录后进入同一个工作空间；实验室失效只影响执行权限，不会丢失学习轨迹。</span></div>
       </aside>
     </section>
   </div>
