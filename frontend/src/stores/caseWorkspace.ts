@@ -77,6 +77,7 @@ export const useCaseWorkspaceStore = defineStore('caseWorkspace', () => {
     try {
       const result = await createCaseRequest(nodeId, input, { desiredOutcome, difficulty, clientRequestId: createClientId() })
       hydrateCase(result.case); job.value = result.job
+      if (['failed', 'interrupted'].includes(result.job.status)) error.value = result.job.failureMessage ?? '案例生成失败，请重试。'
       if (!['succeeded', 'failed', 'interrupted'].includes(result.job.status)) schedulePoll(result.job.id)
       return result
     } catch (cause) { error.value = cause instanceof Error ? cause.message : '案例生成请求失败'; throw cause } finally { loading.value = false }
@@ -87,6 +88,7 @@ export const useCaseWorkspaceStore = defineStore('caseWorkspace', () => {
     pollTimer = setTimeout(async () => {
       try {
         const result = await getCaseGenerationJob(jobId); hydrateCase(result.case); job.value = result.job
+        if (['failed', 'interrupted'].includes(result.job.status)) error.value = result.job.failureMessage ?? '案例生成失败，请重试。'
         if (!['succeeded', 'failed', 'interrupted'].includes(result.job.status)) schedulePoll(jobId)
       } catch (cause) { error.value = cause instanceof Error ? cause.message : '案例生成状态获取失败'; pollTimer = setTimeout(() => schedulePoll(jobId), 2000) }
     }, 700)
@@ -95,7 +97,7 @@ export const useCaseWorkspaceStore = defineStore('caseWorkspace', () => {
   async function retry() {
     if (!job.value) return
     loading.value = true; error.value = null
-    try { const result = await retryCaseGeneration(job.value.id); hydrateCase(result.case); job.value = result.job; schedulePoll(result.job.id) } catch (cause) { error.value = cause instanceof Error ? cause.message : '案例重试失败'; throw cause } finally { loading.value = false }
+    try { const result = await retryCaseGeneration(job.value.id); hydrateCase(result.case); job.value = result.job; error.value = null; schedulePoll(result.job.id) } catch (cause) { error.value = cause instanceof Error ? cause.message : '案例重试失败'; throw cause } finally { loading.value = false }
   }
 
   async function startPractice() {
