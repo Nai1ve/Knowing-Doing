@@ -1,5 +1,6 @@
 import { z } from 'zod'
 import type { CaseRequest, CaseSpec } from './product-types.js'
+import { getEnvironmentTemplate } from './environment-registry.js'
 
 export const MAX_WORKSPACE_FILE_BYTES = 262144
 export const MAX_WORKSPACE_TOTAL_BYTES = 2 * 1024 * 1024
@@ -20,7 +21,7 @@ export const caseSpecSchema = z.object({
   scenario: z.string().trim().min(1).max(12000),
   learningGoal: z.string().trim().min(1).max(4000),
   difficulty: z.enum(['introductory', 'applied', 'advanced']),
-  environment: z.object({ templateKey: z.literal('python-pytest-v1'), services: z.array(z.string().trim().min(1).max(80)).max(8) }),
+  environment: z.object({ key: z.string().trim().min(1).max(120).optional(), version: z.string().trim().min(1).max(40).optional(), templateKey: z.string().trim().min(1).max(120).optional(), services: z.array(z.string().trim().min(1).max(80)).max(8) }),
   starterFiles: z.array(z.object({ path: z.string().trim().min(1).max(180), content: z.string().max(262144) })).min(1).max(10),
   tasks: z.array(z.object({ key: z.string().trim().min(1).max(80), instruction: z.string().trim().min(1).max(4000), recommendedCommands: z.array(z.string().trim().min(1).max(240)).min(1).max(8), expectedObservation: z.string().trim().min(1).max(2000) })).min(1).max(12),
   verification: z.object({ commands: z.array(z.string().trim().min(1).max(240)).min(1).max(8), successSignals: z.array(z.string().trim().min(1).max(240)).min(1).max(12) }),
@@ -32,7 +33,13 @@ export function parseCaseRequest(value: unknown): CaseRequest {
 }
 
 export function parseCaseSpec(value: unknown): CaseSpec {
-  const spec = caseSpecSchema.parse(value) as CaseSpec
+  const parsed = caseSpecSchema.parse(value)
+  const key = parsed.environment.key ?? parsed.environment.templateKey
+  if (!key) throw new Error('environment_key_required')
+  if (parsed.environment.templateKey && parsed.environment.templateKey !== key) throw new Error('environment_template_mismatch')
+  const template = getEnvironmentTemplate(key, parsed.environment.version ?? '1')
+  if (!template || template.status !== 'available') throw new Error(`unsupported_environment:${key}`)
+  const spec = { ...parsed, environment: { ...parsed.environment, key, version: parsed.environment.version ?? template.version, templateKey: parsed.environment.templateKey ?? key } } as CaseSpec
   validateCaseSpecBoundaries(spec)
   return spec
 }

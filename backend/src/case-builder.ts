@@ -50,7 +50,7 @@ export class FixtureCaseBuilder implements CaseBuilderProvider {
       scenario: `你接手了一个负责汇总订单金额的 Python 小模块。当前实现可以处理大多数订单，但边界条件测试失败。请先运行测试、阅读已有实现，再用最小修改修复问题。\n\n本次输入：${context.slice(0, 1200)}`,
       learningGoal: input.request.desiredOutcome?.trim() || '通过阅读代码、运行测试和小步修改，完成一次可验证的 Python 问题修复。',
       difficulty: input.request.difficulty ?? 'applied',
-      environment: { templateKey: 'python-pytest-v1', services: [] },
+      environment: { key: 'python-pytest-v1', version: '1', templateKey: 'python-pytest-v1', services: [] },
       starterFiles: [
         { path: 'README.md', content: '# 订单汇总器\n\n先运行 `pytest -q`，观察失败测试，再定位实现问题。\n' },
         { path: 'src/order_summary.py', content: "from decimal import Decimal\n\ndef summarize_orders(orders: list[dict]) -> dict:\n    paid = [order for order in orders if order.get('status') == 'PAID']\n    total = sum(Decimal(str(order.get('amount', 0))) for order in paid)\n    return {'count': len(paid), 'total': str(total)}\n" },
@@ -109,7 +109,7 @@ export class ModelCaseBuilder implements CaseBuilderProvider {
 
   async build(input: CaseBuilderInput): Promise<CaseSpec> {
     const context = JSON.stringify({ request: input.request, source: input.source, context: input.context ?? null })
-    const system = '你是知行的案例构建器。只为已支持的 Python pytest 工作区构造真实可实践的工程案例。只输出完整 CaseSpec JSON，不输出解释、Markdown、Dockerfile、Compose、shell、镜像、宿主机路径、网络配置、密钥或未经允许的命令。环境模板固定为 python-pytest-v1。案例必须能通过阅读代码、运行 pytest、修改代码、再次验证完成。'
+    const system = '你是知行的案例构建器。只为服务端已经选定的 python-pytest-v1 环境构造真实可实践的工程案例。只输出完整 CaseSpec JSON，不输出解释、Markdown、Dockerfile、Compose、shell、镜像、宿主机路径、网络配置、密钥或未经允许的命令。environment 必须保留 key=python-pytest-v1、version=1；不得自行更换运行环境。案例必须能通过阅读代码、运行 pytest、修改代码、再次验证完成。'
     const result = await this.call([{ role: 'system', content: system }, { role: 'user', content: context }])
     try {
       return parseCaseSpec(JSON.parse(result.raw))

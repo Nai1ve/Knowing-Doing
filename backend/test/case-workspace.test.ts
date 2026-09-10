@@ -7,10 +7,11 @@ import { CaseWorkspaceService } from '../src/case-workspace-service.js'
 import { applyProductMigrations } from '../src/product-migrate.js'
 import { ProductRepository } from '../src/product-repository.js'
 import { FakeWorkspaceRunnerClient } from '../src/workspace-runner-client.js'
+import { DockerWorkspaceRuntimeAdapter } from '../src/runtime-adapter.js'
 
 async function withService<T>(callback: (service: CaseWorkspaceService, repository: ProductRepository) => Promise<T> | T): Promise<T> {
   const directory = mkdtempSync(path.join(tmpdir(), 'zhixing-case-workspace-')); const dbPath = path.join(directory, 'product.db'); applyProductMigrations(dbPath); const repository = new ProductRepository(dbPath)
-  const service = new CaseWorkspaceService(repository, new FixtureCaseBuilder(), new FakeWorkspaceRunnerClient())
+  const service = new CaseWorkspaceService(repository, new FixtureCaseBuilder(), new DockerWorkspaceRuntimeAdapter(new FakeWorkspaceRunnerClient()))
   try { return await callback(service, repository) } finally { if (repository.db.open) repository.close(); rmSync(directory, { recursive: true, force: true }) }
 }
 
@@ -36,11 +37,13 @@ describe('CaseWorkspaceService', () => {
     await vi.waitFor(() => expect(service.getCaseGenerationJob(learnerId, first.job.id).job.status).toBe('succeeded'))
     const ready = service.getCaseGenerationJob(learnerId, first.job.id)
     expect(ready.case.provider).toBe('fixture'); expect(ready.case.spec?.environment.templateKey).toBe('python-pytest-v1')
+    expect(ready.case).toMatchObject({ environmentKey: 'python-pytest-v1', environmentVersion: '1', runtimeKind: 'docker_workspace' })
     expect(ready.case.inputSnapshot.context).toMatchObject({ roadmapRationale: [{ sourceType: 'planning_message', sourceId: 'message-1' }], learnerProfile: { snapshotId: 'workspace-profile-1', dimensions: [{ key: 'python.testing', level: 'exposed' }] } })
     expect(repository.db.prepare('SELECT phase, status FROM case_generation_attempts WHERE case_generation_job_id = ?').all(first.job.id)).toEqual([{ phase: 'generate', status: 'succeeded' }])
 
     const workspace = await service.startPractice(learnerId, ready.case.id)
     expect(workspace.workspace.status).toBe('active'); expect(workspace.files).toHaveLength(3)
+    expect(workspace.environment).toMatchObject({ key: 'python-pytest-v1', version: '1', runtimeKind: 'docker_workspace' })
     const failed = await service.execute(learnerId, workspace.workspace.id, 'pytest -q', 'exec-1')
     expect(failed.execution.status).toBe('failed')
     const source = workspace.files.find((file) => file.path === 'src/order_summary.py')!
@@ -75,6 +78,8 @@ describe('CaseWorkspaceService', () => {
     expect(filePlan.some((row) => row.detail.includes('idx_workspace_files_run_path'))).toBe(true)
     const jobPlan = repository.db.prepare('EXPLAIN QUERY PLAN SELECT * FROM case_generation_jobs WHERE learner_id = ? AND status = ? ORDER BY updated_at DESC').all(learnerId, 'succeeded') as Array<{ detail: string }>
     expect(jobPlan.some((row) => row.detail.includes('idx_case_jobs_learner_status_updated'))).toBe(true)
+    const environmentPlan = repository.db.prepare('EXPLAIN QUERY PLAN SELECT * FROM learning_cases WHERE learner_id = ? AND environment_key = ? ORDER BY updated_at DESC').all(learnerId, 'python-pytest-v1') as Array<{ detail: string }>
+    expect(environmentPlan.some((row) => row.detail.includes('idx_learning_cases_learner_environment_updated'))).toBe(true)
     const executionPlan = repository.db.prepare('EXPLAIN QUERY PLAN SELECT * FROM workspace_executions WHERE workspace_run_id = ? ORDER BY sequence DESC LIMIT ?').all(first.workspace.id, 20) as Array<{ detail: string }>
     expect(executionPlan.some((row) => row.detail.includes('idx_workspace_executions_run_sequence'))).toBe(true)
   }))

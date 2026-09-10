@@ -14,6 +14,7 @@ import { PlanningService } from './planning.js'
 import { CaseWorkspaceService } from './case-workspace-service.js'
 import { FixtureCaseBuilder, ModelCaseBuilder } from './case-builder.js'
 import { FakeWorkspaceRunnerClient, HttpWorkspaceRunnerClient } from './workspace-runner-client.js'
+import { DockerWorkspaceRuntimeAdapter } from './runtime-adapter.js'
 import { WorkspaceCompletionService } from './workspace-completion-service.js'
 
 const config = loadConfig()
@@ -31,9 +32,10 @@ agentPlanningService.recoverRoadmapGenerations()
 const workspaceRunner = config.workspaceRunnerFake
   ? new FakeWorkspaceRunnerClient()
   : new HttpWorkspaceRunnerClient(config.workspaceRunnerUrl, config.workspaceRunnerToken, config.workspaceRunnerTimeoutMs)
+const workspaceRuntime = new DockerWorkspaceRuntimeAdapter(workspaceRunner)
 const caseBuilder = config.caseBuilderProvider === 'model' ? new ModelCaseBuilder(config) : new FixtureCaseBuilder()
 const workspaceCompletion = new WorkspaceCompletionService(productRepository, planningService, (runId) => { writingService.enqueueAutoDraft(runId) })
-const caseWorkspaceService = new CaseWorkspaceService(productRepository, caseBuilder, workspaceRunner, workspaceCompletion)
+const caseWorkspaceService = new CaseWorkspaceService(productRepository, caseBuilder, workspaceRuntime, workspaceCompletion)
 caseWorkspaceService.resumeCaseJobs()
 await caseWorkspaceService.resumeWorkspaces()
 workspaceCompletion.resumePending()

@@ -119,6 +119,7 @@ function learningCaseFrom(row: Row): LearningCase {
     templateKey: text(row, 'template_key'), inputKind: text(row, 'input_kind') as CaseInputKind, inputSnapshot: json<Record<string, unknown>>(row.input_snapshot_json, {}),
     inputFingerprint: text(row, 'input_fingerprint'), provider: text(row, 'provider') as LearningCase['provider'], version: number(row, 'version'),
     status: text(row, 'status') as LearningCase['status'], spec: row.case_spec_json === '{}' ? null : json<CaseSpec | null>(row.case_spec_json, null),
+    environmentKey: nullableText(row, 'environment_key') ?? text(row, 'template_key'), environmentVersion: nullableText(row, 'environment_version') ?? '1', runtimeKind: (nullableText(row, 'runtime_kind') ?? 'docker_workspace') as LearningCase['runtimeKind'],
     failureCode: nullableText(row, 'failure_code'), failureMessage: nullableText(row, 'failure_message'), createdAt: text(row, 'created_at'), updatedAt: text(row, 'updated_at'),
   }
 }

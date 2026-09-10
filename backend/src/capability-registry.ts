@@ -1,18 +1,18 @@
-export interface WorkspaceCapability {
-  capabilityKey: string
-  templateKey: 'python-pytest-v1'
-  provider: 'fixture'
-  status: 'available' | 'planned'
+import { getEnvironmentCapability, getEnvironmentCapabilityForTemplate, getEnvironmentTemplate, type EnvironmentCapability } from './environment-registry.js'
+
+export interface WorkspaceCapability extends EnvironmentCapability {
+  templateKey: string
 }
 
-const capabilities: WorkspaceCapability[] = [
-  { capabilityKey: 'python.testing', templateKey: 'python-pytest-v1', provider: 'fixture', status: 'available' },
-]
-
 export function getWorkspaceCapability(capabilityKey: string): WorkspaceCapability | null {
-  return capabilities.find((item) => item.capabilityKey === capabilityKey) ?? null
+  const item = getEnvironmentCapability(capabilityKey)
+  if (!item || item.status !== 'available' || getEnvironmentTemplate(item.environmentKey)?.runtimeKind !== 'docker_workspace') return null
+  return { ...item, templateKey: item.environmentKey }
 }
 
 export function getWorkspaceCapabilityForTemplate(templateKey: string): WorkspaceCapability | null {
-  return capabilities.find((item) => item.templateKey === templateKey) ?? null
+  const item = getEnvironmentCapabilityForTemplate(templateKey)
+  return item && item.status === 'available' && getEnvironmentTemplate(item.environmentKey)?.runtimeKind === 'docker_workspace'
+    ? { ...item, templateKey: item.environmentKey }
+    : null
 }

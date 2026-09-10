@@ -88,6 +88,21 @@ export type CaseGenerationJobStatus = 'queued' | 'running' | 'succeeded' | 'fail
 export type WorkspaceRunStatus = 'provisioning' | 'active' | 'executing' | 'failed' | 'ended' | 'expired'
 export type WorkspaceExecutionStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'timed_out' | 'rejected'
 export type PracticeKind = 'mysql_lab' | 'code_workspace'
+export type RuntimeKind = 'mysql_lab' | 'docker_workspace'
+
+export interface EnvironmentTemplate {
+  key: string
+  version: string
+  runtimeKind: RuntimeKind
+  status: 'available' | 'planned' | 'retired'
+  capabilityKeys: string[]
+  displayName: string
+  services: Array<{ key: string; role: 'runtime' | 'database' | 'cache' | 'queue'; displayName: string }>
+  resourceProfile: 'small' | 'standard' | 'data-intensive'
+  assetPolicy: { allowedExtensions: string[]; maxFiles: number; maxTotalBytes: number }
+  commandPolicy: { allowedCommandKeys: string[] }
+  initializationContract: { supportsStarterFiles: boolean; supportsDatasetSeed: boolean; supportsSchemaSeed: boolean; supportsFaultSeed: boolean }
+}
 
 export interface CaseRequest {
   roadmapNodeId: string
@@ -102,7 +117,8 @@ export interface CaseSpec {
   scenario: string
   learningGoal: string
   difficulty: CaseDifficulty
-  environment: { templateKey: 'python-pytest-v1'; services: string[] }
+  // key/version are required on persisted new specs; optional here keeps old test and artifact fixtures readable.
+  environment: { key?: string; version?: string; templateKey: string; services: string[] }
   starterFiles: Array<{ path: string; content: string }>
   tasks: Array<{ key: string; instruction: string; recommendedCommands: string[]; expectedObservation: string }>
   verification: { commands: string[]; successSignals: string[] }
@@ -115,6 +131,9 @@ export interface LearningCase {
   roadmapNodeId: string
   capabilityKey: string
   templateKey: string
+  environmentKey?: string
+  environmentVersion?: string
+  runtimeKind?: RuntimeKind
   inputKind: CaseInputKind
   inputSnapshot: Record<string, unknown>
   inputFingerprint: string

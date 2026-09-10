@@ -1,12 +1,14 @@
 import { createHash, randomUUID } from 'node:crypto'
 import type Database from 'better-sqlite3'
 import { getWorkspaceCapability } from './capability-registry.js'
+import { getEnvironmentTemplate } from './environment-registry.js'
 import { MAX_WORKSPACE_FILE_BYTES, MAX_WORKSPACE_TOTAL_BYTES, parseCaseRequest, parseCaseSpec, isAllowedPythonCommand } from './case-schemas.js'
 import { CaseBuilderError, type CaseBuilderAttemptEvent, type CaseBuilderContext, type CaseBuilderProvider } from './case-builder.js'
 import { LabError } from './errors.js'
-import type { CaseRequest, CaseSpec, LearningCase, CaseGenerationJob, PracticeRun, SourceItem, WorkspaceCompletion, WorkspaceExecution, WorkspaceFile, WorkspaceRun, WorkspaceTutorHistory } from './product-types.js'
+import type { CaseRequest, CaseSpec, EnvironmentTemplate, LearningCase, CaseGenerationJob, PracticeRun, SourceItem, WorkspaceCompletion, WorkspaceExecution, WorkspaceFile, WorkspaceRun, WorkspaceTutorHistory } from './product-types.js'
 import type { ProductRepository } from './product-repository.js'
 import type { RunnerFileInput, WorkspaceRunnerClient } from './workspace-runner-client.js'
+import { DockerWorkspaceRuntimeAdapter, type RuntimeAdapter } from './runtime-adapter.js'
 import { WorkspaceRunnerError } from './workspace-runner-client.js'
 
 type Row = Record<string, unknown>
@@ -31,6 +33,7 @@ function learningCaseFrom(row: Row): LearningCase {
     id: text(row, 'id'), learnerId: text(row, 'learner_id'), roadmapNodeId: text(row, 'roadmap_node_id'), capabilityKey: text(row, 'capability_key'), templateKey: text(row, 'template_key'),
     inputKind: text(row, 'input_kind') as LearningCase['inputKind'], inputSnapshot: json<Record<string, unknown>>(row.input_snapshot_json, {}), inputFingerprint: text(row, 'input_fingerprint'),
     provider: text(row, 'provider') as LearningCase['provider'], version: number(row, 'version'), status: text(row, 'status') as LearningCase['status'], spec: row.case_spec_json === '{}' ? null : json<CaseSpec | null>(row.case_spec_json, null),
+    environmentKey: nullable(row, 'environment_key') ?? text(row, 'template_key'), environmentVersion: nullable(row, 'environment_version') ?? '1', runtimeKind: (nullable(row, 'runtime_kind') ?? 'docker_workspace') as LearningCase['runtimeKind'],
     failureCode: nullable(row, 'failure_code'), failureMessage: nullable(row, 'failure_message'), createdAt: text(row, 'created_at'), updatedAt: text(row, 'updated_at'),
   }
 }
@@ -55,6 +58,7 @@ export interface WorkspaceSummary {
   workspace: WorkspaceRun
   practice: PracticeRun
   case: LearningCase
+  environment: Pick<EnvironmentTemplate, 'key' | 'version' | 'runtimeKind' | 'displayName' | 'services' | 'resourceProfile'>
   files: WorkspaceFile[]
   executions: WorkspaceExecution[]
   completion: WorkspaceCompletion | null
@@ -64,7 +68,11 @@ export class CaseWorkspaceService {
   private readonly caseLocks = new Map<string, Promise<void>>()
   private readonly workspaceLocks = new Map<string, Promise<void>>()
 
-  constructor(private readonly repository: ProductRepository, private readonly builder: CaseBuilderProvider, private readonly runner: WorkspaceRunnerClient, private readonly completionService?: { completionForWorkspace(learnerId: string, workspaceRunId: string): WorkspaceCompletion | null; evaluateExecution(learnerId: string, workspaceRunId: string, executionId: string): WorkspaceCompletion | null; recheck(learnerId: string, workspaceRunId: string): WorkspaceCompletion | null }) {}
+  private readonly runner: RuntimeAdapter
+
+  constructor(private readonly repository: ProductRepository, private readonly builder: CaseBuilderProvider, runner: RuntimeAdapter | WorkspaceRunnerClient, private readonly completionService?: { completionForWorkspace(learnerId: string, workspaceRunId: string): WorkspaceCompletion | null; evaluateExecution(learnerId: string, workspaceRunId: string, executionId: string): WorkspaceCompletion | null; recheck(learnerId: string, workspaceRunId: string): WorkspaceCompletion | null }) {
+    this.runner = 'provision' in runner ? runner : new DockerWorkspaceRuntimeAdapter(runner)
+  }
 
   private get db(): Database.Database { return this.repository.db }
 
@@ -98,9 +106,11 @@ export class CaseWorkspaceService {
     const workspace = workspaceRunFrom(row)
     const practice: PracticeRun = { id: text(row, 'practice_id'), learnerId: text(row, 'learner_id'), planUnitId: nullable(row, 'plan_unit_id'), caseId: text(row, 'case_id'), practiceKind: 'code_workspace', learningCaseId: text(row, 'practice_learning_case_id'), labRunId: null, stage: text(row, 'stage') as PracticeRun['stage'], hintLevel: number(row, 'hint_level'), noProgressCount: number(row, 'no_progress_count'), status: text(row, 'practice_status') as PracticeRun['status'], createdAt: text(row, 'practice_created_at'), updatedAt: text(row, 'practice_updated_at') }
     const learningCase = this.caseForLearner(text(row, 'learner_id'), workspace.learningCaseId)
+    const environment = getEnvironmentTemplate(learningCase.environmentKey ?? learningCase.templateKey, learningCase.environmentVersion ?? '1')
+    if (!environment || environment.status !== 'available' || environment.runtimeKind !== 'docker_workspace') throw new LabError('workspace_environment_unavailable', '案例绑定的运行环境不可用于代码工作区', 409)
     const files = (this.db.prepare('SELECT * FROM workspace_files WHERE workspace_run_id = ? ORDER BY path ASC').all(workspace.id) as Row[]).map(fileFrom)
     const executions = (this.db.prepare('SELECT * FROM workspace_executions WHERE workspace_run_id = ? ORDER BY sequence DESC LIMIT 20').all(workspace.id) as Row[]).map(executionFrom)
-      return { workspace, practice, case: learningCase, files, executions, completion: this.completionService?.completionForWorkspace(text(row, 'learner_id'), workspace.id) ?? null }
+      return { workspace, practice, case: learningCase, environment: { key: environment.key, version: environment.version, runtimeKind: environment.runtimeKind, displayName: environment.displayName, services: environment.services, resourceProfile: environment.resourceProfile }, files, executions, completion: this.completionService?.completionForWorkspace(text(row, 'learner_id'), workspace.id) ?? null }
   }
 
   createCaseRequest(learnerId: string, input: unknown): { case: LearningCase; job: CaseGenerationJob } {
@@ -114,6 +124,8 @@ export class CaseWorkspaceService {
     if (text(node, 'learning_mode') !== 'workspace') throw new LabError('workspace_not_available', '当前路线节点没有可用代码工作区', 409)
     const capability = getWorkspaceCapability(nullable(node, 'capability_key') ?? 'python.testing')
     if (!capability || capability.status !== 'available') throw new LabError('workspace_capability_unavailable', '当前工作区能力尚未开放', 409)
+    const environment = getEnvironmentTemplate(capability.environmentKey)
+    if (!environment || environment.status !== 'available' || environment.runtimeKind !== 'docker_workspace') throw new LabError('workspace_environment_unavailable', '当前运行环境尚未开放', 409)
     const source = request.input.kind === 'zhihu_article' ? this.visibleSource(learnerId, request.input.sourceItemId!) : null
     const inputSnapshot = request.input.kind === 'brief' ? { ...request.input, desiredOutcome: request.desiredOutcome ?? null, difficulty: request.difficulty ?? null } : { ...request.input, desiredOutcome: request.desiredOutcome ?? null, difficulty: request.difficulty ?? null, source: source ? { id: source.id, title: source.title, author: source.author, url: source.url, excerpt: source.excerpt, retrievedAt: source.retrievedAt } : null }
     const rationale = (this.db.prepare('SELECT source_type, source_id, excerpt FROM roadmap_node_evidence WHERE roadmap_id = ? AND node_id = ? ORDER BY position ASC LIMIT 12').all(text(node, 'roadmap_id'), request.roadmapNodeId) as Row[]).map((item) => ({ sourceType: text(item, 'source_type'), sourceId: text(item, 'source_id'), excerpt: text(item, 'excerpt').slice(0, 1200) }))
@@ -121,7 +133,7 @@ export class CaseWorkspaceService {
     const profileDimensions = profile ? (this.db.prepare('SELECT dimension_key, level, confidence, summary FROM learner_profile_dimensions WHERE snapshot_id = ? ORDER BY dimension_key').all(text(profile, 'id')) as Row[]).map((item) => ({ key: text(item, 'dimension_key'), level: text(item, 'level'), confidence: number(item, 'confidence'), summary: text(item, 'summary').slice(0, 600) })) : []
     const contextSnapshot = { roadmapNode: { id: text(node, 'id'), title: text(node, 'title'), summary: text(node, 'summary'), completionStandard: text(node, 'completion_standard'), capabilityKey: capability.capabilityKey }, roadmapRationale: rationale, learnerProfile: { snapshotId: profile ? text(profile, 'id') : null, dimensions: profileDimensions } }
     const frozenSnapshot = { ...inputSnapshot, context: contextSnapshot }
-    const fingerprint = checksum(stableJson({ roadmapNodeId: request.roadmapNodeId, input: inputSnapshot, capabilityKey: capability.capabilityKey, templateKey: capability.templateKey }))
+    const fingerprint = checksum(stableJson({ roadmapNodeId: request.roadmapNodeId, input: inputSnapshot, capabilityKey: capability.capabilityKey, environmentKey: environment.key, environmentVersion: environment.version }))
     const now = new Date().toISOString()
     const persist = this.db.transaction(() => {
       const requestJob = this.db.prepare('SELECT * FROM case_generation_jobs WHERE learner_id = ? AND client_request_id = ?').get(learnerId, request.clientRequestId) as Row | undefined
@@ -131,8 +143,8 @@ export class CaseWorkspaceService {
       }
         const existingCase = this.db.prepare('SELECT id FROM learning_cases WHERE learner_id = ? AND input_fingerprint = ?').get(learnerId, fingerprint) as Row | undefined
       const caseId = existingCase ? text(existingCase, 'id') : randomUUID()
-      if (!existingCase) this.db.prepare(`INSERT INTO learning_cases(id, learner_id, roadmap_node_id, capability_key, template_key, input_kind, input_snapshot_json, input_fingerprint, provider, version, status, case_spec_json, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 'generating', '{}', ?, ?)`).run(caseId, learnerId, request.roadmapNodeId, capability.capabilityKey, capability.templateKey, request.input.kind, JSON.stringify(frozenSnapshot), fingerprint, this.builder.providerName, now, now)
+      if (!existingCase) this.db.prepare(`INSERT INTO learning_cases(id, learner_id, roadmap_node_id, capability_key, template_key, environment_key, environment_version, runtime_kind, input_kind, input_snapshot_json, input_fingerprint, provider, version, status, case_spec_json, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 'generating', '{}', ?, ?)`).run(caseId, learnerId, request.roadmapNodeId, capability.capabilityKey, capability.templateKey, environment.key, environment.version, environment.runtimeKind, request.input.kind, JSON.stringify(frozenSnapshot), fingerprint, this.builder.providerName, now, now)
       const existingCaseJob = this.db.prepare('SELECT id FROM case_generation_jobs WHERE learner_id = ? AND learning_case_id = ? AND input_fingerprint = ? ORDER BY created_at ASC LIMIT 1').get(learnerId, caseId, fingerprint) as Row | undefined
       if (existingCaseJob) return { caseId, jobId: text(existingCaseJob, 'id'), created: false }
       const jobId = randomUUID()
@@ -267,6 +279,8 @@ export class CaseWorkspaceService {
   async startPractice(learnerId: string, caseId: string): Promise<WorkspaceSummary> {
     return this.withLock(this.caseLocks, `${learnerId}:${caseId}`, async () => {
       const item = this.caseForLearner(learnerId, caseId); if (item.status !== 'ready' || !item.spec) throw new LabError('case_not_ready', '案例尚未生成完成', 409, true)
+      const environment = getEnvironmentTemplate(item.environmentKey ?? item.templateKey, item.environmentVersion ?? '1')
+      if (!environment || environment.status !== 'available' || environment.runtimeKind !== 'docker_workspace') throw new LabError('workspace_environment_unavailable', '案例绑定的运行环境不可用于代码工作区', 409)
       const existing = this.db.prepare('SELECT id FROM workspace_runs WHERE learning_case_id = ? AND learner_id = ? AND status IN (\'provisioning\', \'active\', \'executing\') ORDER BY updated_at DESC LIMIT 1').get(caseId, learnerId) as Row | undefined
       if (existing) return this.getWorkspace(learnerId, text(existing, 'id'))
       const now = new Date().toISOString(); const practiceId = randomUUID(); const workspaceId = randomUUID(); const caseRunId = `workspace:${caseId}`
@@ -277,13 +291,13 @@ export class CaseWorkspaceService {
           VALUES (?, ?, ?, ?, ?, 'provisioning', 1, ?, ?)`).run(workspaceId, learnerId, practiceId, caseId, item.templateKey, now, now)
       })()
       try {
-        const runner = await this.runner.create({ templateKey: item.templateKey, files: item.spec.starterFiles, commands: [...item.spec.verification.commands, ...item.spec.tasks.flatMap((task) => task.recommendedCommands)] })
+        const runner = await this.runner.provision({ environmentKey: item.environmentKey ?? item.templateKey, environmentVersion: item.environmentVersion ?? '1', files: item.spec.starterFiles, commands: [...item.spec.verification.commands, ...item.spec.tasks.flatMap((task) => task.recommendedCommands)] })
         const activatedAt = new Date().toISOString(); this.db.transaction(() => {
           this.db.prepare("UPDATE workspace_runs SET runner_run_id = ?, status = 'active', lease_expires_at = ?, last_heartbeat_at = ?, updated_at = ? WHERE id = ? AND status = 'provisioning'").run(runner.runnerRunId, runner.leaseExpiresAt, activatedAt, activatedAt, workspaceId)
           const insertFile = this.db.prepare(`INSERT INTO workspace_files(id, workspace_run_id, path, content, checksum, revision, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 1, ?, ?)`)
           for (const file of item.spec!.starterFiles) insertFile.run(randomUUID(), workspaceId, file.path, file.content, checksum(file.content), activatedAt, activatedAt)
         })()
-        this.repository.appendEvent({ learnerId, practiceRunId: practiceId, actor: 'workspace', type: 'workspace_created', stage: 'observe', payload: { learningCaseId: caseId, templateKey: item.templateKey, provider: item.provider }, artifactRefs: [], clientRequestId: `workspace-created:${workspaceId}` })
+        this.repository.appendEvent({ learnerId, practiceRunId: practiceId, actor: 'workspace', type: 'workspace_created', stage: 'observe', payload: { learningCaseId: caseId, templateKey: item.templateKey, environmentKey: item.environmentKey ?? item.templateKey, environmentVersion: item.environmentVersion ?? '1', runtimeKind: item.runtimeKind ?? 'docker_workspace', provider: item.provider }, artifactRefs: [], clientRequestId: `workspace-created:${workspaceId}` })
         this.repository.createArtifact({ learnerId, practiceRunId: practiceId, kind: 'external_text', sourceKind: 'workspace', verificationStatus: 'not_applicable', content: item.spec.scenario, metadata: { learningCaseId: caseId, provider: item.provider, ...(item.provider === 'fixture' ? { fixtureVersion: 'python-order-summary-v1' } : {}) } })
       } catch (error) {
         const failedAt = new Date().toISOString(); this.db.prepare("UPDATE workspace_runs SET status = 'failed', ended_reason = ?, updated_at = ?, ended_at = ? WHERE id = ? AND status = 'provisioning'").run(error instanceof WorkspaceRunnerError ? error.code : 'runner_unavailable', failedAt, failedAt, workspaceId)
