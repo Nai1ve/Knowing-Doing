@@ -1,8 +1,5 @@
-import { readFile } from 'node:fs/promises'
-import { fileURLToPath } from 'node:url'
 import mysql, { type FieldPacket, type Pool, type PoolConnection, type ResultSetHeader, type RowDataPacket } from 'mysql2/promise'
 import type { CaseId, CaseManifest } from './domain.js'
-import { getManifest, listManifests } from './fixtures.js'
 import { LabError } from './errors.js'
 
 type Connection = PoolConnection
@@ -15,7 +12,6 @@ export interface SessionConnection {
 }
 
 export interface LabStore {
-  health(): Promise<Record<CaseId, { ready: boolean; fixtureVersion: string; error?: string }>>
   reset(caseId: CaseId): Promise<void>
   createSession(caseId: CaseId, sessionId: string): Promise<Connection>
   execute(connection: Connection, statement: string, timeoutMs: number, maxRows: number, maxOutputBytes: number): Promise<{
@@ -47,13 +43,6 @@ function serializeValue(value: unknown): unknown {
   if (Buffer.isBuffer(value)) return value.toString('base64')
   if (value instanceof Date) return value.toISOString()
   return value
-}
-
-function splitSqlScript(script: string): string[] {
-  return script
-    .split(';')
-    .map((statement) => statement.trim())
-    .filter(Boolean)
 }
 
 function formatRawResult(columns: string[], rows: unknown[][], command?: { affectedRows?: number; warningCount?: number }, truncated = false): string {
@@ -89,23 +78,10 @@ export class MySqlLabStore implements LabStore {
       waitForConnections: true,
       connectionLimit: 3,
     })
-    for (const manifest of listManifests()) {
-      this.manifests.set(manifest.id, manifest)
-      this.runnerPools.set(manifest.id, mysql.createPool({
-        host: options.host,
-        port: options.port,
-        user: options.runnerUser,
-        password: options.runnerPassword,
-        database: manifest.schema,
-        waitForConnections: true,
-        connectionLimit: Math.max(1, Math.floor(options.runnerPoolSize / 3)),
-        enableKeepAlive: true,
-      }))
-    }
   }
 
   private manifestFor(caseId: CaseId): CaseManifest {
-    const manifest = this.manifests.get(caseId) ?? (listManifests().find((item) => item.id === caseId) ?? null)
+    const manifest = this.manifests.get(caseId) ?? null
     if (!manifest) throw new LabError('case_not_found', '案例不存在', 404)
     return manifest
   }
@@ -136,23 +112,6 @@ export class MySqlLabStore implements LabStore {
     }
   }
 
-  async health(): Promise<Record<CaseId, { ready: boolean; fixtureVersion: string; error?: string }>> {
-    const result = {} as Record<CaseId, { ready: boolean; fixtureVersion: string; error?: string }>
-    for (const manifest of listManifests()) {
-      try {
-        const pool = this.runnerPools.get(manifest.id)
-        if (!pool) throw new Error('runner pool missing')
-        await pool.query('SELECT 1')
-        const [rows] = await pool.query<RowDataPacket[]>('SELECT fixture_version FROM lab_fixture_meta LIMIT 1')
-        const version = String(rows[0]?.fixture_version ?? '')
-        result[manifest.id] = { ready: version === manifest.fixtureVersion, fixtureVersion: version, ...(version === manifest.fixtureVersion ? {} : { error: 'fixture version mismatch' }) }
-      } catch (error) {
-        result[manifest.id] = { ready: false, fixtureVersion: manifest.fixtureVersion, error: error instanceof Error ? error.message : 'MySQL unavailable' }
-      }
-    }
-    return result
-  }
-
   async reset(caseId: CaseId): Promise<void> {
     const manifest = this.manifestFor(caseId)
     const connection = await this.adminPool.getConnection()
@@ -160,18 +119,12 @@ export class MySqlLabStore implements LabStore {
       await connection.query(`USE ${quoteIdentifier(manifest.schema)}`)
       await connection.beginTransaction()
       const dynamic = this.dynamicMaterials.get(caseId)
-      if (dynamic) {
-        for (const table of manifest.tables) await connection.query(`DROP TABLE IF EXISTS ${quoteIdentifier(manifest.schema)}.${quoteIdentifier(table)}`)
-        await connection.query(dynamic.schemaSql)
-        await this.seedDynamicOrders(connection, manifest.schema, dynamic.rowCount, dynamic.distribution)
-        if (!/^\s*\/\*/.test(dynamic.faultSql)) await connection.query(dynamic.faultSql)
-      } else {
-        for (const table of manifest.tables) await connection.query(`DELETE FROM ${quoteIdentifier(manifest.schema)}.${quoteIdentifier(table)}`)
-        const script = await this.readFixtureScript(caseId)
-        for (const statement of splitSqlScript(script)) await connection.query(statement)
-      }
+      if (!dynamic) throw new LabError('dynamic_case_not_registered', '动态案例物料不存在', 409)
+      for (const table of manifest.tables) await connection.query(`DROP TABLE IF EXISTS ${quoteIdentifier(manifest.schema)}.${quoteIdentifier(table)}`)
+      await connection.query(dynamic.schemaSql)
+      await this.seedDynamicOrders(connection, manifest.schema, dynamic.rowCount, dynamic.distribution)
+      if (!/^\s*\/\*/.test(dynamic.faultSql)) await connection.query(dynamic.faultSql)
       await connection.commit()
-      if (!dynamic) await this.restoreIndexes(connection, manifest)
     } catch (error) {
       await connection.rollback().catch(() => undefined)
       throw new LabError('fixture_reset_failed', '案例环境重置失败', 503, true, { caseId, cause: error instanceof Error ? error.message : 'unknown' })
@@ -262,34 +215,4 @@ export class MySqlLabStore implements LabStore {
     }
   }
 
-  private async readFixtureScript(caseId: CaseId): Promise<string> {
-    const paths = [
-      new URL(`../fixtures/${caseId}.reset.sql`, import.meta.url),
-      new URL(`../../fixtures/${caseId}.reset.sql`, import.meta.url),
-    ]
-    let lastError: unknown
-    for (const url of paths) {
-      try {
-        return await readFile(fileURLToPath(url), 'utf8')
-      } catch (error) {
-        lastError = error
-      }
-    }
-    throw lastError instanceof Error ? lastError : new Error(`fixture not found: ${caseId}`)
-  }
-
-  private async restoreIndexes(connection: Connection, manifest: CaseManifest): Promise<void> {
-    for (const [table, baseline] of Object.entries(manifest.baselineIndexes)) {
-      const [rows] = await connection.query<RowDataPacket[]>(`SHOW INDEX FROM ${quoteIdentifier(manifest.schema)}.${quoteIdentifier(table)}`)
-      const current = new Set(rows.map((row) => String(row.Key_name)))
-      for (const indexName of current) {
-        if (indexName === 'PRIMARY' || indexName in baseline) continue
-        await connection.query(`ALTER TABLE ${quoteIdentifier(manifest.schema)}.${quoteIdentifier(table)} DROP INDEX ${quoteIdentifier(indexName)}`)
-      }
-      for (const [indexName, definition] of Object.entries(baseline)) {
-        if (indexName === 'PRIMARY' || current.has(indexName) || !definition) continue
-        await connection.query(`ALTER TABLE ${quoteIdentifier(manifest.schema)}.${quoteIdentifier(table)} ADD INDEX ${quoteIdentifier(indexName)} ${definition}`)
-      }
-    }
-  }
 }

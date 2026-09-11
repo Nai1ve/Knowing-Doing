@@ -2,7 +2,6 @@ import { randomUUID } from 'node:crypto'
 import type { PoolConnection as Connection } from 'mysql2/promise'
 import { AsyncGate, AsyncMutex } from './async-gate.js'
 import type { CaseId, CaseManifest, LabExecutionResult, QueueTicketView, RunView, SessionName } from './domain.js'
-import { getManifest, listManifests } from './fixtures.js'
 import { LabError } from './errors.js'
 import type { LabStore } from './mysql-store.js'
 import { signLabToken, verifyLabToken } from './token.js'
@@ -61,10 +60,6 @@ export class LabScheduler {
   private readonly reapTimer: NodeJS.Timeout
 
   constructor(private readonly store: LabStore, private readonly options: SchedulerOptions) {
-    for (const manifest of listManifests()) {
-      this.manifests.set(manifest.id, manifest)
-      this.slots.set(manifest.id, { caseId: manifest.id, queue: [], control: new AsyncMutex(), gate: new AsyncGate() })
-    }
     this.reapTimer = setInterval(() => { void this.reapExpired() }, 30_000)
     this.reapTimer.unref()
   }
@@ -366,8 +361,8 @@ export class LabScheduler {
 
   manifestFor(caseId: CaseId) {
     const manifest = this.manifests.get(caseId)
-    if (manifest) return manifest
-    try { return getManifest(caseId as never) } catch { throw new LabError('case_not_found', '案例不存在', 404) }
+    if (!manifest) throw new LabError('case_not_found', '案例不存在', 404)
+    return manifest
   }
 
   private toTicketView(ticket: Ticket): QueueTicketView {

@@ -15,7 +15,7 @@ describe('narrative writing', () => {
     const repository = new ProductRepository(dbPath)
     try {
       repository.ensureLearner('learner-1')
-      const run = repository.createPracticeRun({ learnerId: 'learner-1', caseId: 'mysql-order-list-index-001' })
+      const run = repository.createPracticeRun({ learnerId: 'learner-1', caseId: 'dynamic-case-legacy-1' })
       const artifact = repository.createArtifact({ learnerId: run.learnerId, practiceRunId: run.id, kind: 'user_message', sourceKind: 'user', verificationStatus: 'not_applicable', content: '我想弄清楚这个实践为什么变慢。', metadata: {} })
       const event = repository.appendEvent({ learnerId: run.learnerId, practiceRunId: run.id, actor: 'user', type: 'user_message', stage: 'observe', payload: { message: artifact.content }, artifactRefs: [artifact.id] })
       repository.updatePracticeRun(run.id, { stage: 'resolved', status: 'resolved' })

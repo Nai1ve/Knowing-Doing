@@ -486,34 +486,6 @@ export class ProductRepository {
     return this.getPlanForLearner(id, learnerId)
   }
 
-  getOrCreateMysqlPerformancePlan(learnerId: string): LearningPlan {
-    const existing = this.getActivePlan(learnerId, 'mysql-performance-v1')
-    if (existing) return existing
-    const planId = randomUUID(); const intakeId = randomUUID(); const now = new Date().toISOString()
-    const transaction = this.db.transaction(() => {
-      this.db.prepare('INSERT INTO intakes(id, learner_id, goal, technology, outcome, weekly_minutes, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
-        .run(intakeId, learnerId, '通过真实实验掌握 MySQL 性能问题的分析与验证方法', 'MySQL 8', null, 240, 'planned', now, now)
-      this.db.prepare(`INSERT INTO learning_plans(id, learner_id, intake_id, title, goal, source_status, status, plan_state, template_key, revision, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, 'local_catalog', 'active', 'active', 'mysql-performance-v1', 1, ?, ?)`).run(planId, learnerId, intakeId, 'MySQL 性能优化路线', '通过真实实验掌握 MySQL 性能问题的分析与验证方法', now, now)
-      const units = [
-        ['慢查询与联合索引', '从慢日志和表结构定位问题，用 EXPLAIN、索引和结果验证优化假设。', 'mysql-order-list-index-001', 'current', 'available'],
-        ['死锁与锁等待', '区分临时止损和根因修复，并用事务会话复测访问顺序。', 'mysql-deadlock-lock-order-001', 'upcoming', 'coming_soon'],
-        ['深分页与产品约束', '比较 OFFSET 和游标分页，说明性能与交互能力的取舍。', 'mysql-deep-pagination-001', 'upcoming', 'coming_soon'],
-      ] as const
-      const insert = this.db.prepare('INSERT INTO plan_units(id, plan_id, position, title, objective, case_id, status, availability, learning_mode, estimated_minutes, rationale, completed_at, source_refs_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)')
-      units.forEach(([title, objective, caseId, status, availability], index) => insert.run(randomUUID(), planId, index + 1, title, objective, caseId, status, availability, 'lab', 90, '按固定 MySQL 工程路线推进。', '[]'))
-      this.db.prepare('INSERT INTO plan_events(id, learner_id, plan_id, plan_unit_id, practice_run_id, type, payload_json, created_at) VALUES (?, ?, ?, NULL, NULL, ?, ?, ?)')
-        .run(randomUUID(), learnerId, planId, 'plan_created', JSON.stringify({ templateKey: 'mysql-performance-v1' }), now)
-    })
-    try { transaction() } catch (error) {
-      if (!(error instanceof Error) || !error.message.includes('UNIQUE')) throw error
-      const concurrent = this.getActivePlan(learnerId, 'mysql-performance-v1')
-      if (concurrent) return concurrent
-      throw error
-    }
-    return this.getPlanForLearner(planId, learnerId)
-  }
-
   getPlanForLearner(id: string, learnerId: string): LearningPlan {
     const row = this.db.prepare('SELECT p.*, i.weekly_minutes FROM learning_plans p INNER JOIN intakes i ON i.id = p.intake_id WHERE p.id = ? AND p.learner_id = ?').get(id, learnerId) as Row | undefined
     if (!row) throw new Error(`Plan not found: ${id}`)

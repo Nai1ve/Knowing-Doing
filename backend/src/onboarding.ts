@@ -47,9 +47,9 @@ export function buildPlanProposal(input: DiagnosticInput): PlanProposalSpec {
       planState: 'active',
       rationale: commonRationale,
       units: [
-        { position: 1, title: '慢查询与联合索引', objective: '从慢日志和表结构定位问题，用 EXPLAIN、索引和结果验证优化假设。', caseId: 'mysql-order-list-index-001', status: 'current', availability: 'available', learningMode: 'lab', estimatedMinutes: 90, rationale: '先用一个可运行案例建立“现象—证据—尝试—验证”的工程判断闭环。', sourceRefs: [] },
-        { position: 2, title: '死锁与锁等待', objective: '区分临时止损和根因修复，并用事务会话复测访问顺序。', caseId: 'mysql-deadlock-lock-order-001', status: 'upcoming', availability: 'coming_soon', learningMode: 'lab', estimatedMinutes: 90, rationale: '在完成第一次性能判断后，扩展到并发行为与事务边界。', sourceRefs: [] },
-        { position: 3, title: '深分页与产品约束', objective: '比较 OFFSET 和游标分页，说明性能与交互能力的取舍。', caseId: 'mysql-deep-pagination-001', status: 'upcoming', availability: 'coming_soon', learningMode: 'lab', estimatedMinutes: 90, rationale: '最后把局部 SQL 优化连接到产品分页约束和系统设计。', sourceRefs: [] },
+        { position: 1, title: '慢查询与联合索引', objective: '从慢日志和表结构定位问题，用 EXPLAIN、索引和结果验证优化假设。', caseId: null, status: 'current', availability: 'coming_soon', learningMode: 'unavailable', estimatedMinutes: 90, rationale: '请通过规划助手生成一份带受控环境的动态 Gym 路线。', sourceRefs: [] },
+        { position: 2, title: '死锁与锁等待', objective: '区分临时止损和根因修复，并用事务会话复测访问顺序。', caseId: null, status: 'upcoming', availability: 'coming_soon', learningMode: 'unavailable', estimatedMinutes: 90, rationale: '请通过规划助手生成一份带受控环境的动态 Gym 路线。', sourceRefs: [] },
+        { position: 3, title: '深分页与产品约束', objective: '比较 OFFSET 和游标分页，说明性能与交互能力的取舍。', caseId: null, status: 'upcoming', availability: 'coming_soon', learningMode: 'unavailable', estimatedMinutes: 90, rationale: '请通过规划助手生成一份带受控环境的动态 Gym 路线。', sourceRefs: [] },
       ],
     }
   }

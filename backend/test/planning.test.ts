@@ -35,7 +35,7 @@ describe('PlanningService', () => {
     expect(session.turns.map((turn) => turn.sequence)).toEqual([1, 2, 3, 4, 5, 6])
     expect(draft.nodes).toHaveLength(22)
     expect(draft.nodes.filter((node) => node.parentId === null)).toHaveLength(3)
-    expect(draft.nodes.find((node) => node.nodeKey === 'mysql-slow-query')?.caseId).toBe('mysql-order-list-index-001')
+    expect(draft.nodes.find((node) => node.nodeKey === 'mysql-slow-query')?.caseId).toBeNull()
   }))
 
   it('creates a draft diff without changing a current plan before confirmation', () => withPlanning((service, repository) => {
@@ -78,7 +78,7 @@ describe('PlanningService', () => {
     expect(repository.getActivePlan('replan-learner')?.goal).toBe('成为高级后端 + AI 应用工程师')
   }))
 
-  it('protects ownership and revision, and updates concept and Lab progress from their proper sources', () => withPlanning((service, repository) => {
+  it('protects ownership and revision, and updates concept progress from user evidence', () => withPlanning((service, repository) => {
     const { draft } = completeConversation(service, 'owner-learner')
     expect(() => service.getDraftForLearner('other-learner', draft.id)).toThrow('路线图不存在')
     expect(() => service.adjust('owner-learner', draft.planningSessionId, { revision: draft.planningSessionRevision + 1, weeklyMinutes: 90 })).toThrow('规划内容已更新')
@@ -90,12 +90,6 @@ describe('PlanningService', () => {
     expect(completed.status).toBe('completed')
     const locked = draft.nodes.find((node) => node.nodeKey === 'rag')!
     expect(() => service.completeNode('owner-learner', roadmapId, locked.id, { revision: locked.progressRevision })).toThrow('当前节点需要展开子节点后完成')
-    const labUnit = plan.units.find((unit) => unit.caseId === 'mysql-order-list-index-001')!
-    const run = repository.createPracticeRun({ learnerId: 'owner-learner', planUnitId: labUnit.id, caseId: labUnit.caseId! })
-    repository.updatePracticeRun(run.id, { stage: 'resolved', status: 'resolved' })
-    service.markLabVerified(run.id)
-    const labNode = service.listNodes('owner-learner', roadmapId, concept.parentId).nodes.find((node) => node.nodeKey === 'mysql-slow-query')!
-    expect(labNode.status).toBe('verified')
   }))
 
   it('derives the current entry from the exact current unit and returns the focused tree in one snapshot', () => withPlanning((service, repository) => {
@@ -109,9 +103,9 @@ describe('PlanningService', () => {
     let current = service.current('entry-kind-learner')
     expect(current.currentLearning).toMatchObject({ planUnitId: unit.id, entryKind: 'workspace_setup', roadmapId: plan.roadmapId, roadmapNodeId: unit.roadmapNodeId })
 
-    repository.db.prepare("UPDATE plan_units SET learning_mode = 'lab', case_id = 'mysql-order-list-index-001' WHERE id = ?").run(unit.id)
+    repository.db.prepare("UPDATE plan_units SET learning_mode = 'lab', case_id = NULL WHERE id = ?").run(unit.id)
     current = service.current('entry-kind-learner')
-    expect(current.currentLearning?.entryKind).toBe('gym')
+    expect(current.currentLearning?.entryKind).toBe('unavailable')
 
     repository.db.prepare("UPDATE plan_units SET learning_mode = 'unavailable', availability = 'coming_soon', case_id = NULL WHERE id = ?").run(unit.id)
     current = service.current('entry-kind-learner')

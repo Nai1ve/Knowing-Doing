@@ -6,6 +6,7 @@ import { FixtureCaseBuilder } from '../src/case-builder.js'
 import { CaseWorkspaceService } from '../src/case-workspace-service.js'
 import { GymBuildService } from '../src/gym-build-service.js'
 import { MySqlDynamicCaseService } from '../src/mysql-dynamic-case-service.js'
+import type { CaseDesignProvider } from '../src/case-design-agent.js'
 import { applyProductMigrations } from '../src/product-migrate.js'
 import { ProductRepository } from '../src/product-repository.js'
 import { DockerWorkspaceRuntimeAdapter } from '../src/runtime-adapter.js'
@@ -36,7 +37,23 @@ function setup(executeStatus: 'succeeded' | 'failed' = 'succeeded') {
       : { status: 'failed' as const, result: null },
     release: async () => undefined,
   }
-  const mysql = new MySqlDynamicCaseService(repository, scheduler as never)
+  const designAgent: CaseDesignProvider = {
+    modelName: 'test-case-agent', fingerprint: (value) => JSON.stringify(value),
+    async design(input, onAttempt) {
+      const candidate = input.candidates[0]
+      const materialization = input.materializationByCandidate[candidate.key]
+      const rawDesign = JSON.stringify({ candidateKey: candidate.key })
+      onAttempt?.({ phase: 'design', status: 'running' })
+      onAttempt?.({ phase: 'design', status: 'succeeded', rawOutput: rawDesign, latencyMs: 1 })
+      return { candidate, rawDesign, spec: {
+        specVersion: 3, kind: 'mysql_data_diagnosis', capabilityKey: materialization.capabilityKey, exerciseProfileKey: candidate.exerciseProfileKey!, materialization,
+        title: '动态 MySQL 案例', scenario: '受控案例场景', learningGoal: '观察执行计划',
+        tasks: [{ key: 'observe', instruction: '观察执行计划', expectedObservation: '记录 key' }, { key: 'compare', instruction: '比较结果', expectedObservation: '说明差异' }],
+        verification: { signals: ['可解释执行计划'] }, tutorContext: { concepts: ['EXPLAIN'], likelyMisconceptions: [], evidenceToNotice: ['key'] },
+      } }
+    },
+  }
+  const mysql = new MySqlDynamicCaseService(repository, scheduler as never, undefined, designAgent)
   const workspace = new CaseWorkspaceService(repository, new FixtureCaseBuilder(), new DockerWorkspaceRuntimeAdapter(new FakeWorkspaceRunnerClient()))
   const service = new GymBuildService(repository, workspace, mysql)
   return { directory, repository, learnerId, service, mysql, now }
@@ -80,11 +97,21 @@ describe('GymBuildService', () => {
     } finally { close(state) }
   })
 
+  it('keeps Case Agent output diagnostics on the server-side generation job', async () => {
+    const state = setup()
+    try {
+      const created = state.service.create(state.learnerId, 'gym-plan', 'gym-unit', 'design-diagnostics')
+      await vi.waitFor(() => expect(state.service.get(state.learnerId, created.job.id).job.status).toBe('ready'))
+      const row = state.repository.db.prepare("SELECT status, raw_output_json, validation_issues_json FROM case_generation_attempts WHERE phase = 'design'").get()
+      expect(row).toMatchObject({ status: 'succeeded', raw_output_json: expect.stringContaining('candidateKey'), validation_issues_json: '[]' })
+    } finally { close(state) }
+  })
+
   it('keeps a fresh build running and interrupts only stale work on recovery', async () => {
     const state = setup()
     try {
       const freshJobId = 'fresh-build'
-      state.repository.db.prepare("INSERT INTO gym_build_jobs(id, learner_id, plan_id, plan_unit_id, roadmap_node_id, client_request_id, input_fingerprint, capability_key, environment_key, environment_version, runtime_kind, status, attempt_count, worker_token, started_at, created_at, updated_at) VALUES (?, ?, 'gym-plan', 'gym-unit', 'gym-node', 'fresh-request', 'fresh-fingerprint', 'mysql.slow-query', 'mysql-performance-v1', '1', 'mysql_lab', 'building', 1, 'fresh-worker', ?, ?, ?)").run(freshJobId, state.learnerId, state.now, state.now, state.now)
+      state.repository.db.prepare("INSERT INTO gym_build_jobs(id, learner_id, plan_id, plan_unit_id, roadmap_node_id, client_request_id, input_fingerprint, capability_key, card_snapshot_json, environment_key, environment_version, runtime_kind, status, attempt_count, worker_token, started_at, created_at, updated_at) VALUES (?, ?, 'gym-plan', 'gym-unit', 'gym-node', 'fresh-request', 'fresh-fingerprint', 'mysql.slow-query', '{\"nodeId\":\"gym-node\",\"title\":\"MySQL 慢查询\",\"summary\":\"观察执行计划\",\"completionStandard\":\"完成对比\",\"knowledgeCard\":{},\"evidence\":[],\"learnerProfile\":[]}', 'mysql-performance-v1', '1', 'mysql_lab', 'building', 1, 'fresh-worker', ?, ?, ?)").run(freshJobId, state.learnerId, state.now, state.now, state.now)
       state.repository.db.prepare("INSERT INTO gym_build_job_attempts(id, gym_build_job_id, attempt_no, status, worker_token, trigger, started_at, created_at) VALUES ('fresh-attempt', ?, 1, 'running', 'fresh-worker', 'create', ?, ?)").run(freshJobId, state.now, state.now)
       await state.service.resume()
       expect(state.service.get(state.learnerId, freshJobId).job.status).toBe('building')

@@ -1,12 +1,5 @@
-export const CASE_IDS = [
-  'mysql-order-list-index-001',
-  'mysql-deadlock-lock-order-001',
-  'mysql-deep-pagination-001',
-] as const
-
-// Fixed cases keep their literal IDs for the fixture catalog, while generated
-// cases use a learner-owned UUID. The scheduler still resolves every ID
-// through a registered manifest before it can be executed.
+// Every runnable case is learner-owned and registered by a runtime adapter
+// after its environment design and materialization pass preflight.
 export type CaseId = string
 export type SessionName = 'default' | 'tx-a' | 'tx-b'
 

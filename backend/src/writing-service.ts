@@ -59,11 +59,7 @@ function sourceMaterial(projectId: string, source: SourceItem): Omit<WritingMate
   return { projectId, category: 'source', refType: 'source', refId: source.id, title: source.title, excerpt: source.excerpt, selected: source.provider === 'zhihu', verificationStatus: 'source_verified', metadata: { provider: source.provider, url: source.url, author: source.author, query: source.query } }
 }
 
-function caseLabel(run: PracticeRun): string {
-  if (run.caseId === 'mysql-order-list-index-001') return 'MySQL 慢查询与联合索引'
-  if (run.caseId === 'mysql-deadlock-lock-order-001') return 'MySQL 死锁与锁等待'
-  return 'MySQL 深分页优化'
-}
+function caseLabel(run: PracticeRun): string { return run.learningCaseId ? `MySQL 动态案例 ${run.learningCaseId.slice(0, 8)}` : `实践案例 ${run.caseId.slice(0, 8)}` }
 
 function selectedMaterials(project: WritingProject): WritingMaterial[] {
   return project.materials.filter((material) => material.selected)

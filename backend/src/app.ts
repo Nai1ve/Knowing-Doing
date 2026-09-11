@@ -3,12 +3,9 @@ import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest }
 import cors from '@fastify/cors'
 import multipart from '@fastify/multipart'
 import type { LabConfig } from './config.js'
-import type { CaseId } from './domain.js'
 import { errorResponse, LabError } from './errors.js'
-import { getManifest, isCaseId, listManifests } from './fixtures.js'
 import { MySqlLabStore, type LabStore } from './mysql-store.js'
 import { LabScheduler } from './scheduler.js'
-import { validateStatement } from './sql-policy.js'
 import { verifyLabToken } from './token.js'
 import { PracticeService, ProductNotFoundError, type TutorStreamEvent } from './practice-service.js'
 import { TutorProviderError } from './tutor.js'
@@ -80,87 +77,8 @@ export function buildApp(dependencies: AppDependencies): { app: FastifyInstance;
     reply.code(response.statusCode).send(response.body)
   })
 
-  app.get('/api/lab/health', async (_request, reply) => {
-    const fixtures = await store.health()
-    reply.send({ ready: Object.values(fixtures).every((fixture) => fixture.ready), fixtures, cases: scheduler.caseStatus() })
-  })
-
-  app.get('/api/lab/cases', async (_request, reply) => {
-    reply.send(listManifests().map((manifest) => ({
-      id: manifest.id,
-      title: manifest.title,
-      fixtureVersion: manifest.fixtureVersion,
-      allowedSessions: manifest.allowedSessions,
-    })))
-  })
-
   app.get('/api/product/runtime-status', async (_request, reply) => {
     reply.send(await dependencies.runtimeStatus?.() ?? { model: { configured: Boolean(dependencies.config.modelBaseUrl && dependencies.config.modelApiKey), name: dependencies.config.modelName }, zhihu: { configured: false, executable: false, lastRetrieval: null } })
-  })
-
-  app.post('/api/lab/runs', async (request, reply) => {
-    const caseId = stringField(bodyOf(request), 'caseId')
-    if (!isCaseId(caseId)) throw new LabError('case_not_found', '案例不存在', 404)
-    const result = await scheduler.createRun(caseId)
-    if (result.kind === 'started') return reply.code(201).send({ run: result.run, accessToken: result.accessToken })
-    return reply.code(202).send({ ticket: result.ticket })
-  })
-
-  app.get('/api/lab/queue-tickets/:ticketId', async (request, reply) => {
-    const ticketId = String((request.params as { ticketId: string }).ticketId)
-    reply.send(scheduler.getTicket(ticketId))
-  })
-
-  app.delete('/api/lab/queue-tickets/:ticketId', async (request, reply) => {
-    const ticketId = String((request.params as { ticketId: string }).ticketId)
-    scheduler.cancelTicket(ticketId)
-    reply.code(204).send()
-  })
-
-  app.get('/api/lab/runs/:runId', async (request, reply) => {
-    const runId = String((request.params as { runId: string }).runId)
-    reply.send(scheduler.getRun(runId, bearer(request)))
-  })
-
-  app.delete('/api/lab/runs/:runId', async (request, reply) => {
-    const runId = String((request.params as { runId: string }).runId)
-    await scheduler.release(runId, bearer(request))
-    reply.code(204).send()
-  })
-
-  app.post('/api/lab/runs/:runId/sessions', async (request, reply) => {
-    const runId = String((request.params as { runId: string }).runId)
-    const name = stringField(bodyOf(request), 'name')
-    reply.code(201).send(await scheduler.createSession(runId, bearer(request), name))
-  })
-
-  app.post('/api/lab/runs/:runId/execute', async (request, reply) => {
-    const runId = String((request.params as { runId: string }).runId)
-    const body = bodyOf(request)
-    const run = scheduler.getRun(runId, bearer(request))
-    const manifest = scheduler.manifestFor(run.caseId)
-    const statement = stringField(body, 'statement')
-    const sessionId = stringField(body, 'sessionId')
-    const clientRequestId = stringField(body, 'clientRequestId')
-    const revision = numberField(body, 'revision')
-    validateStatement(statement, manifest)
-    const result = await scheduler.execute(runId, bearer(request), revision, sessionId, statement, clientRequestId)
-    if (result.status === 'timed_out') return reply.code(504).send(result)
-    if (result.status === 'failed') return reply.code(422).send(result)
-    return reply.send(result)
-  })
-
-  app.post('/api/lab/runs/:runId/reset', async (request, reply) => {
-    const runId = String((request.params as { runId: string }).runId)
-    const body = bodyOf(request)
-    const revision = numberField(body, 'revision')
-    reply.send(await scheduler.reset(runId, bearer(request), revision))
-  })
-
-  app.get('/api/lab/cases/:caseId/snapshots/:snapshotId', async (request, reply) => {
-    const caseId = String((request.params as { caseId: string }).caseId)
-    if (!isCaseId(caseId)) throw new LabError('case_not_found', '案例不存在', 404)
-    throw new LabError('replay_not_ready', '当前案例尚未准备可用的回放快照', 503, true, { caseId, snapshotId: String((request.params as { snapshotId: string }).snapshotId) })
   })
 
   const caseWorkspaceService = dependencies.caseWorkspaceServiceFactory?.()
@@ -337,34 +255,30 @@ function registerProductRoutes(app: FastifyInstance, service: PracticeService, w
     const params = request.params as { planId: string; unitId: string }
     const plan = service.getPlan(learnerId(request), params.planId)
     const unit = plan.units.find((candidate) => candidate.id === params.unitId)
-    if (mysqlDynamicCaseService && unit?.learningMode === 'lab' && unit.learningCaseId && !unit.caseId) {
+    if (mysqlDynamicCaseService && unit?.learningMode === 'lab' && unit.learningCaseId) {
       const result = await mysqlDynamicCaseService.startPractice(learnerId(request), unit.learningCaseId, unit.id)
       return reply.code(result.queue ? 202 : 201).send(result)
     }
-    const result = await service.startPlannedPractice({ learnerId: learnerId(request), planId: params.planId, planUnitId: params.unitId })
-    reply.code(result.queue ? 202 : 201).send(result)
+    throw new LabError('gym_build_required', '当前学习单元需要先完成动态 Gym 构建', 409, true)
   })
   if (mysqlDynamicCaseService) {
     app.get('/api/product/practice-runs/:runId/runtime', async (request, reply) => {
       reply.send(await mysqlDynamicCaseService.runtime(learnerId(request), String((request.params as { runId: string }).runId)))
     })
-  }
-
-  if (mysqlDynamicCaseService) {
-    app.post('/api/product/roadmap-nodes/:nodeId/mysql-case-requests', async (request, reply) => {
+    app.post('/api/product/practice-runs/:runId/runtime/sessions', async (request, reply) => {
       const body = productBody(request)
-      reply.code(201).send(await mysqlDynamicCaseService.createCase(learnerId(request), {
-        roadmapNodeId: String((request.params as { nodeId: string }).nodeId),
-        request: body.request,
-        clientRequestId: stringField(body, 'clientRequestId'),
-      }))
+      reply.code(201).send(await mysqlDynamicCaseService.openSession(learnerId(request), productRunId(request), optionalString(body, 'name') ?? 'default'))
     })
-    app.post('/api/product/learning-cases/:caseId/mysql-practice', async (request, reply) => {
-      const result = await mysqlDynamicCaseService.startPractice(learnerId(request), String((request.params as { caseId: string }).caseId))
-      reply.code(201).send(result)
+    app.post('/api/product/practice-runs/:runId/runtime/reset', async (request, reply) => {
+      reply.send(await mysqlDynamicCaseService.resetPractice(learnerId(request), productRunId(request), numberField(productBody(request), 'revision')))
     })
-    app.get('/api/product/learning-cases/:caseId/materialization', async (request, reply) => {
-      reply.send(mysqlDynamicCaseService.materializationFor(learnerId(request), String((request.params as { caseId: string }).caseId)))
+    app.post('/api/product/practice-runs/:runId/runtime/end', async (request, reply) => {
+      await mysqlDynamicCaseService.endPractice(learnerId(request), productRunId(request))
+      reply.code(204).send()
+    })
+    app.post('/api/product/practice-runs/:runId/runtime/restart', async (request, reply) => {
+      const result = await mysqlDynamicCaseService.restartPractice(learnerId(request), productRunId(request))
+      reply.code(result.queue ? 202 : 201).send(result)
     })
   }
 
@@ -391,15 +305,6 @@ function registerProductRoutes(app: FastifyInstance, service: PracticeService, w
     service.assertOwnership(runId, learnerId(request))
     service.deletePin(learnerId(request), runId, pinId)
     reply.code(204).send()
-  })
-  app.get('/api/product/practice-runs/:runId/lab', async (request, reply) => {
-    service.assertOwnership(productRunId(request), learnerId(request))
-    reply.send(service.labAccess(productRunId(request)))
-  })
-  app.post('/api/product/practice-runs/:runId/reopen-lab', async (request, reply) => {
-    service.assertOwnership(productRunId(request), learnerId(request))
-    const result = await service.reopenLab(productRunId(request))
-    reply.code(result.queue ? 202 : 201).send(result)
   })
   app.post('/api/product/practice-runs/:runId/messages', async (request, reply) => {
     const body = productBody(request); const message = stringField(body, 'message')

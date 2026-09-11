@@ -1,5 +1,5 @@
 import { ApiError, apiClient } from './client'
-import type { LabCaseId, LabExecutionResult } from '@/types/lab'
+import type { LabExecutionResult, LabRun } from '@/types/lab'
 import type { ProductArtifact, ProductLabAccess, ProductLabExecution, ProductMemory, ProductPlan, ProductPracticeCompletion, ProductPracticeHistoryPage, ProductPracticePin, ProductPracticeRun, ProductPracticeStart, ProductSnapshot, ProductTutorResponse, ProductTutorStreamEvent, ProductWritingBlockEvidence, ProductWritingCluster, ProductWritingClusterDetail, ProductWritingClusterOverview, ProductWritingDraftRun, ProductWritingGenerationJob, ProductWritingProject, ProductWritingDocument, ProductWritingWorkspace } from '@/types/product'
 import { createClientId } from '@/utils/client-id'
 import type { ProductDynamicPracticeRuntime, ProductGymBuildView, ProductWorkspaceSummary } from '@/types/product'
@@ -27,9 +27,11 @@ export function startGymBuild(id: string): Promise<({ kind: 'mysql_lab' } & Prod
 export function getProductSnapshot(runId: string): Promise<ProductSnapshot> { return product(`/practice-runs/${runId}`) }
 export function createProductPin(runId: string, targetType: ProductPracticePin['targetType'], targetId: string): Promise<ProductPracticePin> { return product(`/practice-runs/${runId}/pins`, { method: 'POST', body: JSON.stringify({ targetType, targetId }) }) }
 export function deleteProductPin(runId: string, pinId: string): Promise<void> { return product(`/practice-runs/${runId}/pins/${pinId}`, { method: 'DELETE' }) }
-export function getProductLabAccess(runId: string): Promise<ProductLabAccess> { return product(`/practice-runs/${runId}/lab`) }
 export function getProductPracticeHistory(cursor?: string, limit = 20): Promise<ProductPracticeHistoryPage> { return product(`/practice-runs?limit=${limit}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`) }
-export function reopenProductLab(runId: string): Promise<ProductPracticeStart> { return product(`/practice-runs/${runId}/reopen-lab`, { method: 'POST' }) }
+export function createDynamicLabSession(runId: string, name = 'default'): Promise<{ id: string; name: string; status: 'open' }> { return product(`/practice-runs/${runId}/runtime/sessions`, { method: 'POST', body: JSON.stringify({ name }) }) }
+export function resetDynamicLabRuntime(runId: string, revision: number): Promise<{ run: LabRun; accessToken: string }> { return product(`/practice-runs/${runId}/runtime/reset`, { method: 'POST', body: JSON.stringify({ revision }) }) }
+export function endDynamicLabRuntime(runId: string): Promise<void> { return product(`/practice-runs/${runId}/runtime/end`, { method: 'POST' }) }
+export function restartDynamicLabRuntime(runId: string): Promise<ProductPracticeStart> { return product(`/practice-runs/${runId}/runtime/restart`, { method: 'POST' }) }
 export function sendProductTutor(runId: string, message: string): Promise<{ run: ProductPracticeRun; tutor: ProductTutorResponse; snapshot: ProductSnapshot }> { return product(`/practice-runs/${runId}/messages`, { method: 'POST', body: JSON.stringify({ message, clientRequestId: createClientId() }) }) }
 
 async function streamTutorRequest(path: string, body: Record<string, unknown>, onEvent: (event: ProductTutorStreamEvent) => void): Promise<void> {

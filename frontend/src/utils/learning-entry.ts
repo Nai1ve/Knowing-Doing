@@ -1,6 +1,6 @@
 import type { ProductCurrentLearning } from '@/types/product'
 
-export type LearningEntry = 'fixed_mysql' | 'dynamic_gym' | 'practice_setup' | 'workspace_setup' | 'roadmap_node' | 'unavailable'
+export type LearningEntry = 'dynamic_gym' | 'practice_setup' | 'workspace_setup' | 'roadmap_node' | 'unavailable'
 
 type LearningSource = Pick<ProductCurrentLearning, 'learningMode' | 'availability' | 'caseId'> & {
   entryKind?: ProductCurrentLearning['entryKind']
@@ -27,7 +27,6 @@ export function resolveLearningEntry(source: LearningSource | null | undefined):
   if (source.learningMode === 'knowledge') return 'roadmap_node'
   if (source.learningMode === 'workspace') return 'workspace_setup'
   if (source.learningMode !== 'lab' || source.availability !== 'available') return 'unavailable'
-  if (source.caseId) return 'fixed_mysql'
   if (source.learningCaseId) return 'dynamic_gym'
 
   // The builder reports whether an available lab capability can actually run.
@@ -36,10 +35,6 @@ export function resolveLearningEntry(source: LearningSource | null | undefined):
 
 export function isDynamicGym(source: LearningSource | null | undefined): boolean {
   return resolveLearningEntry(source) === 'dynamic_gym'
-}
-
-export function isFixedMysql(source: LearningSource | null | undefined): boolean {
-  return resolveLearningEntry(source) === 'fixed_mysql'
 }
 
 export function isBuildablePractice(source: LearningSource | null | undefined): boolean {

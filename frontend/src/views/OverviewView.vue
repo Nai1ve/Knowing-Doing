@@ -24,7 +24,6 @@ const loading = computed(() => planStore.loading || roadmapStore.loading)
 const loadError = computed(() => roadmapStore.error ?? planStore.error)
 const entryLabel = computed(() => {
   switch (resolveLearningEntry(currentLearning.value)) {
-    case 'fixed_mysql': return '进入知行 Gym'
     case 'dynamic_gym': return '进入知行 Gym'
     case 'practice_setup': return '构建知行 Gym'
     case 'workspace_setup': return '构建代码实践'
@@ -35,7 +34,6 @@ const entryLabel = computed(() => {
 const entryTo = computed<RouteLocationRaw>(() => {
   const learning = currentLearning.value
   const entry = resolveLearningEntry(learning)
-  if (entry === 'fixed_mysql' && learning?.planUnitId) return { name: 'lesson', query: { planUnitId: learning.planUnitId } }
   if (entry === 'dynamic_gym' && learning && hasActivePractice(learning) && learning.planUnitId) return { name: 'lesson', query: { planUnitId: learning.planUnitId } }
   if ((entry === 'dynamic_gym' || entry === 'practice_setup' || entry === 'workspace_setup') && learning?.planId && learning.planUnitId) return { name: 'gym-build', query: { planId: learning.planId, planUnitId: learning.planUnitId } }
   if (entry === 'roadmap_node' && learning?.roadmapId && learning.roadmapNodeId) return { name: 'roadmap-node', params: { roadmapId: learning.roadmapId, nodeId: learning.roadmapNodeId } }
@@ -44,7 +42,6 @@ const entryTo = computed<RouteLocationRaw>(() => {
 })
 const actionDescription = computed(() => {
   switch (resolveLearningEntry(currentLearning.value)) {
-    case 'fixed_mysql': return '进入当前计划已经准备好的 MySQL 实验室，先观察现象，再提交一次最小尝试。'
     case 'dynamic_gym': return hasActivePractice(currentLearning.value) ? '当前实践已经激活，直接进入知行 Gym 继续学习。' : '案例已经准备好，进入知行 Gym 启动当前实践环境。'
     case 'practice_setup': return '当前节点已有可用实践能力，先构建一次案例，完成后进入对应实验环境。'
     case 'workspace_setup': return '先构建一次代码实践，案例完成后会进入对应的编程环境。'

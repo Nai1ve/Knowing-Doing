@@ -289,7 +289,7 @@ describe('AgentPlanningService', () => {
     const roadmapId = service.getRoadmapGeneration(learnerId, generation.id).roadmapId as string
     const draft = new PlanningService(repository).getDraftForLearner(learnerId, roadmapId)
     const plan = new PlanningService(repository).confirm(learnerId, roadmapId, 1, draft.executionProposal?.recommendedUnitKey)
-    repository.startPlanUnitPractice({ learnerId, planId: plan.id, planUnitId: plan.units[0].id, caseId: 'mysql-order-list-index-001' })
+    repository.startPlanUnitPractice({ learnerId, planId: plan.id, planUnitId: plan.units[0].id, caseId: 'dynamic-case-legacy-1' })
     await expect(service.repairCurrentRoadmap(learnerId, session.id, 'repair-practice-replace')).rejects.toMatchObject({ code: 'roadmap_replace_has_practice' })
   }))
 })

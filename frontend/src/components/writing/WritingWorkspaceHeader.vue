@@ -17,11 +17,7 @@ const emit = defineEmits<{
   refresh: []
 }>()
 
-function caseLabel(item: ProductPracticeHistoryItem): string {
-  if (item.caseId === 'mysql-order-list-index-001') return 'MySQL 慢查询'
-  if (item.caseId === 'mysql-deadlock-lock-order-001') return 'MySQL 死锁'
-  return 'MySQL 深分页'
-}
+function caseLabel(item: ProductPracticeHistoryItem): string { return `动态实践 ${item.caseId.slice(0, 8)}` }
 
 function statusLabel(item: ProductPracticeHistoryItem): string {
   if (item.status === 'resolved') return '已完成'

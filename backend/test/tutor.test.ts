@@ -4,7 +4,7 @@ import type { TutorContext, WorkspaceTutorContext } from '../src/context.js'
 import type { PracticeRun, SourceItem } from '../src/product-types.js'
 import { TutorEngine, TutorProviderError } from '../src/tutor.js'
 
-const run: PracticeRun = { id: 'run-1', learnerId: 'learner-1', planUnitId: null, caseId: 'mysql-order-list-index-001', labRunId: null, stage: 'inspect', hintLevel: 0, noProgressCount: 0, status: 'active', createdAt: '', updatedAt: '' }
+const run: PracticeRun = { id: 'run-1', learnerId: 'learner-1', planUnitId: null, caseId: 'dynamic-case-legacy-1', labRunId: null, stage: 'inspect', hintLevel: 0, noProgressCount: 0, status: 'active', createdAt: '', updatedAt: '' }
 const context: TutorContext = { hot: { goal: '学习 MySQL 慢查询', caseId: run.caseId, stage: run.stage, latestError: null, currentGap: '请解释执行计划' }, recentEvents: [], rawEvidence: [{ id: 'evidence-1', kind: 'explain', verificationStatus: 'verified_lab', content: 'type=ALL', metadata: {} }], path: [], stageMemory: [], availableSourceIds: [] }
 const source: SourceItem = { id: 'source-1', provider: 'zhihu', externalId: 'answer-1', title: 'EXPLAIN 经验', author: '作者', url: 'https://www.zhihu.com/question/1', excerpt: '执行计划的实践解释。', query: 'MySQL EXPLAIN', retrievedAt: new Date().toISOString(), metadata: {} }
 
@@ -35,7 +35,7 @@ describe('TutorEngine', () => {
     await engine().generate(workspaceRun, workspaceContext, '我看到测试失败了', [])
     expect(requestBody?.messages?.[0]?.content).toContain('代码工作区 Tutor')
     expect(requestBody?.messages?.[1]?.content).toContain('pytest -q')
-    expect(requestBody?.messages?.[1]?.content).not.toContain('mysql-order-list-index-001')
+    expect(requestBody?.messages?.[1]?.content).not.toContain('dynamic-case-legacy-1')
     vi.unstubAllGlobals()
   })
 

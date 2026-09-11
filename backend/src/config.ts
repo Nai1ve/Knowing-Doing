@@ -1,5 +1,4 @@
 import path from 'node:path'
-import type { CaseId } from './domain.js'
 
 function numberEnv(name: string, fallback: number): number {
   const value = process.env[name]
@@ -40,7 +39,6 @@ export interface LabConfig {
   zhihuArticlePath: string
   retrievalTimeoutMs: number
   retrievalCacheTtlMs: number
-  caseIds: CaseId[]
   identityMode: 'client' | 'shared_demo'
   demoLearnerId: string
   workspaceRunnerUrl: string
@@ -104,10 +102,5 @@ export function loadConfig(): LabConfig {
     workspaceRunnerTimeoutMs: numberEnv('WORKSPACE_RUNNER_TIMEOUT_MS', 35_000),
     workspaceRunnerFake: process.env.WORKSPACE_RUNNER_FAKE === 'true',
     caseBuilderProvider: process.env.ZHIXING_CASE_BUILDER_PROVIDER === 'model' ? 'model' : 'fixture',
-    caseIds: [
-      'mysql-order-list-index-001',
-      'mysql-deadlock-lock-order-001',
-      'mysql-deep-pagination-001',
-    ],
   }
 }

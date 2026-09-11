@@ -23,11 +23,7 @@ export interface CurationSummarizer {
   summarize(input: Array<{ clusterKey: WritingClusterKey; ruleSummary: string; evidence: string[] }>): Promise<CurationSummary[]>
 }
 
-function caseLabel(caseId: string): string {
-  if (caseId === 'mysql-order-list-index-001') return 'MySQL 慢查询与联合索引'
-  if (caseId === 'mysql-deadlock-lock-order-001') return 'MySQL 死锁与锁等待'
-  return 'MySQL 深分页优化'
-}
+function caseLabel(caseId: string): string { return `MySQL 动态案例 ${caseId.slice(0, 8)}` }
 
 function materialCategory(artifact: Artifact): WritingMaterial['category'] {
   if (artifact.kind === 'user_message') return 'hypothesis'

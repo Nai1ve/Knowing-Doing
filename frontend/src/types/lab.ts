@@ -1,30 +1,4 @@
-export const PRIMARY_LAB_CASE = 'mysql-order-list-index-001' as const
-
-export type LabCaseId =
-  | 'mysql-order-list-index-001'
-  | 'mysql-deadlock-lock-order-001'
-  | 'mysql-deep-pagination-001'
-
-export type LabSessionName = 'default' | 'tx-a' | 'tx-b'
-
-export interface LabCaseSummary {
-  id: LabCaseId
-  title: string
-  fixtureVersion: string
-  allowedSessions: LabSessionName[]
-}
-
-export interface LabFixtureStatus {
-  ready: boolean
-  fixtureVersion: string
-  error?: string
-}
-
-export interface LabHealth {
-  ready: boolean
-  fixtures: Record<LabCaseId, LabFixtureStatus>
-  cases: Array<{ caseId: LabCaseId; activeRunId?: string; queueLength: number }>
-}
+export type LabSessionName = string
 
 export interface LabSession {
   id: string
@@ -34,7 +8,7 @@ export interface LabSession {
 
 export interface LabRun {
   runId: string
-  caseId: LabCaseId
+  caseId: string
   revision: number
   status: 'active'
   fixtureVersion: string
@@ -45,7 +19,7 @@ export interface LabRun {
 
 export interface LabQueueTicket {
   ticketId: string
-  caseId: LabCaseId
+  caseId: string
   status: 'waiting' | 'ready' | 'expired' | 'cancelled'
   position?: number
   pollAfterMs?: number
@@ -56,7 +30,7 @@ export interface LabQueueTicket {
 export interface LabExecutionResult {
   executionId: string
   runId: string
-  caseId: LabCaseId
+  caseId: string
   revision: number
   clientRequestId: string
   session: LabSessionName

@@ -1,8 +1,8 @@
 import { computed, ref } from 'vue'
 import { defineStore } from 'pinia'
 import { ApiError } from '@/api/client'
-import { createProductPin, deleteProductPin, executeProductLab, getDynamicPracticeRuntime, getProductLabAccess, getProductPracticeHistory, getProductSnapshot, reopenProductLab, retryProductTutor, startPlannedProductPractice, streamProductTutor, submitProductArtifact, verifyProductPractice } from '@/api/productService'
-import type { LabCaseId, LabExecutionResult } from '@/types/lab'
+import { createProductPin, deleteProductPin, executeProductLab, getDynamicPracticeRuntime, getProductPracticeHistory, getProductSnapshot, restartDynamicLabRuntime, retryProductTutor, startPlannedProductPractice, streamProductTutor, submitProductArtifact, verifyProductPractice } from '@/api/productService'
+import type { LabExecutionResult } from '@/types/lab'
 import type { ProductPracticeCompletion, ProductPracticeHistoryItem, ProductPracticePin, ProductPracticeRun, ProductPracticeStart, ProductSnapshot, ProductTutorMessage, ProductTutorResponse, ProductTutorSource, ProductTutorStreamEvent } from '@/types/product'
 import { useLabStore } from './lab'
 import { createClientId } from '@/utils/client-id'
@@ -68,18 +68,17 @@ export const usePracticeStore = defineStore('practice', () => {
     try {
       const data = await getProductSnapshot(practiceId)
       hydrate(data)
-      const labStore = useLabStore()
-      const access = await getProductLabAccess(practiceId)
-      if (access.status === 'ready' && access.run && access.accessToken) {
-        await labStore.adoptRun(access.run, access.accessToken)
+      const runtime = await getDynamicPracticeRuntime(practiceId)
+      if (runtime.status === 'active' && runtime.lab) {
+        await useLabStore().adoptRun(runtime.lab.run, runtime.lab.accessToken, runtime.practice.id)
         return
       }
-      if (access.status === 'waiting') {
-        void pollLabAccess(practiceId)
+      if (runtime.status === 'queued') {
+        void pollDynamicRuntime(practiceId)
         return
       }
       window.localStorage.setItem(lastPracticeKey, practiceId)
-      labStore.clear()
+      useLabStore().clear()
       error.value = '上次实践的实验室运行已结束。历史记录已恢复为只读状态，可重新启动实验继续练习。'
     } catch (cause) {
       if (cause instanceof ApiError && [401, 403, 404, 410].includes(cause.status)) {
@@ -113,14 +112,13 @@ export const usePracticeStore = defineStore('practice', () => {
       run.value = result.practice
       window.localStorage.setItem(activePracticeKey, result.practice.id)
       window.localStorage.setItem(lastPracticeKey, result.practice.id)
-      if (result.lab) await useLabStore().adoptRun(result.lab.run, result.lab.accessToken)
+      if (result.lab) await useLabStore().adoptRun(result.lab.run, result.lab.accessToken, result.practice.id)
       snapshot.value = await getProductSnapshot(result.practice.id)
       hydrate(snapshot.value)
       await loadHistory()
       if (result.queue) {
         error.value = `当前实践正在排队，第 ${result.queue.position ?? '—'} 位`
-        if (result.practice.learningCaseId) void pollDynamicRuntime(result.practice.id)
-        else void pollLabAccess(result.practice.id)
+        void pollDynamicRuntime(result.practice.id)
       }
     } catch (cause) { error.value = cause instanceof Error ? cause.message : '实践启动失败' } finally { starting.value = false }
   }
@@ -134,7 +132,7 @@ export const usePracticeStore = defineStore('practice', () => {
       window.localStorage.setItem(activePracticeKey, result.practice.id)
       window.localStorage.setItem(lastPracticeKey, result.practice.id)
     }
-    if (result.lab) await useLabStore().adoptRun(result.lab.run, result.lab.accessToken)
+    if (result.lab) await useLabStore().adoptRun(result.lab.run, result.lab.accessToken, result.practice.id)
     hydrate(await getProductSnapshot(result.practice.id))
     await loadHistory()
     if (result.queue && result.practice.learningCaseId) {
@@ -151,7 +149,7 @@ export const usePracticeStore = defineStore('practice', () => {
       if (generation !== queueGeneration) return
       if (runtime.status === 'active' && runtime.lab) {
         const labStore = useLabStore()
-        await labStore.adoptRun(runtime.lab.run, runtime.lab.accessToken)
+        await labStore.adoptRun(runtime.lab.run, runtime.lab.accessToken, runtime.practice.id)
         run.value = runtime.practice
         hydrate(await getProductSnapshot(practiceId))
         error.value = null
@@ -167,27 +165,6 @@ export const usePracticeStore = defineStore('practice', () => {
     } catch (cause) {
       if (generation === queueGeneration) error.value = cause instanceof Error ? cause.message : '动态 Gym 状态获取失败'
     }
-  }
-
-  async function pollLabAccess(practiceId: string) {
-    const generation = ++queueGeneration
-    if (queueTimer !== null) window.clearTimeout(queueTimer)
-    try {
-      const access = await getProductLabAccess(practiceId)
-      if (generation !== queueGeneration) return
-      if (access.status === 'ready' && access.run && access.accessToken) {
-        const labStore = useLabStore()
-        await labStore.adoptRun(access.run, access.accessToken)
-        run.value = await getProductSnapshot(practiceId).then((data) => { hydrate(data); return data.run })
-        error.value = null
-        return
-      }
-      if (access.status === 'expired' || access.status === 'cancelled') {
-        error.value = access.status === 'expired' ? '排队票据已过期，请重新进入案例' : '排队已取消'
-        return
-      }
-      queueTimer = window.setTimeout(() => { void pollLabAccess(practiceId) }, 2000)
-    } catch (cause) { if (generation === queueGeneration) error.value = cause instanceof Error ? cause.message : '队列状态获取失败' }
   }
 
   async function ask(message: string) {
@@ -227,11 +204,11 @@ export const usePracticeStore = defineStore('practice', () => {
     if (!practiceId || starting.value) return
     starting.value = true; error.value = null
     try {
-      const result = await reopenProductLab(practiceId)
+      const result = await restartDynamicLabRuntime(practiceId)
       run.value = result.practice
       if (typeof window !== 'undefined') { window.localStorage.setItem(activePracticeKey, practiceId); window.localStorage.setItem(lastPracticeKey, practiceId) }
-      if (result.lab) await useLabStore().adoptRun(result.lab.run, result.lab.accessToken)
-      if (result.queue) { error.value = `当前案例正在排队，第 ${result.queue.position ?? '—'} 位`; void pollLabAccess(practiceId) }
+      if (result.lab) await useLabStore().adoptRun(result.lab.run, result.lab.accessToken, result.practice.id)
+      if (result.queue) { error.value = `当前案例正在排队，第 ${result.queue.position ?? '—'} 位`; void pollDynamicRuntime(practiceId) }
       hydrate(await getProductSnapshot(practiceId)); await loadHistory()
     } catch (cause) { error.value = cause instanceof Error ? cause.message : '实验室续开失败' } finally { starting.value = false }
   }

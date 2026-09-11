@@ -64,4 +64,4 @@ try { command('docker', ['volume', 'rm', volumeName]) } catch (error) {
   const message = String((error as { stderr?: Buffer }).stderr ?? error)
   if (!message.includes('No such volume')) fail(`Docker volume removal failed: ${message}`)
 }
-console.log('Local product data reset completed. Run npm run db:migrate, then initialize the local MySQL Lab fixture before starting the API.')
+console.log('Local product data reset completed. Run npm run db:migrate, then start the API; dynamic Gym cases create their MySQL schemas on demand.')

@@ -2,12 +2,11 @@
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { ArrowRight, LockKeyhole } from 'lucide-vue-next'
 import { RouterLink, useRoute, useRouter } from 'vue-router'
-import PracticeLauncher from '@/components/learning/PracticeLauncher.vue'
 import PracticeWorkspace from '@/components/learning/PracticeWorkspace.vue'
 import { useLabStore } from '@/stores/lab'
 import { usePracticeStore } from '@/stores/practice'
 import { usePlanStore } from '@/stores/plan'
-import { isBuildablePractice, isDynamicGym, isFixedMysql } from '@/utils/learning-entry'
+import { isBuildablePractice, isDynamicGym } from '@/utils/learning-entry'
 
 const labStore = useLabStore()
 const practiceStore = usePracticeStore()
@@ -80,35 +79,21 @@ async function initialize() {
       await router.replace({ name: 'gym-build', query: { planId: planStore.productPlan.id, planUnitId: unit.id } })
       return
     }
-    if (!isFixedMysql(unit)) {
-      lessonTitle.value = unit.learningMode === 'lab' ? '当前实践能力尚未开放' : '当前学习节点不能进入实验'
-      lessonDescription.value = unit.learningMode === 'lab' ? '当前节点需要先构建知行 Gym，但对应的实践能力暂未开放。' : '请从路线图进入对应的知识学习或代码实践入口。'
-      lessonUnavailable.value = true
-      return
-    }
-    labStore.startHeartbeat()
-    await Promise.all([labStore.load(), practiceStore.loadHistory()])
-    await practiceStore.restoreActive()
-    if (!practiceStore.run || practiceStore.run.planUnitId !== unit.id) await practiceStore.restoreRecord()
+    lessonTitle.value = unit.learningMode === 'lab' ? '当前实践能力尚未开放' : '当前学习节点不能进入实验'
+    lessonDescription.value = unit.learningMode === 'lab' ? '当前节点需要先构建知行 Gym，但对应的实践能力暂未开放。' : '请从路线图进入对应的知识学习或代码实践入口。'
+    lessonUnavailable.value = true
   } finally {
     if (run === initialization) lessonLoading.value = false
   }
 }
 
-function startCurrentPractice() {
-  const plan = planStore.productPlan
-  const unit = currentUnit.value
-  if (plan && unit && isFixedMysql(unit)) void practiceStore.startPlanned(plan.id, unit.id)
-  else if (plan && unit && isBuildablePractice(unit)) void router.push({ name: 'gym-build', query: { planId: plan.id, planUnitId: unit.id } })
-  else practiceStore.error = '请从当前计划选择一个可用的实践单元。'
-}
 </script>
 
 <template>
   <div v-if="lessonLoading || labStore.loading || practiceStore.restoring || practiceStore.starting" class="lesson-loading" role="status">正在确认知行 Gym 入口…</div>
   <section v-else-if="lessonUnavailable" class="lesson-unavailable"><LockKeyhole :size="18" aria-hidden="true" /><div><div class="eyebrow">实践入口状态</div><h1>{{ lessonTitle }}</h1><p>{{ lessonDescription }}</p><RouterLink class="primary-button" :to="{ name: planStore.productPlan ? 'overview' : 'start' }">{{ planStore.productPlan ? '返回总览' : '开始建立计划' }} <ArrowRight :size="14" aria-hidden="true" /></RouterLink></div></section>
   <PracticeWorkspace
-    v-else-if="currentUnit?.learningMode === 'lab' && (isFixedMysql(currentUnit) || isDynamicGym(currentUnit)) && practiceStore.run?.planUnitId === currentUnit.id && labStore.run"
+    v-else-if="currentUnit?.learningMode === 'lab' && isDynamicGym(currentUnit) && practiceStore.run?.planUnitId === currentUnit.id && labStore.run"
     :practice="practiceStore.run"
     :snapshot="practiceStore.snapshot"
     :gym-context="practiceStore.snapshot?.gymContext"
@@ -119,7 +104,7 @@ function startCurrentPractice() {
     :lab-sql="labStore.sql"
     :latest-result="labStore.latestResult"
     :active-session-name="labStore.activeSession?.name"
-    :lab-ready="isDynamicGym(currentUnit) || labStore.environmentReady"
+    :lab-ready="true"
     :lab-executing="labStore.executing"
     :practice-starting="practiceStore.starting"
     :lab-resetting="labStore.resetting"
@@ -145,30 +130,6 @@ function startCurrentPractice() {
     @pin="practiceStore.pin"
     @unpin="practiceStore.unpin"
     @verify="practiceStore.verify"
-  />
-  <PracticeLauncher
-    v-else-if="isFixedMysql(currentUnit)"
-    :history="practiceStore.history"
-    :cases="labStore.cases"
-    :health="labStore.health"
-    :selected-case-id="labStore.selectedCaseId"
-    :run="labStore.run"
-    :ticket="labStore.ticket"
-    :loading="labStore.loading"
-    :starting="labStore.starting || practiceStore.starting"
-    :restoring="practiceStore.restoring"
-    :polling="labStore.polling"
-    :resetting="labStore.resetting"
-    :ending="labStore.ending"
-    :error="labStore.error || practiceStore.error"
-    :plan-unit="currentUnit"
-    @start="startCurrentPractice"
-    @reset="labStore.reset"
-    @end="labStore.end"
-    @cancel="labStore.cancelQueue"
-    @select="labStore.selectedCaseId = $event"
-    @history="practiceStore.selectHistory"
-    @reopen="practiceStore.reopen"
   />
 </template>
 

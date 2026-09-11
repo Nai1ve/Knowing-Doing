@@ -3,7 +3,7 @@ import { evaluatePracticeCompletion } from '../src/coach.js'
 import type { Artifact, PracticeEvent, PracticeRun } from '../src/product-types.js'
 
 const run: PracticeRun = {
-  id: 'run-1', learnerId: 'learner-1', planUnitId: null, caseId: 'mysql-order-list-index-001', labRunId: 'lab-1',
+  id: 'run-1', learnerId: 'learner-1', planUnitId: null, caseId: 'dynamic-case-legacy-1', labRunId: 'lab-1',
   stage: 'verify', hintLevel: 0, noProgressCount: 0, status: 'active', createdAt: '', updatedAt: '',
 }
 

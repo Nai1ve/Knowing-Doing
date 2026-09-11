@@ -1,11 +1,10 @@
 import { describe, expect, it } from 'vitest'
-import { isBuildablePractice, isFixedMysql, isDynamicGym, resolveLearningEntry } from './learning-entry'
+import { isBuildablePractice, isDynamicGym, resolveLearningEntry } from './learning-entry'
 
 describe('resolveLearningEntry', () => {
-  it('keeps fixed MySQL cases on the legacy lesson path', () => {
-    const source = { learningMode: 'lab', availability: 'available', caseId: 'mysql-order-list-index-001', learningCaseId: null } as const
-    expect(resolveLearningEntry(source)).toBe('fixed_mysql')
-    expect(isFixedMysql(source)).toBe(true)
+  it('does not treat an old case ID as a runnable Gym', () => {
+    const source = { learningMode: 'lab', availability: 'available', caseId: 'dynamic-case-legacy-1', learningCaseId: null } as const
+    expect(resolveLearningEntry(source)).toBe('practice_setup')
   })
 
   it('routes a dynamic ready case through GymBuildView', () => {

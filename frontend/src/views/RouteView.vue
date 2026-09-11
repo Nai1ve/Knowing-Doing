@@ -30,7 +30,7 @@ const currentGymEntry = computed(() => {
   const learning = current.value?.currentLearning
   if (!learning) return null
   const entry = resolveLearningEntry(learning)
-  return entry === 'fixed_mysql' || (entry === 'dynamic_gym' && hasActivePractice(learning)) ? learning : null
+  return entry === 'dynamic_gym' && hasActivePractice(learning) ? learning : null
 })
 const currentPracticeSetup = computed(() => {
   const learning = current.value?.currentLearning

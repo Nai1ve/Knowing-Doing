@@ -1,14 +1,12 @@
 import { randomUUID } from 'node:crypto'
-import type { CaseId, LabExecutionResult } from './domain.js'
+import type { LabExecutionResult } from './domain.js'
 import type { LabScheduler } from './scheduler.js'
 import { decideAfterLab, decideAfterMessage, decideAfterVerification, evaluatePracticeCompletion } from './coach.js'
 import { buildMySqlTutorContext, buildTutorContext, buildWorkspaceTutorContext } from './context.js'
-import { createPlan } from './planner.js'
 import type { ProductRepository } from './product-repository.js'
-import type { Artifact, CaseStage, DiagnosticSession, DiagnosticTargetKey, Intake, LabSegment, MemoryItem, PlanProposal, PlanUnit, PracticeEvent, PracticeHistoryPage, PracticePin, PracticeRun, PracticeSnapshot, SourceItem, TutorInvocation, TutorResponse, TutorSource } from './product-types.js'
+import type { Artifact, CaseStage, DiagnosticSession, DiagnosticTargetKey, Intake, LabSegment, MemoryItem, PlanProposal, PracticeEvent, PracticeHistoryPage, PracticePin, PracticeRun, PracticeSnapshot, SourceItem, TutorInvocation, TutorResponse, TutorSource } from './product-types.js'
 import { RetrievalService } from './retrieval.js'
 import { TutorEngine, TutorProviderError, tutorResponseFromGenerated } from './tutor.js'
-import { getManifest, isCaseId } from './fixtures.js'
 import { validateStatement } from './sql-policy.js'
 import { LabError } from './errors.js'
 import type { CurationService } from './curation-service.js'
@@ -46,9 +44,7 @@ function decodeCursor(cursor: string | undefined): { updatedAt: string; id: stri
 }
 
 export class PracticeService {
-  private readonly pendingQueues = new Map<string, string>()
   private readonly runLocks = new Map<string, Promise<void>>()
-  private readonly planUnitLocks = new Map<string, Promise<void>>()
 
   constructor(private readonly repository: ProductRepository, private readonly scheduler: LabScheduler, private readonly tutor: TutorEngine, private readonly retrieval?: RetrievalService, private readonly curation?: CurationService, private readonly onPracticeResolved?: (runId: string) => void) {}
 
@@ -60,16 +56,6 @@ export class PracticeService {
     this.runLocks.set(runId, queued)
     await previous
     try { return await action() } finally { release(); if (this.runLocks.get(runId) === queued) this.runLocks.delete(runId) }
-  }
-
-  private async withPlanUnitLock<T>(planUnitId: string, action: () => Promise<T>): Promise<T> {
-    const previous = this.planUnitLocks.get(planUnitId) ?? Promise.resolve()
-    let release!: () => void
-    const current = new Promise<void>((resolve) => { release = resolve })
-    const queued = previous.then(() => current)
-    this.planUnitLocks.set(planUnitId, queued)
-    await previous
-    try { return await action() } finally { release(); if (this.planUnitLocks.get(planUnitId) === queued) this.planUnitLocks.delete(planUnitId) }
   }
 
   private run(runId: string): PracticeRun {
@@ -199,8 +185,6 @@ export class PracticeService {
     }
   }
 
-  draftPlan(learnerId: string, intakeId: string) { return createPlan(this.repository, this.getIntake(learnerId, intakeId)) }
-
   confirmPlan(learnerId: string, planId: string) {
     try { return this.repository.confirmPlanForLearner(planId, learnerId) } catch { throw new ProductNotFoundError(`Plan not found: ${planId}`) }
   }
@@ -219,139 +203,9 @@ export class PracticeService {
     try { return this.repository.getPlanForLearner(planId, learnerId) } catch { throw new ProductNotFoundError(`Plan not found: ${planId}`) }
   }
 
-  createMysqlPerformancePlan(learnerId: string) {
-    this.repository.ensureLearner(learnerId)
-    return this.repository.getOrCreateMysqlPerformancePlan(learnerId)
-  }
-
-  private validatePlanUnit(learnerId: string, planId: string, planUnitId: string): { plan: ReturnType<ProductRepository['getPlanForLearner']>; unit: PlanUnit & { caseId: CaseId } } {
-    const plan = this.getPlan(learnerId, planId)
-    const unit = plan.units.find((candidate) => candidate.id === planUnitId)
-    if (!unit) throw new ProductNotFoundError(`Plan unit not found: ${planUnitId}`)
-    if (plan.status !== 'active' || unit.status !== 'current' || unit.availability !== 'available' || unit.learningMode !== 'lab' || !unit.caseId) throw new LabError('unit_not_available', '当前学习单元尚未开放实践', 409)
-    return { plan, unit: unit as PlanUnit & { caseId: CaseId } }
-  }
-
-  private queuedPracticeResult(practice: PracticeRun): { practice: PracticeRun; lab?: { run: unknown; accessToken: string }; queue?: { ticketId: string; caseId: CaseId; status: string; position?: number; pollAfterMs?: number; expiresAt: string } } | null {
-    const ticketId = this.pendingQueues.get(practice.id)
-    if (!ticketId) return null
-    const ticket = this.scheduler.getTicket(ticketId)
-    if (ticket.status === 'waiting') return { practice, queue: ticket }
-    if (ticket.status === 'ready' && ticket.run) {
-      const updated = this.repository.updatePracticeRun(practice.id, { labRunId: ticket.run.runId })
-      this.repository.createLabSegment({ practiceRunId: practice.id, labRunId: ticket.run.runId, fixtureVersion: ticket.run.fixtureVersion })
-      this.repository.appendEvent({ learnerId: updated.learnerId, practiceRunId: practice.id, actor: 'system', type: 'case_presented', stage: updated.stage, payload: { caseId: updated.caseId, fixtureVersion: ticket.run.fixtureVersion, environment: 'mysql_lab', queued: true } })
-      this.pendingQueues.delete(practice.id)
-      return { practice: this.repository.getPracticeRun(practice.id), lab: { run: ticket.run, accessToken: ticket.run.accessToken } }
-    }
-    this.pendingQueues.delete(practice.id)
-    return null
-  }
-
-  async startPlannedPractice(input: { learnerId: string; planId: string; planUnitId: string }) {
-    this.repository.ensureLearner(input.learnerId)
-    return this.withPlanUnitLock(input.planUnitId, async () => {
-      const { unit } = this.validatePlanUnit(input.learnerId, input.planId, input.planUnitId)
-      const existing = this.repository.findActivePracticeForUnit(input.learnerId, input.planUnitId)
-      if (existing?.status === 'resolved') return { practice: existing }
-      if (existing) {
-        const queued = this.queuedPracticeResult(existing)
-        if (queued) return queued
-      }
-      if (existing?.labRunId) {
-        const access = this.scheduler.getAccess(existing.labRunId)
-        if (access) return { practice: existing, lab: { run: access.run, accessToken: access.accessToken } }
-      }
-      const lab = await this.scheduler.createRun(unit.caseId)
-      if (lab.kind === 'queued') {
-        const practice = existing ?? this.repository.startPlanUnitPractice({ learnerId: input.learnerId, planId: input.planId, planUnitId: input.planUnitId, caseId: unit.caseId })
-        this.pendingQueues.set(practice.id, lab.ticket.ticketId)
-        return { practice, queue: lab.ticket }
-      }
-      const practice = existing
-        ? this.repository.updatePracticeRun(existing.id, { labRunId: lab.run.runId })
-        : this.repository.startPlanUnitPractice({ learnerId: input.learnerId, planId: input.planId, planUnitId: input.planUnitId, caseId: unit.caseId, labRunId: lab.run.runId })
-      this.repository.createLabSegment({ practiceRunId: practice.id, labRunId: lab.run.runId, fixtureVersion: lab.run.fixtureVersion })
-      if (!existing) this.repository.appendEvent({ learnerId: input.learnerId, practiceRunId: practice.id, actor: 'system', type: 'case_presented', stage: 'observe', payload: { caseId: unit.caseId, planId: input.planId, planUnitId: input.planUnitId, fixtureVersion: lab.run.fixtureVersion, environment: 'mysql_lab' } })
-      return { practice: this.repository.getPracticeRun(practice.id), lab: { run: lab.run, accessToken: lab.accessToken } }
-    })
-  }
-
-  async startPractice(input: { learnerId: string; planUnitId?: string | null; caseId: PracticeRun['caseId'] }) {
-    this.repository.ensureLearner(input.learnerId)
-    if (!isCaseId(input.caseId)) throw new LabError('case_not_found', 'MySQL 案例不存在', 404)
-    const lab = await this.scheduler.createRun(input.caseId)
-    if (lab.kind === 'queued') {
-      try {
-        const practice = this.repository.createPracticeRun({ ...input })
-        this.pendingQueues.set(practice.id, lab.ticket.ticketId)
-        return { practice, queue: lab.ticket }
-      } catch (error) {
-        this.scheduler.cancelTicket(lab.ticket.ticketId)
-        throw error
-      }
-    }
-    try {
-      const practice = this.repository.createPracticeRun({ ...input, labRunId: lab.run.runId })
-      this.repository.createLabSegment({ practiceRunId: practice.id, labRunId: lab.run.runId, fixtureVersion: lab.run.fixtureVersion })
-      this.repository.appendEvent({ learnerId: input.learnerId, practiceRunId: practice.id, actor: 'system', type: 'case_presented', stage: 'observe', payload: { caseId: input.caseId, fixtureVersion: lab.run.fixtureVersion, environment: 'mysql_lab' } })
-      return { practice: this.repository.getPracticeRun(practice.id), lab: { run: lab.run, accessToken: lab.accessToken } }
-    } catch (error) {
-      await this.scheduler.release(lab.run.runId, lab.accessToken).catch(() => undefined)
-      throw error
-    }
-  }
-
   snapshot(runId: string): PracticeSnapshot {
-    const run = this.run(runId)
-    const ticketId = this.pendingQueues.get(runId)
-    if (ticketId) {
-      const ticket = this.scheduler.getTicket(ticketId)
-      if (ticket.status === 'ready' && ticket.run) {
-        this.queuedPracticeResult(run)
-      }
-    }
+    this.run(runId)
     return this.repository.snapshot(runId)
-  }
-
-  labAccess(runId: string): { status: 'waiting' | 'ready' | 'expired' | 'cancelled'; ticketId?: string; run?: unknown; accessToken?: string } {
-    const practice = this.run(runId)
-    const ticketId = this.pendingQueues.get(runId)
-    if (!ticketId) {
-      if (!practice.labRunId) return { status: 'expired' }
-      const access = this.scheduler.getAccess(practice.labRunId)
-      if (access) return { status: 'ready', run: access.run, accessToken: access.accessToken }
-      this.repository.finishLabSegment(practice.labRunId, 'scheduler_unavailable_or_expired')
-      this.repository.updatePracticeRun(runId, { labRunId: null })
-      return { status: 'expired' }
-    }
-    const ticket = this.scheduler.getTicket(ticketId)
-    if (ticket.status === 'ready' && ticket.run) {
-      this.snapshot(runId)
-      return { status: 'ready', run: ticket.run, accessToken: ticket.run.accessToken }
-    }
-    return { status: ticket.status === 'expired' || ticket.status === 'cancelled' ? ticket.status : 'waiting', ticketId }
-  }
-
-  private async reopenLabUnsafe(runId: string): Promise<{ practice: PracticeRun; lab?: { run: unknown; accessToken: string }; queue?: unknown }> {
-    const practice = this.run(runId)
-    if (practice.practiceKind && practice.practiceKind !== 'mysql_lab') throw new LabError('workspace_run_required', '该实践使用代码工作区，不能重新开启 MySQL Lab', 409)
-    if (practice.status === 'resolved') throw new LabError('practice_resolved', '该实践已经完成，请从历史中回看', 409)
-    if (practice.labRunId && this.scheduler.isRunActive(practice.labRunId)) throw new LabError('lab_already_active', '当前实践已有可用 Lab', 409, true)
-    if (!isCaseId(practice.caseId)) throw new LabError('case_not_found', 'MySQL 案例不存在', 404)
-    const result = await this.scheduler.createRun(practice.caseId)
-    if (result.kind === 'queued') {
-      this.pendingQueues.set(runId, result.ticket.ticketId)
-      return { practice: this.repository.updatePracticeRun(runId, { labRunId: null }), queue: result.ticket }
-    }
-    const updated = this.repository.updatePracticeRun(runId, { labRunId: result.run.runId })
-    this.repository.createLabSegment({ practiceRunId: runId, labRunId: result.run.runId, fixtureVersion: result.run.fixtureVersion })
-    this.repository.appendEvent({ learnerId: updated.learnerId, practiceRunId: runId, actor: 'system', type: 'lab_reopened', stage: updated.stage, payload: { labRunId: result.run.runId, fixtureVersion: result.run.fixtureVersion } })
-    return { practice: updated, lab: { run: result.run, accessToken: result.accessToken } }
-  }
-
-  async reopenLab(runId: string): Promise<{ practice: PracticeRun; lab?: { run: unknown; accessToken: string }; queue?: unknown }> {
-    return this.withRunLock(runId, () => this.reopenLabUnsafe(runId))
   }
 
   memories(learnerId: string) { this.repository.ensureLearner(learnerId); return this.repository.listMemories(learnerId) }
@@ -628,7 +482,7 @@ export class PracticeService {
 
   private goalForRun(run: PracticeRun): string {
     if (run.practiceKind === 'code_workspace') return `完成代码工作区案例 ${run.learningCaseId ?? run.caseId}`
-    return run.caseId === 'mysql-order-list-index-001' ? '学习 MySQL 慢查询优化' : `学习 ${run.caseId}`
+    return `完成动态 MySQL 案例 ${run.learningCaseId ?? run.caseId}`
   }
   private inferTechnology(goal: string): string { return /k8s|kubernetes/i.test(goal) ? 'Kubernetes' : /redis/i.test(goal) ? 'Redis' : /kafka/i.test(goal) ? 'Kafka' : 'MySQL 8' }
 }

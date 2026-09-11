@@ -5,9 +5,8 @@ import type { CaseGenerationJob, LearningCase, PracticeRun } from './product-typ
 import type { ProductRepository } from './product-repository.js'
 import { CaseWorkspaceService } from './case-workspace-service.js'
 import { MySqlDynamicCaseService } from './mysql-dynamic-case-service.js'
-import { mysqlRequestForProfile } from './mysql-case-interpreter.js'
 import type { DynamicRuntimeStatus } from './planning-types.js'
-import type { MySqlExerciseCardContext } from './mysql-exercise-agent.js'
+import type { CaseDesignCard } from './case-design-agent.js'
 
 type Row = Record<string, unknown>
 type BuildStatus = 'queued' | 'building' | 'ready' | 'failed'
@@ -148,13 +147,14 @@ export class GymBuildService {
     this.repository.ensureLearner(learnerId)
     const row = this.planUnit(learnerId, planId, planUnitId)
     const environment = this.environmentFor(row)
-    const exerciseProfileKey = nullable(row, 'unit_exercise_profile_key') ?? nullable(row, 'exercise_profile_key') ?? environment.exerciseProfileKey
-    if (environment.runtimeKind === 'mysql_lab' && !exerciseProfileKey) throw new LabError('mysql_exercise_profile_missing', '当前学习卡片没有可用的 MySQL 案例 profile', 409)
-    const cardSnapshot: MySqlExerciseCardContext = {
+    // Profiles are selected by CaseDesignAgent from the catalog, not locked by
+    // the Planner or this coordinator before the card is evaluated.
+    const exerciseProfileKey = null
+    const cardSnapshot: CaseDesignCard = {
       nodeId: text(row, 'roadmap_node_id'), title: text(row, 'title'), summary: text(row, 'summary'), completionStandard: text(row, 'completion_standard'),
       knowledgeCard: json(row.knowledge_card_json, {}), evidence: [], learnerProfile: [],
     }
-    const inputFingerprint = fingerprint({ protocol: 'card-gym-v1', planId, planUnitId, roadmapNodeId: nullable(row, 'roadmap_node_id'), capabilityKey: environment.capabilityKey, exerciseProfileKey, cardSnapshot })
+    const inputFingerprint = fingerprint({ protocol: 'case-design-v1', planId, planUnitId, roadmapNodeId: nullable(row, 'roadmap_node_id'), capabilityKey: environment.capabilityKey, cardSnapshot })
     const now = new Date().toISOString()
     const persisted = this.db.transaction(() => {
       const byRequest = this.db.prepare('SELECT id, input_fingerprint FROM gym_build_jobs WHERE learner_id = ? AND plan_unit_id = ? AND client_request_id = ?').get(learnerId, planUnitId, clientRequestId) as Row | undefined
@@ -263,15 +263,10 @@ export class GymBuildService {
         if (existing && this.caseReady(learnerId, existing, environment.runtimeKind)) learningCaseId = existing
         else if (environment.runtimeKind === 'mysql_lab') {
           if (!nodeId) throw new LabError('roadmap_node_missing', '当前单元缺少路线节点', 409)
-          const profileKey = nullable(row, 'exercise_profile_key')
-          const card = json<MySqlExerciseCardContext | null>(row.card_snapshot_json, null)
-            this.log('mysql_case_started', { buildId: id, learnerId, planUnitId })
-            // Rows created before card-scoped profiles remain readable through
-            // their explicit capability registry. New jobs always persist both
-            // fields and therefore use the Agent path below.
-            const result = profileKey && card
-              ? await this.mysql.createCase(learnerId, { roadmapNodeId: nodeId, profileKey, card, clientRequestId: `gym-case:${id}` })
-              : await this.mysql.createCase(learnerId, { roadmapNodeId: nodeId, request: mysqlRequestForProfile(environment.exerciseProfileKey ?? 'mysql.slow-query-v1'), clientRequestId: `gym-case:${id}` })
+          const card = json<CaseDesignCard | null>(row.card_snapshot_json, null)
+          if (!card) throw new LabError('gym_card_snapshot_missing', '当前 Gym 缺少冻结学习卡片，无法构建案例', 409)
+          this.log('mysql_case_started', { buildId: id, learnerId, planUnitId })
+          const result = await this.mysql.createCase(learnerId, { roadmapNodeId: nodeId, card, clientRequestId: `gym-case:${id}` })
           this.log('mysql_case_finished', { buildId: id, learnerId, learningCaseId: result.case.id, status: result.case.status })
           if (result.case.status !== 'ready' || result.case.preflightStatus !== 'passed') throw new LabError('gym_case_not_ready', '动态 Gym 案例未通过可用性校验', 503, true)
           learningCaseId = result.case.id
