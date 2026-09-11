@@ -38,7 +38,7 @@ function clear() {
   <div class="resume-upload">
     <div class="resume-heading"><div><span class="field-label">简历附件</span><small>可选 · 仅支持 PDF</small></div><FileText :size="15" aria-hidden="true" /></div>
     <div v-if="file || currentName" class="resume-file"><FileText :size="14" aria-hidden="true" /><span>{{ file?.name ?? currentName }}</span><button v-if="file" type="button" aria-label="移除简历" title="移除简历" @click="clear"><X :size="14" aria-hidden="true" /></button></div>
-    <label v-else class="resume-picker" :class="{ disabled }"><Upload :size="14" aria-hidden="true" /><span>选择 PDF 简历</span><input ref="input" type="file" accept="application/pdf,.pdf" :disabled="disabled" @change="choose" /></label>
+    <label class="resume-picker" :class="{ disabled }"><Upload :size="14" aria-hidden="true" /><span>{{ currentName ? '替换 PDF 简历' : '选择 PDF 简历' }}</span><input ref="input" type="file" accept="application/pdf,.pdf" :disabled="disabled" @change="choose" /></label>
     <p v-if="error" class="resume-error" role="alert">{{ error }}</p>
   </div>
 </template>

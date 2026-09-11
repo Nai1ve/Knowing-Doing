@@ -56,6 +56,16 @@ export function loadConfig(): LabConfig {
     throw new Error('LAB_TOKEN_SECRET is required in production')
   }
 
+  const productDbPath = process.env.ZHIXING_PRODUCT_DB_PATH ?? './data/zhixing-product.db'
+  const configuredIdentityMode = process.env.ZHIXING_IDENTITY_MODE
+  const identityMode: LabConfig['identityMode'] = configuredIdentityMode === 'shared_demo'
+    ? 'shared_demo'
+    : configuredIdentityMode === 'client'
+      ? 'client'
+      : process.env.NODE_ENV === 'production'
+        ? 'shared_demo'
+        : 'client'
+
   return {
     host: process.env.LAB_MYSQL_HOST ?? '127.0.0.1',
     port: Number(process.env.LAB_MYSQL_PORT ?? 3306),
@@ -74,7 +84,7 @@ export function loadConfig(): LabConfig {
     maxRows: numberEnv('LAB_MAX_ROWS', 200),
     maxOutputBytes: numberEnv('LAB_MAX_OUTPUT_BYTES', 1024 * 1024),
     runnerPoolSize: numberEnv('LAB_RUNNER_POOL_SIZE', 6),
-    productDbPath: process.env.ZHIXING_PRODUCT_DB_PATH ?? './data/zhixing-product.db',
+    productDbPath,
     modelBaseUrl: process.env.ZHIXING_MODEL_BASE_URL ?? '',
     modelApiKey: process.env.ZHIXING_MODEL_API_KEY ?? '',
     modelName: process.env.ZHIXING_MODEL_NAME ?? 'default',
@@ -87,7 +97,7 @@ export function loadConfig(): LabConfig {
     zhihuArticlePath: process.env.ZHIXING_ZHIHU_ARTICLE_PATH ?? '/api/v1/content/zhihu_article',
     retrievalTimeoutMs: numberEnv('ZHIXING_RETRIEVAL_TIMEOUT_MS', 15_000),
     retrievalCacheTtlMs: numberEnv('ZHIXING_RETRIEVAL_CACHE_TTL_MS', 24 * 60 * 60 * 1000),
-    identityMode: process.env.ZHIXING_IDENTITY_MODE === 'shared_demo' || process.env.NODE_ENV === 'production' ? 'shared_demo' : 'client',
+    identityMode,
     demoLearnerId: process.env.ZHIXING_DEMO_LEARNER_ID ?? 'demo-learner',
     workspaceRunnerUrl: process.env.WORKSPACE_RUNNER_URL ?? 'http://127.0.0.1:3101',
     workspaceRunnerToken: process.env.WORKSPACE_RUNNER_TOKEN ?? 'development-workspace-runner-token',

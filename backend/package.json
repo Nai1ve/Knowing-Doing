@@ -10,6 +10,7 @@
     "product:backfill-curation": "tsx src/backfill-curation.ts",
     "product:replay-narrative": "tsx src/replay-narrative.ts",
     "product:repair-agent-roadmap": "tsx src/repair-agent-roadmap.ts",
+    "product:reset-local": "tsx src/reset-local-product.ts",
     "build": "tsc -p tsconfig.json",
     "start": "node dist/src/server.js",
     "test": "vitest run",

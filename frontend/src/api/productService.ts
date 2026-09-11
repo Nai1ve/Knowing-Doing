@@ -1,7 +1,8 @@
 import { ApiError, apiClient } from './client'
 import type { LabCaseId, LabExecutionResult } from '@/types/lab'
-import type { ProductArtifact, ProductIntake, ProductLabAccess, ProductLabExecution, ProductMemory, ProductPlan, ProductPracticeCompletion, ProductPracticeHistoryPage, ProductPracticePin, ProductPracticeRun, ProductPracticeStart, ProductSnapshot, ProductTutorResponse, ProductTutorStreamEvent, ProductWritingBlockEvidence, ProductWritingCluster, ProductWritingClusterDetail, ProductWritingClusterOverview, ProductWritingDraftRun, ProductWritingGenerationJob, ProductWritingProject, ProductWritingDocument, ProductWritingWorkspace } from '@/types/product'
+import type { ProductArtifact, ProductLabAccess, ProductLabExecution, ProductMemory, ProductPlan, ProductPracticeCompletion, ProductPracticeHistoryPage, ProductPracticePin, ProductPracticeRun, ProductPracticeStart, ProductSnapshot, ProductTutorResponse, ProductTutorStreamEvent, ProductWritingBlockEvidence, ProductWritingCluster, ProductWritingClusterDetail, ProductWritingClusterOverview, ProductWritingDraftRun, ProductWritingGenerationJob, ProductWritingProject, ProductWritingDocument, ProductWritingWorkspace } from '@/types/product'
 import { createClientId } from '@/utils/client-id'
+import type { ProductDynamicPracticeRuntime, ProductGymBuildView, ProductWorkspaceSummary } from '@/types/product'
 
 const learnerStorageKey = 'zhixing.learner.id'
 function learnerId(): string {
@@ -17,11 +18,12 @@ function product<T>(path: string, init: RequestInit = {}, token?: string): Promi
   return apiClient.request<T>(`/product${path}`, { ...init, headers })
 }
 
-export function createProductIntake(input: { goal: string; technology?: string; outcome?: string; weeklyMinutes?: number }): Promise<ProductIntake> { return product('/intakes', { method: 'POST', body: JSON.stringify(input) }) }
-export function createProductPlan(intakeId: string): Promise<ProductPlan> { return product(`/intakes/${intakeId}/plan`, { method: 'POST' }) }
-export function confirmProductPlan(planId: string): Promise<ProductPlan> { return product(`/plans/${planId}/confirm`, { method: 'POST' }) }
-export function startProductPractice(planId: string, planUnitId: string): Promise<ProductPracticeStart> { return product('/practice-runs', { method: 'POST', body: JSON.stringify({ planId, planUnitId }) }) }
 export function startPlannedProductPractice(planId: string, planUnitId: string): Promise<ProductPracticeStart> { return product(`/plans/${planId}/units/${planUnitId}/practice`, { method: 'POST' }) }
+export function getDynamicPracticeRuntime(practiceRunId: string): Promise<ProductDynamicPracticeRuntime> { return product(`/practice-runs/${encodeURIComponent(practiceRunId)}/runtime`) }
+export function createGymBuild(planId: string, planUnitId: string, clientRequestId = createClientId()): Promise<ProductGymBuildView> { return product(`/plans/${encodeURIComponent(planId)}/units/${encodeURIComponent(planUnitId)}/gym-builds`, { method: 'POST', body: JSON.stringify({ clientRequestId }) }) }
+export function getGymBuild(id: string): Promise<ProductGymBuildView> { return product(`/gym-builds/${encodeURIComponent(id)}`) }
+export function retryGymBuild(id: string): Promise<ProductGymBuildView> { return product(`/gym-builds/${encodeURIComponent(id)}/retry`, { method: 'POST' }) }
+export function startGymBuild(id: string): Promise<({ kind: 'mysql_lab' } & ProductPracticeStart) | { kind: 'docker_workspace'; workspace: ProductWorkspaceSummary }> { return product(`/gym-builds/${encodeURIComponent(id)}/start`, { method: 'POST' }) }
 export function getProductSnapshot(runId: string): Promise<ProductSnapshot> { return product(`/practice-runs/${runId}`) }
 export function createProductPin(runId: string, targetType: ProductPracticePin['targetType'], targetId: string): Promise<ProductPracticePin> { return product(`/practice-runs/${runId}/pins`, { method: 'POST', body: JSON.stringify({ targetType, targetId }) }) }
 export function deleteProductPin(runId: string, pinId: string): Promise<void> { return product(`/practice-runs/${runId}/pins/${pinId}`, { method: 'DELETE' }) }

@@ -4,7 +4,7 @@ import { assertProductMigrations, openProductDatabase } from './product-migrate.
 import { evaluatePracticeCompletion } from './coach.js'
 import type {
   Artifact, ArtifactKind, ArtifactSourceKind, CaseGenerationJob, CaseGenerationJobStatus, CaseInputKind, CaseSpec, CaseStage, DiagnosticSession, DiagnosticSessionStatus, DiagnosticTargetKey, DiagnosticTurn, EventActor, EventType, Intake, LearningCase, LearningPlan,
-  LabSegment, Learner, MemoryItem, PathNode, PlanProposal, PlanProposalStatus, PlanProposalUnit, PlanUnit, PracticeEvent, PracticePin, PracticeRun, PracticeSnapshot, ProfileEvidence, ResumeAttachment, SourceItem,
+  LabSegment, Learner, LearnerResumeContext, MemoryItem, PathNode, PlanProposal, PlanProposalStatus, PlanProposalUnit, PlanUnit, PracticeEvent, PracticePin, PracticeRun, PracticeSnapshot, ProfileEvidence, ResumeAttachment, ResumeContextChunk, SourceItem,
   StageMemory, TutorInvocation, TutorInvocationStatus, VerificationStatus, WorkspaceExecution, WorkspaceExecutionStatus, WorkspaceFile, WorkspaceRun, WorkspaceRunStatus, WritingBlockEvidence, WritingEvidenceReference, WritingCapsuleMember, WritingClusterCapsule, WritingClaim, WritingCluster, WritingClusterDetail, WritingClusterKey, WritingClusterMember, WritingClusterMemberRole, WritingClusterOverview, WritingClusterStatus, WritingClusterSummaryStatus, WritingDocument, WritingDocumentBlock, WritingEvidenceItem, WritingEvidencePack, WritingGenerationJob, WritingGenerationKind, WritingGenerationStatus, WritingMaterial, WritingProject, WritingReviewItem, WritingSection, WritingSectionBlock, WritingDraftRun, WritingDraftPhase, WritingDraftStatus,
 } from './product-types.js'
 
@@ -62,7 +62,7 @@ function intakeFrom(row: Row): Intake {
 function unitFrom(row: Row): PlanUnit {
   return {
     id: text(row, 'id'), planId: text(row, 'plan_id'), roadmapNodeId: nullableText(row, 'roadmap_node_id'), position: number(row, 'position'), title: text(row, 'title'),
-    objective: text(row, 'objective'), caseId: nullableText(row, 'case_id') as PlanUnit['caseId'],
+    objective: text(row, 'objective'), caseId: nullableText(row, 'case_id') as PlanUnit['caseId'], learningCaseId: nullableText(row, 'learning_case_id'),
     status: text(row, 'status') as PlanUnit['status'], availability: text(row, 'availability') as PlanUnit['availability'], completedAt: nullableText(row, 'completed_at'), sourceRefs: json<string[]>(row.source_refs_json, []),
     learningMode: (nullableText(row, 'learning_mode') ?? (row.case_id ? 'lab' : 'unavailable')) as PlanUnit['learningMode'], estimatedMinutes: row.estimated_minutes == null ? 60 : number(row, 'estimated_minutes'), rationale: nullableText(row, 'rationale') ?? '',
   }
@@ -86,7 +86,7 @@ function profileEvidenceFrom(row: Row): ProfileEvidence {
 }
 
 function resumeAttachmentFrom(row: Row): ResumeAttachment {
-  return { id: text(row, 'id'), learnerId: text(row, 'learner_id'), planningSessionId: text(row, 'planning_session_id'), originalFilename: text(row, 'original_filename'), mimeType: 'application/pdf', sizeBytes: number(row, 'size_bytes'), sha256: text(row, 'sha256'), parseStatus: text(row, 'parse_status') as ResumeAttachment['parseStatus'], pageCount: number(row, 'page_count'), textLength: number(row, 'text_length'), parseError: nullableText(row, 'parse_error'), createdAt: text(row, 'created_at'), updatedAt: text(row, 'updated_at') }
+  return { id: text(row, 'id'), learnerId: text(row, 'learner_id'), planningSessionId: text(row, 'planning_session_id'), originalFilename: text(row, 'original_filename'), mimeType: 'application/pdf', sizeBytes: number(row, 'size_bytes'), sha256: text(row, 'sha256'), parseStatus: text(row, 'parse_status') as ResumeAttachment['parseStatus'], pageCount: number(row, 'page_count'), textLength: number(row, 'text_length'), parseError: nullableText(row, 'parse_error'), version: number(row, 'version'), includedAt: text(row, 'included_at'), includedInPlanningContext: true, createdAt: text(row, 'created_at'), updatedAt: text(row, 'updated_at') }
 }
 
 function diagnosticSessionFrom(row: Row, turns: DiagnosticTurn[], evidence: ProfileEvidence[]): DiagnosticSession {
@@ -108,6 +108,7 @@ function runFrom(row: Row): PracticeRun {
     id: text(row, 'id'), learnerId: text(row, 'learner_id'), planUnitId: nullableText(row, 'plan_unit_id'),
     caseId: text(row, 'case_id') as PracticeRun['caseId'], labRunId: nullableText(row, 'lab_run_id'),
     practiceKind: (nullableText(row, 'practice_kind') ?? 'mysql_lab') as PracticeRun['practiceKind'], learningCaseId: nullableText(row, 'learning_case_id'),
+    runtimeQueueTicketId: nullableText(row, 'runtime_queue_ticket_id'), runtimeQueueExpiresAt: nullableText(row, 'runtime_queue_expires_at'),
     stage: text(row, 'stage') as CaseStage, hintLevel: number(row, 'hint_level'), noProgressCount: number(row, 'no_progress_count'),
     status: text(row, 'status') as PracticeRun['status'], createdAt: text(row, 'created_at'), updatedAt: text(row, 'updated_at'),
   }
@@ -594,20 +595,90 @@ export class ProductRepository {
     return diagnosticSessionFrom(row, turns, evidence)
   }
 
+  private resumeAttachmentRow(planningSessionId: string, learnerId: string, clientRequestId?: string | null): Row | undefined {
+    const query = clientRequestId == null
+      ? `SELECT d.*, r.session_id AS planning_session_id, r.included_at
+          FROM planning_session_resume_refs r
+          INNER JOIN learner_resume_documents d ON d.id = r.document_id
+          WHERE r.session_id = ? AND r.learner_id = ? AND r.status = 'current'
+          LIMIT 1`
+      : `SELECT d.*, r.session_id AS planning_session_id, r.included_at
+          FROM planning_session_resume_refs r
+          INNER JOIN learner_resume_documents d ON d.id = r.document_id
+          WHERE r.session_id = ? AND r.learner_id = ? AND r.client_request_id = ?
+          LIMIT 1`
+    const params = clientRequestId == null ? [planningSessionId, learnerId] : [planningSessionId, learnerId, clientRequestId]
+    return this.db.prepare(query).get(...params) as Row | undefined
+  }
+
   getPlanningResumeAttachment(planningSessionId: string, learnerId: string): ResumeAttachment | null {
-    const row = this.db.prepare('SELECT * FROM planning_resume_attachments WHERE planning_session_id = ? AND learner_id = ? LIMIT 1').get(planningSessionId, learnerId) as Row | undefined
+    const row = this.resumeAttachmentRow(planningSessionId, learnerId)
     return row ? resumeAttachmentFrom(row) : null
   }
 
-  replacePlanningResumeAttachment(input: { id: string; learnerId: string; planningSessionId: string; originalFilename: string; storedFilename: string; sizeBytes: number; sha256: string; pageCount: number; extractedText: string }): { attachment: ResumeAttachment; previousStoredFilename: string | null } {
-    const previous = this.db.prepare('SELECT stored_filename FROM planning_resume_attachments WHERE planning_session_id = ? AND learner_id = ?').get(input.planningSessionId, input.learnerId) as Row | undefined
+  getPlanningResumeByRequest(planningSessionId: string, learnerId: string, clientRequestId: string): ResumeAttachment | null {
+    const row = this.resumeAttachmentRow(planningSessionId, learnerId, clientRequestId)
+    return row ? resumeAttachmentFrom(row) : null
+  }
+
+  private ensureResumeChunks(documentId: string, learnerId: string): ResumeContextChunk[] {
+    const existing = this.db.prepare('SELECT id, document_id, position, content FROM learner_resume_chunks WHERE document_id = ? AND learner_id = ? ORDER BY position').all(documentId, learnerId) as Row[]
+    if (existing.length > 0) return existing.map((row) => ({ id: text(row, 'id'), documentId: text(row, 'document_id'), position: number(row, 'position'), content: text(row, 'content') }))
+    const document = this.db.prepare("SELECT extracted_text FROM learner_resume_documents WHERE id = ? AND learner_id = ? AND parse_status = 'ready'").get(documentId, learnerId) as Row | undefined
+    if (!document || !text(document, 'extracted_text').trim()) return []
+    const content = text(document, 'extracted_text').trim()
+    const now = new Date().toISOString()
+    const chunks: ResumeContextChunk[] = []
+    for (let offset = 0, position = 1; offset < content.length; offset += 1600, position += 1) {
+      const chunk = content.slice(offset, offset + 2200)
+      chunks.push({ id: randomUUID(), documentId, position, content: chunk })
+    }
+    this.db.transaction(() => {
+      const insert = this.db.prepare('INSERT OR IGNORE INTO learner_resume_chunks(id, learner_id, document_id, position, content, checksum, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)')
+      for (const chunk of chunks) insert.run(chunk.id, learnerId, documentId, chunk.position, chunk.content, createHash('sha256').update(chunk.content).digest('hex'), now)
+    })()
+    return this.ensureResumeChunks(documentId, learnerId)
+  }
+
+  getPlanningResumeContext(planningSessionId: string, learnerId: string): LearnerResumeContext | null {
+    const row = this.resumeAttachmentRow(planningSessionId, learnerId)
+    if (!row) return null
+    const attachment = resumeAttachmentFrom(row)
+    return { attachment, chunks: this.ensureResumeChunks(attachment.id, learnerId) }
+  }
+
+  linkCurrentResumeToSession(learnerId: string, planningSessionId: string, clientRequestId: string | null = null): ResumeAttachment | null {
+    const existing = this.getPlanningResumeAttachment(planningSessionId, learnerId)
+    if (existing) return existing
+    const document = this.db.prepare("SELECT * FROM learner_resume_documents WHERE learner_id = ? AND is_current = 1 AND parse_status = 'ready' LIMIT 1").get(learnerId) as Row | undefined
+    if (!document) return null
+    const now = new Date().toISOString()
+    this.db.prepare("INSERT INTO planning_session_resume_refs(id, learner_id, session_id, document_id, document_version, client_request_id, status, included_at, created_at) VALUES (?, ?, ?, ?, ?, ?, 'current', ?, ?)").run(randomUUID(), learnerId, planningSessionId, text(document, 'id'), number(document, 'version'), clientRequestId, now, now)
+    return this.getPlanningResumeAttachment(planningSessionId, learnerId)
+  }
+
+  replaceLearnerResumeDocument(input: { id: string; learnerId: string; planningSessionId: string; clientRequestId: string; originalFilename: string; storedFilename: string; sizeBytes: number; sha256: string; pageCount: number; extractedText: string }): ResumeAttachment {
+    const replay = this.getPlanningResumeByRequest(input.planningSessionId, input.learnerId, input.clientRequestId)
+    if (replay) return replay
     const now = new Date().toISOString()
     this.db.transaction(() => {
-      this.db.prepare('DELETE FROM planning_resume_attachments WHERE planning_session_id = ? AND learner_id = ?').run(input.planningSessionId, input.learnerId)
-      this.db.prepare('INSERT INTO planning_resume_attachments(id, learner_id, planning_session_id, original_filename, stored_filename, mime_type, size_bytes, sha256, parse_status, page_count, text_length, extracted_text, parse_error, created_at, updated_at) VALUES (?, ?, ?, ?, ?, \'application/pdf\', ?, ?, \'ready\', ?, ?, ?, NULL, ?, ?)').run(input.id, input.learnerId, input.planningSessionId, input.originalFilename, input.storedFilename, input.sizeBytes, input.sha256, input.pageCount, input.extractedText.length, input.extractedText, now, now)
+      const version = number(this.db.prepare('SELECT COALESCE(MAX(version), 0) + 1 AS version FROM learner_resume_documents WHERE learner_id = ?').get(input.learnerId) as Row, 'version')
+      this.db.prepare('UPDATE learner_resume_documents SET is_current = 0, updated_at = ? WHERE learner_id = ? AND is_current = 1').run(now, input.learnerId)
+      this.db.prepare("INSERT INTO learner_resume_documents(id, learner_id, original_filename, stored_filename, mime_type, size_bytes, sha256, parse_status, page_count, text_length, extracted_text, parse_error, version, is_current, created_at, updated_at) VALUES (?, ?, ?, ?, 'application/pdf', ?, ?, 'ready', ?, ?, ?, NULL, ?, 1, ?, ?)").run(input.id, input.learnerId, input.originalFilename, input.storedFilename, input.sizeBytes, input.sha256, input.pageCount, input.extractedText.length, input.extractedText, version, now, now)
+      this.db.prepare("UPDATE planning_session_resume_refs SET status = 'superseded' WHERE session_id = ? AND learner_id = ? AND status = 'current'").run(input.planningSessionId, input.learnerId)
+      this.db.prepare("INSERT INTO planning_session_resume_refs(id, learner_id, session_id, document_id, document_version, client_request_id, status, included_at, created_at) VALUES (?, ?, ?, ?, ?, ?, 'current', ?, ?)").run(randomUUID(), input.learnerId, input.planningSessionId, input.id, version, input.clientRequestId, now, now)
     })()
-    const row = this.db.prepare('SELECT * FROM planning_resume_attachments WHERE id = ? AND learner_id = ?').get(input.id, input.learnerId) as Row
-    return { attachment: resumeAttachmentFrom(row), previousStoredFilename: previous ? text(previous, 'stored_filename') : null }
+    this.ensureResumeChunks(input.id, input.learnerId)
+    const attachment = this.getPlanningResumeAttachment(input.planningSessionId, input.learnerId)
+    if (!attachment) throw new Error('Resume attachment was not persisted')
+    return attachment
+  }
+
+  // Compatibility for historical imports and tests. Runtime reads use learner_resume_documents.
+  replacePlanningResumeAttachment(input: { id: string; learnerId: string; planningSessionId: string; originalFilename: string; storedFilename: string; sizeBytes: number; sha256: string; pageCount: number; extractedText: string }): { attachment: ResumeAttachment; previousStoredFilename: string | null } {
+    const previous = this.getPlanningResumeAttachment(input.planningSessionId, input.learnerId)
+    const attachment = this.replaceLearnerResumeDocument({ ...input, clientRequestId: `legacy-import:${input.id}` })
+    return { attachment, previousStoredFilename: previous ? `${previous.id}.pdf` : null }
   }
 
   listProfileEvidence(learnerId: string): ProfileEvidence[] {
@@ -768,7 +839,7 @@ export class ProductRepository {
     return rows.map((row) => ({ run: runFrom(row), lastActivityAt: text(row, 'last_activity_at'), lastTutorProvider: nullableText(row, 'last_tutor_provider'), lastTutorSourceStatus: nullableText(row, 'last_tutor_source_status') }))
   }
 
-  updatePracticeRun(id: string, update: Partial<Pick<PracticeRun, 'stage' | 'hintLevel' | 'noProgressCount' | 'status' | 'labRunId'>>): PracticeRun {
+  updatePracticeRun(id: string, update: Partial<Pick<PracticeRun, 'stage' | 'hintLevel' | 'noProgressCount' | 'status' | 'labRunId' | 'planUnitId' | 'runtimeQueueTicketId' | 'runtimeQueueExpiresAt'>>): PracticeRun {
     const fields: string[] = []; const values: unknown[] = []
     for (const [key, value] of Object.entries(update)) {
       const column = key.replace(/[A-Z]/g, (letter) => `_${letter.toLowerCase()}`)

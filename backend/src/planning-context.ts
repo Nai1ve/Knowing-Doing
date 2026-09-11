@@ -75,7 +75,7 @@ export class PlanningContextCompiler {
     for (const evidence of input.delta.evidence ?? []) {
       const isResume = evidence.sourceType === 'resume'
       const content = evidence.excerpt.trim().slice(0, isResume ? 6000 : 2000); if (!content) continue
-      const sourceKey = isResume ? 'resume:current' : `${evidence.sourceType}:${evidence.sourceId || hash(content)}`
+      const sourceKey = isResume ? `resume:${evidence.sourceId || hash(content)}` : `${evidence.sourceType}:${evidence.sourceId || hash(content)}`
       const existing = merged.get(sourceKey)
       merged.set(sourceKey, {
         id: existing?.id ?? randomUUID(), key: sourceKey, kind: topicKind(evidence.topicKey), content,

@@ -1,0 +1,3 @@
+DROP INDEX IF EXISTS idx_practice_environment_capabilities_status_position;
+CREATE INDEX IF NOT EXISTS idx_practice_environment_capabilities_status_position
+  ON practice_environment_capabilities(status, position, planning_key);

@@ -4,6 +4,7 @@ import { Panel, VueFlow, useVueFlow, type Edge, type Node } from '@vue-flow/core
 import { Minus, Plus, RotateCcw } from 'lucide-vue-next'
 import type { RoadmapNode } from '@/types/product'
 import RoadmapMindmapNode from './RoadmapMindmapNode.vue'
+import PlanAdjustmentPanel from './PlanAdjustmentPanel.vue'
 
 interface FlowNodeData {
   kind: 'goal' | 'roadmap'
@@ -183,6 +184,7 @@ watch(() => props.nodes.map((node) => node.id).join(','), () => {
       </VueFlow>
     </div>
     <footer class="mindmap-legend"><span><i class="legend-dot available" />可开始</span><span><i class="legend-dot completed" />已完成 / 已验证</span><span><i class="legend-dot locked" />后续开放</span><span class="legend-hint">拖动画布浏览 · 滚轮缩放 · 点击节点查看详情</span></footer>
+    <PlanAdjustmentPanel :selected-id="selectedId" :current-node-id="currentNodeId" />
   </section>
 </template>
 

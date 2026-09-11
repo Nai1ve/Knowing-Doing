@@ -17,6 +17,7 @@ import { PlanningService } from './planning.js'
 import { AgentPlanningService, PlanningAgentError, type PlanningStreamEvent } from './agent-planning.js'
 import { CaseWorkspaceService } from './case-workspace-service.js'
 import { MySqlDynamicCaseService } from './mysql-dynamic-case-service.js'
+import { GymBuildService } from './gym-build-service.js'
 
 type Body = Record<string, unknown>
 
@@ -52,6 +53,7 @@ export interface AppDependencies {
   agentPlanningServiceFactory?: () => AgentPlanningService
   caseWorkspaceServiceFactory?: () => CaseWorkspaceService
   mysqlDynamicCaseServiceFactory?: (scheduler: LabScheduler) => MySqlDynamicCaseService
+  gymBuildServiceFactory?: (workspace: CaseWorkspaceService, mysql: MySqlDynamicCaseService) => GymBuildService
   runtimeStatus?: () => Promise<Record<string, unknown>>
 }
 
@@ -73,6 +75,7 @@ export function buildApp(dependencies: AppDependencies): { app: FastifyInstance;
     if (error instanceof TutorProviderError) return reply.code(error.statusCode ?? 503).send({ error: { code: error.code, message: error.message, retryable: error.retryable } })
     if (error instanceof PlanningAgentError) return reply.code(error.retryable ? 503 : 503).send({ error: { code: error.code, message: error.message, retryable: error.retryable } })
     if (error && typeof error === 'object' && 'code' in error && (error as { code?: unknown }).code === 'FST_REQ_FILE_TOO_LARGE') return reply.code(422).send({ error: { code: 'resume_too_large', message: `简历不能超过 ${Math.floor(dependencies.config.resumeMaxBytes / 1024 / 1024)} MB`, retryable: false } })
+    if (error && typeof error === 'object' && 'code' in error && (error as { code?: unknown }).code === 'FST_ERR_CTP_EMPTY_JSON_BODY') return reply.code(400).send({ error: { code: 'invalid_request', message: '请求体不能为空', retryable: false } })
     const response = errorResponse(error)
     reply.code(response.statusCode).send(response.body)
   })
@@ -160,51 +163,48 @@ export function buildApp(dependencies: AppDependencies): { app: FastifyInstance;
     throw new LabError('replay_not_ready', '当前案例尚未准备可用的回放快照', 503, true, { caseId, snapshotId: String((request.params as { snapshotId: string }).snapshotId) })
   })
 
-  if (dependencies.practiceServiceFactory) registerProductRoutes(app, dependencies.practiceServiceFactory(scheduler), dependencies.writingServiceFactory?.(), dependencies.mysqlDynamicCaseServiceFactory?.(scheduler))
-  if (dependencies.planningServiceFactory) registerPlanningRoutes(app, dependencies.planningServiceFactory(), dependencies.agentPlanningServiceFactory?.())
-  if (dependencies.caseWorkspaceServiceFactory) registerCaseWorkspaceRoutes(app, dependencies.caseWorkspaceServiceFactory())
+  const caseWorkspaceService = dependencies.caseWorkspaceServiceFactory?.()
+  const mysqlDynamicCaseService = dependencies.mysqlDynamicCaseServiceFactory?.(scheduler)
+  const planningService = dependencies.planningServiceFactory?.()
+  if (planningService && mysqlDynamicCaseService) planningService.setDynamicRuntimeChecker((practice) => mysqlDynamicCaseService.runtimeStatusForPractice(practice))
+  if (dependencies.practiceServiceFactory) registerProductRoutes(app, dependencies.practiceServiceFactory(scheduler), dependencies.writingServiceFactory?.(), mysqlDynamicCaseService)
+  if (planningService && dependencies.agentPlanningServiceFactory) registerPlanningRoutes(app, planningService, dependencies.agentPlanningServiceFactory())
+  if (caseWorkspaceService) registerCaseWorkspaceRoutes(app, caseWorkspaceService)
+  if (caseWorkspaceService && mysqlDynamicCaseService && dependencies.gymBuildServiceFactory) {
+    const gymBuildService = dependencies.gymBuildServiceFactory(caseWorkspaceService, mysqlDynamicCaseService)
+    registerGymBuildRoutes(app, gymBuildService)
+    void gymBuildService.resume().catch((error) => console.error('[zhixing-gym] resume_unhandled', { error: error instanceof Error ? error.message : String(error) }))
+  }
 
   return { app, scheduler }
 }
 
-function registerPlanningRoutes(app: FastifyInstance, service: PlanningService, agent?: AgentPlanningService): void {
-  app.post('/api/product/planning-sessions', async (request, reply) => {
-    const body = productBody(request)
-    reply.code(201).send(service.createSession(learnerId(request), { goal: optionalString(body, 'goal') ?? undefined, clientRequestId: optionalString(body, 'clientRequestId') }))
-  })
+function registerPlanningRoutes(app: FastifyInstance, service: PlanningService, agent: AgentPlanningService): void {
   app.get('/api/product/planning-sessions/:sessionId', async (request, reply) => {
-    const id = String((request.params as { sessionId: string }).sessionId); reply.send(agent?.isAgentSession(learnerId(request), id) ? agent.getSession(learnerId(request), id) : service.getSession(learnerId(request), id))
-  })
-  app.post('/api/product/planning-sessions/:sessionId/turns', async (request, reply) => {
-    const body = productBody(request)
-    reply.send(service.addTurn(learnerId(request), String((request.params as { sessionId: string }).sessionId), {
-      revision: numberField(body, 'revision'), stepKey: stringField(body, 'stepKey'), answer: stringField(body, 'answer'), structuredValue: body.structuredValue,
-    }))
+    const id = String((request.params as { sessionId: string }).sessionId)
+    if (!agent.isAgentSession(learnerId(request), id)) throw new LabError('planning_not_found', '规划对话不存在', 404)
+    reply.send(agent.getSession(learnerId(request), id))
   })
   app.post('/api/product/planning-sessions/:sessionId/resume', async (request, reply) => {
     const sessionId = String((request.params as { sessionId: string }).sessionId)
     const file = await request.file()
     if (!file || file.fieldname !== 'resume') throw new LabError('resume_required', '请选择 PDF 格式的简历', 422)
     const learner = learnerId(request)
-    const attachment = await service.uploadResume(learner, sessionId, { filename: file.filename, mimetype: file.mimetype, file: file.file })
-    if (agent?.isAgentSession(learner, sessionId)) await agent.attachResume(learner, sessionId)
+    if (!agent.isAgentSession(learner, sessionId)) throw new LabError('planning_not_found', '规划对话不存在', 404)
+    const requestId = request.headers['x-client-request-id']
+    const attachment = await service.uploadResume(learner, sessionId, { filename: file.filename, mimetype: file.mimetype, file: file.file, clientRequestId: typeof requestId === 'string' ? requestId : undefined })
+    await agent.attachResume(learner, sessionId)
     reply.code(201).send(attachment)
   })
-  app.post('/api/product/planning-sessions/:sessionId/adjustments', async (request, reply) => {
-    const body = productBody(request)
-    const mastered = body.masteredNodeKeys == null ? undefined : Array.isArray(body.masteredNodeKeys) && body.masteredNodeKeys.every((item) => typeof item === 'string') ? body.masteredNodeKeys as string[] : (() => { throw new LabError('invalid_request', 'masteredNodeKeys 必须是字符串数组', 400) })()
-    const weeklyMinutes = body.weeklyMinutes == null ? undefined : numberField(body, 'weeklyMinutes')
-    reply.send(service.adjust(learnerId(request), String((request.params as { sessionId: string }).sessionId), { revision: numberField(body, 'revision'), weeklyMinutes, priorityDomain: optionalString(body, 'priorityDomain') ?? undefined, masteredNodeKeys: mastered }))
-  })
   app.get('/api/product/roadmap-drafts/:roadmapId', async (request, reply) => {
-    reply.send(service.getDraftForLearner(learnerId(request), String((request.params as { roadmapId: string }).roadmapId)))
+    const learner = learnerId(request); const id = String((request.params as { roadmapId: string }).roadmapId)
+    if (!agent.isAgentRoadmap(learner, id)) throw new LabError('roadmap_not_found', '路线草案不存在', 404)
+    reply.send(service.getDraftForLearner(learner, id))
   })
   app.post('/api/product/roadmap-drafts/:roadmapId/confirm', async (request, reply) => {
     const id = String((request.params as { roadmapId: string }).roadmapId); const learner = learnerId(request)
-    if (agent?.isAgentRoadmap(learner, id)) {
-      const snapshot = service.getDraftForLearner(learner, id); const plan = service.confirm(learner, id, numberField(productBody(request), 'revision')); agent.markRoadmapConfirmed(learner, snapshot.planningSessionId); return reply.send(plan)
-    }
-    reply.send(service.confirm(learner, id, numberField(productBody(request), 'revision')))
+    if (!agent.isAgentRoadmap(learner, id)) throw new LabError('roadmap_not_found', '路线草案不存在', 404)
+    const body = productBody(request); const snapshot = service.getDraftForLearner(learner, id); const plan = service.confirm(learner, id, numberField(body, 'revision'), optionalString(body, 'startUnitKey') ?? undefined); agent.markRoadmapConfirmed(learner, snapshot.planningSessionId); return reply.send(plan)
   })
   app.get('/api/product/roadmaps/current', async (request, reply) => {
     reply.send(service.current(learnerId(request)))
@@ -246,6 +246,9 @@ function registerAgentPlanningRoutes(app: FastifyInstance, service: AgentPlannin
   app.post('/api/product/planning-sessions/:sessionId/roadmap-generations', async (request, reply) => { const body = productBody(request); const result = await service.generateRoadmap(learnerId(request), String((request.params as { sessionId: string }).sessionId), optionalString(body, 'clientRequestId') ?? randomUUID()); reply.code(202).send(result) })
   app.get('/api/product/roadmap-generation-runs/:id', async (request, reply) => reply.send(service.getRoadmapGeneration(learnerId(request), String((request.params as { id: string }).id))))
   app.post('/api/product/roadmap-generation-runs/:id/retry', async (request, reply) => { const id = String((request.params as { id: string }).id); reply.code(202).send(await service.retryRoadmap(learnerId(request), id)) })
+  app.post('/api/product/plans/:planId/adjustments', async (request, reply) => { const body = productBody(request); const params = request.params as { planId: string }; reply.code(201).send(await service.createPlanAdjustment(learnerId(request), params.planId, stringField(body, 'request'), optionalString(body, 'clientRequestId') ?? randomUUID())) })
+  app.get('/api/product/plan-adjustments/:id', async (request, reply) => reply.send(service.getPlanAdjustment(learnerId(request), String((request.params as { id: string }).id))))
+  app.post('/api/product/plan-adjustments/:id/confirm', async (request, reply) => reply.send(service.confirmPlanAdjustment(learnerId(request), String((request.params as { id: string }).id))))
   app.post('/api/product/roadmaps/:roadmapId/nodes/:nodeId/knowledge-route', async (request, reply) => { const params = request.params as { roadmapId: string; nodeId: string }; const refresh = Boolean((productBody(request) as { refresh?: unknown }).refresh); reply.send(await service.knowledgeRoute(learnerId(request), params.roadmapId, params.nodeId, refresh)) })
   app.get('/api/product/roadmaps/:roadmapId/nodes/:nodeId/knowledge-route', async (request, reply) => { const params = request.params as { roadmapId: string; nodeId: string }; reply.send(await service.knowledgeRoute(learnerId(request), params.roadmapId, params.nodeId)) })
   app.post('/api/product/knowledge-routes/:routeSetId/feedback', async (request, reply) => { const body = productBody(request); const feedback = stringField(body, 'feedback'); if (!['read', 'too_hard', 'too_easy', 'irrelevant', 'helpful'].includes(feedback)) throw new LabError('invalid_request', '反馈类型不受支持', 400); service.feedback(learnerId(request), String((request.params as { routeSetId: string }).routeSetId), stringField(body, 'sourceItemId'), feedback as 'read' | 'too_hard' | 'too_easy' | 'irrelevant' | 'helpful'); reply.code(204).send() })
@@ -297,6 +300,21 @@ function registerCaseWorkspaceRoutes(app: FastifyInstance, service: CaseWorkspac
   app.post('/api/product/workspace-runs/:workspaceRunId/end', async (request, reply) => reply.send(await service.end(learnerId(request), workspaceId(request))))
 }
 
+function registerGymBuildRoutes(app: FastifyInstance, service: GymBuildService): void {
+  app.post('/api/product/plans/:planId/units/:planUnitId/gym-builds', async (request, reply) => {
+    const params = request.params as { planId: string; planUnitId: string }
+    const body = productBody(request)
+    reply.code(202).send(service.create(learnerId(request), params.planId, params.planUnitId, optionalString(body, 'clientRequestId') ?? randomUUID()))
+  })
+  app.get('/api/product/gym-builds/:id', async (request, reply) => reply.send(service.get(learnerId(request), String((request.params as { id: string }).id))))
+  app.post('/api/product/gym-builds/:id/retry', async (request, reply) => reply.code(202).send(service.retry(learnerId(request), String((request.params as { id: string }).id))))
+  app.post('/api/product/gym-builds/:id/start', async (request, reply) => {
+    const result = await service.start(learnerId(request), String((request.params as { id: string }).id))
+    const queued = Boolean(result && typeof result === 'object' && 'queue' in result && result.queue)
+    return reply.code(queued ? 202 : 201).send(result)
+  })
+}
+
 function productBody(request: FastifyRequest): Body {
   return bodyOf(request)
 }
@@ -311,92 +329,26 @@ function optionalString(body: Body, key: string): string | null | undefined {
 function productRunId(request: FastifyRequest): string { return String((request.params as { runId: string }).runId) }
 
 function registerProductRoutes(app: FastifyInstance, service: PracticeService, writingService?: WritingService, mysqlDynamicCaseService?: MySqlDynamicCaseService): void {
-  app.post('/api/product/sample-plans/mysql-performance', async (request, reply) => {
-    reply.code(201).send(service.createMysqlPerformancePlan(learnerId(request)))
-  })
-
-  app.get('/api/product/plans/active', async (request, reply) => {
-    reply.send(service.getActivePlan(learnerId(request)))
-  })
-
-  app.get('/api/product/plans/current', async (request, reply) => {
-    reply.send(service.getCurrentPlan(learnerId(request)))
-  })
-
   app.get('/api/product/plans/:planId', async (request, reply) => {
     reply.send(service.getPlan(learnerId(request), String((request.params as { planId: string }).planId)))
   })
 
   app.post('/api/product/plans/:planId/units/:unitId/practice', async (request, reply) => {
     const params = request.params as { planId: string; unitId: string }
+    const plan = service.getPlan(learnerId(request), params.planId)
+    const unit = plan.units.find((candidate) => candidate.id === params.unitId)
+    if (mysqlDynamicCaseService && unit?.learningMode === 'lab' && unit.learningCaseId && !unit.caseId) {
+      const result = await mysqlDynamicCaseService.startPractice(learnerId(request), unit.learningCaseId, unit.id)
+      return reply.code(result.queue ? 202 : 201).send(result)
+    }
     const result = await service.startPlannedPractice({ learnerId: learnerId(request), planId: params.planId, planUnitId: params.unitId })
     reply.code(result.queue ? 202 : 201).send(result)
   })
-
-  app.get('/api/product/onboarding/state', async (request, reply) => {
-    reply.send(service.onboardingState(learnerId(request)))
-  })
-
-  app.post('/api/product/plans/regenerate', async (request, reply) => {
-    const body = productBody(request)
-    reply.code(201).send(service.regeneratePlan(learnerId(request), optionalString(body, 'clientRequestId')))
-  })
-
-  app.get('/api/product/profile/evidence', async (request, reply) => {
-    reply.send(service.profileEvidence(learnerId(request)))
-  })
-
-  app.post('/api/product/diagnostic-sessions', async (request, reply) => {
-    const body = productBody(request)
-    const targetKey = stringField(body, 'targetKey')
-    const goal = stringField(body, 'goal')
-    const clientRequestId = optionalString(body, 'clientRequestId')
-    reply.code(201).send(service.createDiagnosticSession({ learnerId: learnerId(request), targetKey: targetKey as 'mysql_performance' | 'general', goal, clientRequestId }))
-  })
-
-  app.get('/api/product/diagnostic-sessions/:sessionId', async (request, reply) => {
-    reply.send(service.getDiagnosticSession(learnerId(request), String((request.params as { sessionId: string }).sessionId)))
-  })
-
-  app.patch('/api/product/diagnostic-sessions/:sessionId', async (request, reply) => {
-    const body = productBody(request); const sessionId = String((request.params as { sessionId: string }).sessionId)
-    const session = service.getDiagnosticSession(learnerId(request), sessionId)
-    reply.send(service.saveDiagnosticAnswers({
-      learnerId: learnerId(request), sessionId, revision: numberField(body, 'revision'), targetKey: session.targetKey,
-      goal: stringField(body, 'goal'), experience: stringField(body, 'experience'), selfAssessment: stringField(body, 'selfAssessment'),
-      weeklyMinutes: numberField(body, 'weeklyMinutes'), outcome: stringField(body, 'outcome'), contextNote: optionalString(body, 'contextNote') ?? '',
-    }))
-  })
-
-  app.post('/api/product/diagnostic-sessions/:sessionId/proposals', async (request, reply) => {
-    reply.code(201).send(service.createDiagnosticProposal(learnerId(request), String((request.params as { sessionId: string }).sessionId)))
-  })
-
-  app.get('/api/product/plan-proposals/:proposalId', async (request, reply) => {
-    reply.send(service.getDiagnosticProposal(learnerId(request), String((request.params as { proposalId: string }).proposalId)))
-  })
-
-  app.post('/api/product/plan-proposals/:proposalId/confirm', async (request, reply) => {
-    const body = productBody(request)
-    reply.send(service.confirmDiagnosticProposal(learnerId(request), String((request.params as { proposalId: string }).proposalId), numberField(body, 'revision')))
-  })
-
-  app.post('/api/product/intakes', async (request, reply) => {
-    const body = productBody(request); const goal = stringField(body, 'goal')
-    const weeklyMinutes = body.weeklyMinutes == null ? null : numberField(body, 'weeklyMinutes')
-    reply.code(201).send(service.createIntake({ learnerId: learnerId(request), goal, technology: optionalString(body, 'technology') ?? undefined, outcome: optionalString(body, 'outcome'), weeklyMinutes }))
-  })
-
-  app.get('/api/product/intakes/:intakeId', async (request, reply) => reply.send(service.getIntake(learnerId(request), String((request.params as { intakeId: string }).intakeId))))
-  app.post('/api/product/intakes/:intakeId/plan', async (request, reply) => reply.code(201).send(service.draftPlan(learnerId(request), String((request.params as { intakeId: string }).intakeId))))
-  app.post('/api/product/plans/:planId/confirm', async (request, reply) => reply.send(service.confirmPlan(learnerId(request), String((request.params as { planId: string }).planId))))
-
-  app.post('/api/product/practice-runs', async (request, reply) => {
-    const body = productBody(request); const planId = stringField(body, 'planId'); const planUnitId = stringField(body, 'planUnitId')
-    const result = await service.startPlannedPractice({ learnerId: learnerId(request), planId, planUnitId })
-    if (result.queue) return reply.code(202).send(result)
-    return reply.code(201).send(result)
-  })
+  if (mysqlDynamicCaseService) {
+    app.get('/api/product/practice-runs/:runId/runtime', async (request, reply) => {
+      reply.send(await mysqlDynamicCaseService.runtime(learnerId(request), String((request.params as { runId: string }).runId)))
+    })
+  }
 
   if (mysqlDynamicCaseService) {
     app.post('/api/product/roadmap-nodes/:nodeId/mysql-case-requests', async (request, reply) => {

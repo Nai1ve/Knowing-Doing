@@ -1,6 +1,6 @@
 import { computed, ref } from 'vue'
 import { defineStore } from 'pinia'
-import { createMysqlPerformancePlan, getCurrentPlan } from '@/api/planService'
+import { getCurrentPlan } from '@/api/planService'
 import type { LearningPlan, Milestone } from '@/types/domain'
 import type { ProductPlan } from '@/types/product'
 
@@ -20,13 +20,7 @@ export const usePlanStore = defineStore('plan', () => {
     loading.value = true
     error.value = null
     try {
-      productPlan.value = await getCurrentPlan()
-      if (productPlan.value) syncLegacyPlan(productPlan.value)
-      else {
-        plan.value = null
-        milestones.value = []
-      }
-      loaded.value = true
+      hydrateProductPlan(await getCurrentPlan())
     } catch (cause) {
       error.value = cause instanceof Error ? cause.message : '计划加载失败'
     } finally {
@@ -53,13 +47,12 @@ export const usePlanStore = defineStore('plan', () => {
     }))
   }
 
-  async function createMysqlPlan() {
-    if (loading.value) return
-    loading.value = true; error.value = null
-    try { productPlan.value = await createMysqlPerformancePlan(); syncLegacyPlan(productPlan.value); loaded.value = true }
-    catch (cause) { error.value = cause instanceof Error ? cause.message : '计划创建失败' }
-    finally { loading.value = false }
+  function hydrateProductPlan(source: ProductPlan | null) {
+    productPlan.value = source
+    if (source) syncLegacyPlan(source)
+    else { plan.value = null; milestones.value = [] }
+    loaded.value = true
   }
 
-  return { plan, productPlan, milestones, currentMilestone, currentNode, loading, loaded, error, loadPlan, createMysqlPlan }
+  return { plan, productPlan, milestones, currentMilestone, currentNode, loading, loaded, error, loadPlan, hydrateProductPlan }
 })

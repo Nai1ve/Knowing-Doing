@@ -1,17 +1,18 @@
 import { createHash, randomUUID } from 'node:crypto'
 import fs from 'node:fs'
-import { mkdir, readFile, rename, rm, unlink } from 'node:fs/promises'
+import { mkdir, readFile, rename, rm } from 'node:fs/promises'
 import path from 'node:path'
 import { once } from 'node:events'
 import type { Readable } from 'node:stream'
 import type Database from 'better-sqlite3'
 import { LabError } from './errors.js'
-import { parseResumePdf, ResumeParseError } from './resume-parser.js'
-import type { LearningPlan, PlanUnit, ResumeAttachment } from './product-types.js'
+import { parseResumePdf, ResumeParseError, ResumeTextUnavailableError } from './resume-parser.js'
+import type { LearningPlan, PlanUnit, PracticeRun, ResumeAttachment } from './product-types.js'
 import type {
-  CurrentLearning, PlanningSession, PlanningTemplateKey, PlanningTurn, Roadmap, RoadmapDraft, RoadmapNode, RoadmapNodePage, RoadmapNodeStatus, RoadmapTree,
+  CurrentLearning, DynamicRuntimeStatus, ExecutionProposal, PlanningSession, PlanningTemplateKey, PlanningTurn, Roadmap, RoadmapDraft, RoadmapNode, RoadmapNodePage, RoadmapNodeStatus, RoadmapTree,
 } from './planning-types.js'
 import { ProductRepository } from './product-repository.js'
+import { PracticeEnvironmentCatalog } from './practice-environment-catalog.js'
 
 type Row = Record<string, unknown>
 
@@ -79,10 +80,11 @@ function nodeFrom(row: Row): RoadmapNode {
 }
 
 function roadmapFrom(row: Row, progress: Roadmap['progress']): Roadmap {
-  return { id: str(row, 'id'), learnerId: str(row, 'learner_id'), templateKey: str(row, 'template_key'), goal: str(row, 'goal'), status: str(row, 'status') as Roadmap['status'], revision: num(row, 'revision'), inputSnapshot: parsed(row.input_snapshot_json, {}), createdAt: str(row, 'created_at'), updatedAt: str(row, 'updated_at'), progress }
+  return { id: str(row, 'id'), learnerId: str(row, 'learner_id'), templateKey: str(row, 'template_key'), goal: str(row, 'goal'), status: str(row, 'status') as Roadmap['status'], revision: num(row, 'revision'), inputSnapshot: parsed(row.input_snapshot_json, {}), createdAt: str(row, 'created_at'), updatedAt: str(row, 'updated_at'), executionProposal: parsed<ExecutionProposal | null>(row.execution_proposal_json, null), progress }
 }
 
 export class PlanningService {
+  private dynamicRuntimeChecker: ((practice: PracticeRun) => DynamicRuntimeStatus) | null = null
   private readonly resumeStoragePath: string
   private readonly resumeMaxBytes: number
 
@@ -91,12 +93,17 @@ export class PlanningService {
     this.resumeMaxBytes = options.resumeMaxBytes ?? 10 * 1024 * 1024
   }
 
+  setDynamicRuntimeChecker(checker: (practice: PracticeRun) => DynamicRuntimeStatus): void { this.dynamicRuntimeChecker = checker }
+
   private get db(): Database.Database { return this.repository.db }
 
   private assertLearner(learnerId: string): void { this.repository.ensureLearner(learnerId) }
 
-  async uploadResume(learnerId: string, sessionId: string, input: { filename: string; mimetype: string; file: Readable }): Promise<ResumeAttachment> {
+  async uploadResume(learnerId: string, sessionId: string, input: { filename: string; mimetype: string; file: Readable; clientRequestId?: string }): Promise<ResumeAttachment> {
     this.sessionRow(sessionId, learnerId)
+    const clientRequestId = input.clientRequestId?.trim() || randomUUID()
+    const replay = this.repository.getPlanningResumeByRequest(sessionId, learnerId, clientRequestId)
+    if (replay) return replay
     const filename = path.basename(input.filename).trim()
     if (!filename.toLowerCase().endsWith('.pdf')) throw new LabError('resume_pdf_only', '简历只支持 PDF 文件', 422)
     if (input.mimetype && input.mimetype !== 'application/pdf') throw new LabError('resume_pdf_only', '简历只支持 PDF 文件', 422)
@@ -130,13 +137,12 @@ export class PlanningService {
       try {
         parsed = await parseResumePdf(await readFile(temporaryPath))
       } catch (error) {
+        if (error instanceof ResumeTextUnavailableError) throw new LabError('resume_text_unavailable', error.message, 422)
         if (error instanceof ResumeParseError) throw new LabError('resume_parse_failed', error.message, 422)
         throw error
       }
       await rename(temporaryPath, storedPath)
-      const saved = this.repository.replacePlanningResumeAttachment({ id, learnerId, planningSessionId: sessionId, originalFilename: filename, storedFilename, sizeBytes, sha256: hash.digest('hex'), pageCount: parsed.pageCount, extractedText: parsed.text })
-      if (saved.previousStoredFilename) await unlink(path.join(this.resumeStoragePath, saved.previousStoredFilename)).catch(() => undefined)
-      return saved.attachment
+      return this.repository.replaceLearnerResumeDocument({ id, learnerId, planningSessionId: sessionId, clientRequestId, originalFilename: filename, storedFilename, sizeBytes, sha256: hash.digest('hex'), pageCount: parsed.pageCount, extractedText: parsed.text })
     } catch (error) {
       output.destroy()
       await Promise.all([rm(temporaryPath, { force: true }), rm(storedPath, { force: true })])
@@ -183,6 +189,7 @@ export class PlanningService {
       if (error instanceof Error && error.message.includes('UNIQUE') && input.clientRequestId) { const existing = this.db.prepare('SELECT * FROM planning_sessions WHERE learner_id = ? AND client_request_id = ?').get(learnerId, input.clientRequestId) as Row; return this.sessionFrom(existing) }
       throw error
     }
+    this.repository.linkCurrentResumeToSession(learnerId, id)
     return this.sessionFrom(this.sessionRow(id, learnerId))
   }
 
@@ -252,9 +259,14 @@ export class PlanningService {
     const next = this.getDraftBySession(learnerId, sessionId); if (!next) throw new LabError('roadmap_not_found', '路线草案生成失败', 500); return this.getDraftForLearner(learnerId, next.id)
   }
 
-  confirm(learnerId: string, id: string, revision: number): LearningPlan {
+  confirm(learnerId: string, id: string, revision: number, startUnitKey?: string): LearningPlan {
     const draft = this.roadmapRow(id, learnerId); if (str(draft, 'status') === 'active') return this.repository.getActivePlan(learnerId) as LearningPlan; if (str(draft, 'status') !== 'draft') throw new LabError('roadmap_not_draft', '路线草案已经失效', 409); if (num(draft, 'revision') !== revision) throw new LabError('roadmap_revision_conflict', '路线草案已更新，请刷新后确认', 409)
-    const snapshot = parsed<Record<string, unknown>>(draft.input_snapshot_json, {}); const sessionId = String(snapshot.sessionId ?? ''); const session = this.sessionRow(sessionId, learnerId); const answers = snapshot; const planId = randomUUID(); const intakeId = randomUUID(); const now = new Date().toISOString()
+    const snapshot = parsed<Record<string, unknown>>(draft.input_snapshot_json, {}); const sessionId = String(snapshot.sessionId ?? ''); const session = this.sessionRow(sessionId, learnerId); const answers = snapshot; const parsedProposal = parsed<ExecutionProposal | null>(draft.execution_proposal_json, null); const proposal = parsedProposal && Array.isArray(parsedProposal.options) ? parsedProposal : null; const chosenOption = proposal?.options?.find((item) => item.unitKey === startUnitKey) ?? null
+    if (str(draft, 'template_key') === 'agent-roadmap-v2' && proposal) {
+      if (!startUnitKey) throw new LabError('start_decision_required', '确认路线前必须选择一个开始节点', 409)
+      if (!chosenOption) throw new LabError('invalid_start_decision', '只能从规划助手提供的起点选项中选择', 409)
+    }
+    const planId = randomUUID(); const intakeId = randomUUID(); const now = new Date().toISOString()
     let idempotentPlanId: string | null = null
     const tx = this.db.transaction(() => {
       const latestDraft = this.db.prepare('SELECT status, revision FROM learning_roadmaps WHERE id = ? AND learner_id = ?').get(id, learnerId) as Row | undefined
@@ -271,9 +283,11 @@ export class PlanningService {
       this.db.prepare('INSERT INTO intakes(id, learner_id, goal, technology, outcome, weekly_minutes, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, \'planned\', ?, ?)').run(intakeId, learnerId, str(draft, 'goal'), '后端 + AI 应用工程', typeof answers.outcome === 'string' ? answers.outcome : null, typeof answers.weekly_minutes === 'number' ? answers.weekly_minutes : null, now, now)
       const templateKey = str(draft, 'template_key') || TEMPLATE_KEY; const title = templateKey === 'agent-roadmap-v2' ? '基于规划对话的学习路线' : '高级后端 + AI 应用工程师路线'
       this.db.prepare("INSERT INTO learning_plans(id, learner_id, intake_id, roadmap_id, title, goal, source_status, status, plan_state, template_key, revision, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, 'local_catalog', 'active', 'active', ?, 1, ?, ?)").run(planId, learnerId, intakeId, id, title, str(draft, 'goal'), templateKey, now, now)
-        const allNodes = this.db.prepare("SELECT n.*, p.status AS progress_status FROM roadmap_nodes n INNER JOIN roadmap_node_progress p ON p.node_id = n.id AND p.roadmap_id = n.roadmap_id WHERE n.roadmap_id = ? ORDER BY n.position ASC").all(id) as Row[]; const unitKeys = Array.isArray(snapshot.unitKeys) ? snapshot.unitKeys.filter((key): key is string => typeof key === 'string') : []; const nodeByKey = new Map(allNodes.map((node) => [str(node, 'node_key'), node])); const actionableTypes = new Set(['concept', 'lab', 'project']); const invalidUnitKeys = unitKeys.filter((key) => { const node = nodeByKey.get(key); return !node || !actionableTypes.has(str(node, 'node_type')) }); if (invalidUnitKeys.length > 0) throw new LabError('roadmap_unit_not_actionable', `路线单元必须指向具体学习节点：${invalidUnitKeys.join(', ')}`, 409); const selectedNodes = (unitKeys.length > 0 ? unitKeys.map((key) => nodeByKey.get(key)).filter((node): node is Row => Boolean(node)) : allNodes.filter((node) => actionableTypes.has(str(node, 'node_type'))).slice(0, 4)); if (selectedNodes.length === 0) throw new LabError('roadmap_no_units', '路线没有可执行的学习单元', 409)
+        const allNodes = this.db.prepare("SELECT n.*, p.status AS progress_status FROM roadmap_nodes n INNER JOIN roadmap_node_progress p ON p.node_id = n.id AND p.roadmap_id = n.roadmap_id WHERE n.roadmap_id = ? ORDER BY n.position ASC").all(id) as Row[]; const unitKeys = chosenOption?.orderedInitialUnitKeys ?? (Array.isArray(snapshot.unitKeys) ? snapshot.unitKeys.filter((key): key is string => typeof key === 'string') : []); const nodeByKey = new Map(allNodes.map((node) => [str(node, 'node_key'), node])); const actionableTypes = new Set(['concept', 'lab', 'project']); const invalidUnitKeys = unitKeys.filter((key) => { const node = nodeByKey.get(key); return !node || !actionableTypes.has(str(node, 'node_type')) }); if (invalidUnitKeys.length > 0) throw new LabError('roadmap_unit_not_actionable', `路线单元必须指向具体学习节点：${invalidUnitKeys.join(', ')}`, 409); const selectedNodes = (unitKeys.length > 0 ? unitKeys.map((key) => nodeByKey.get(key)).filter((node): node is Row => Boolean(node)) : allNodes.filter((node) => actionableTypes.has(str(node, 'node_type'))).slice(0, 4)); if (selectedNodes.length === 0) throw new LabError('roadmap_no_units', '路线没有可执行的学习单元', 409)
       const insertUnit = this.db.prepare('INSERT INTO plan_units(id, plan_id, roadmap_node_id, position, title, objective, case_id, status, availability, learning_mode, estimated_minutes, rationale, completed_at, source_refs_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, \'[]\')')
-        selectedNodes.forEach((node, index) => { const mode = str(node, 'learning_mode') as PlanUnit['learningMode']; insertUnit.run(randomUUID(), planId, str(node, 'id'), index + 1, str(node, 'title'), str(node, 'summary'), nullable(node, 'case_id'), index === 0 ? 'current' : 'upcoming', 'available', mode, num(node, 'estimated_minutes'), '根据当前规划对话切出的一到两周学习单元。') })
+        let startPlanUnitId: string | null = null
+        selectedNodes.forEach((node, index) => { const planUnitId = randomUUID(); if (index === 0) startPlanUnitId = planUnitId; const mode = str(node, 'learning_mode') as PlanUnit['learningMode']; insertUnit.run(planUnitId, planId, str(node, 'id'), index + 1, str(node, 'title'), str(node, 'summary'), nullable(node, 'case_id'), index === 0 ? 'current' : 'upcoming', 'available', mode, num(node, 'estimated_minutes'), chosenOption?.rationale.join(' ') ?? '根据当前规划对话切出的一到两周学习单元。') })
+        if (startPlanUnitId) this.db.prepare('INSERT INTO plan_start_decisions(id, learner_id, plan_id, roadmap_id, roadmap_node_id, plan_unit_id, source, rationale_snapshot_json, plan_revision, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(randomUUID(), learnerId, planId, id, str(selectedNodes[0], 'id'), startPlanUnitId, chosenOption?.unitKey === proposal?.recommendedUnitKey ? 'agent_recommended' : 'learner_selected', JSON.stringify(chosenOption ?? {}), 1, now)
       this.db.prepare("UPDATE planning_sessions SET status = 'confirmed', updated_at = ? WHERE id = ? AND learner_id = ?").run(now, sessionId, learnerId)
       this.db.prepare('INSERT INTO roadmap_events(id, learner_id, roadmap_id, node_id, type, payload_json, created_at) VALUES (?, ?, ?, NULL, \'roadmap_confirmed\', ?, ?)').run(randomUUID(), learnerId, id, JSON.stringify({ planId, previousPlan: current?.id ?? null }), now)
       this.db.prepare('INSERT INTO plan_events(id, learner_id, plan_id, plan_unit_id, practice_run_id, type, payload_json, created_at) VALUES (?, ?, ?, NULL, NULL, \'plan_created\', ?, ?)').run(randomUUID(), learnerId, planId, JSON.stringify({ templateKey, roadmapId: id, unitKeys }), now)
@@ -325,13 +339,29 @@ export class PlanningService {
   private currentLearning(plan: LearningPlan | null, roadmap: Roadmap | null): CurrentLearning | null {
     const unit = plan?.units.find((candidate) => candidate.status === 'current')
     if (!plan || !unit) return null
-    const entryKind: CurrentLearning['entryKind'] = unit.learningMode === 'lab' && unit.availability === 'available' && Boolean(unit.caseId)
+    const node = unit.roadmapNodeId
+      ? this.db.prepare('SELECT capability_key, node_key, title, summary FROM roadmap_nodes WHERE id = ? AND roadmap_id = ?').get(unit.roadmapNodeId, plan.roadmapId ?? roadmap?.id ?? '') as Row | undefined
+      : undefined
+    const catalog = new PracticeEnvironmentCatalog(this.db)
+    const capability = node?.capability_key ? catalog.byCapability(String(node.capability_key)) : node ? catalog.recommend(`${node.node_key ?? ''} ${node.title ?? ''} ${node.summary ?? ''}`) : null
+    const capabilityKey = capability?.capabilityKey ?? (node?.capability_key ? String(node.capability_key) : null)
+    const learningCaseStatus = unit.learningCaseId
+      ? (this.db.prepare('SELECT status FROM learning_cases WHERE id = ? AND learner_id = ?').get(unit.learningCaseId, plan.learnerId) as Row | undefined)?.status
+      : null
+    const practice = this.repository.findActivePracticeForUnit(plan.learnerId, unit.id)
+    const hasReadyCase = learningCaseStatus === 'ready'
+    const runtimeStatus: DynamicRuntimeStatus = unit.learningCaseId && practice
+      ? (this.dynamicRuntimeChecker?.(practice) ?? (practice.labRunId ? 'expired' : practice.runtimeQueueTicketId ? 'queued' : 'none'))
+      : 'none'
+    const entryKind: CurrentLearning['entryKind'] = unit.learningMode === 'lab' && unit.availability === 'available' && (Boolean(unit.caseId) || hasReadyCase)
       ? 'gym'
-      : unit.learningMode === 'workspace' && unit.availability === 'available'
-        ? 'workspace_setup'
-        : unit.learningMode === 'knowledge'
-          ? 'roadmap_node'
-          : 'unavailable'
+      : unit.learningMode === 'lab' && unit.availability === 'available' && Boolean(capability)
+        ? 'practice_setup'
+        : unit.learningMode === 'workspace' && unit.availability === 'available'
+          ? 'workspace_setup'
+          : unit.learningMode === 'knowledge'
+            ? 'roadmap_node'
+            : 'unavailable'
     return {
       planId: plan.id,
       planUnitId: unit.id,
@@ -341,8 +371,13 @@ export class PlanningService {
       learningMode: unit.learningMode,
       availability: unit.availability,
       caseId: unit.caseId,
-      entryKind,
-    }
+      learningCaseId: unit.learningCaseId ?? null,
+        capabilityKey: capabilityKey ? String(capabilityKey) : null,
+        entryKind,
+        practiceRunId: practice?.id ?? null,
+        practiceStatus: practice?.status ?? 'none',
+        runtimeStatus,
+      }
   }
 
   listNodes(learnerId: string, roadmapId: string, parentId: string | null, depth = 1): RoadmapNodePage {

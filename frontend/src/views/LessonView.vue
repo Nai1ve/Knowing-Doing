@@ -7,6 +7,7 @@ import PracticeWorkspace from '@/components/learning/PracticeWorkspace.vue'
 import { useLabStore } from '@/stores/lab'
 import { usePracticeStore } from '@/stores/practice'
 import { usePlanStore } from '@/stores/plan'
+import { isBuildablePractice, isDynamicGym, isFixedMysql } from '@/utils/learning-entry'
 
 const labStore = useLabStore()
 const practiceStore = usePracticeStore()
@@ -62,9 +63,25 @@ async function initialize() {
       await router.replace({ name: 'case-setup', params: { roadmapId: planStore.productPlan.roadmapId, nodeId: unit.roadmapNodeId } })
       return
     }
-    if (unit.learningMode !== 'lab' || unit.availability !== 'available' || !unit.caseId) {
-      lessonTitle.value = '当前学习内容尚未开放'
-      lessonDescription.value = '这份路线已经保存，但当前单元没有可进入的 MySQL 实验室。'
+    if (isDynamicGym(unit)) {
+      await practiceStore.startPlanned(planStore.productPlan.id, unit.id)
+      if (run !== initialization) return
+      if (practiceStore.run?.planUnitId === unit.id && labStore.run) {
+        labStore.startHeartbeat()
+        return
+      }
+      lessonTitle.value = '知行 Gym 暂时无法进入'
+      lessonDescription.value = practiceStore.error ?? '当前动态实践没有可执行的实验环境，请返回 Gym 构建页重试。'
+      lessonUnavailable.value = true
+      return
+    }
+    if (isBuildablePractice(unit)) {
+      await router.replace({ name: 'gym-build', query: { planId: planStore.productPlan.id, planUnitId: unit.id } })
+      return
+    }
+    if (!isFixedMysql(unit)) {
+      lessonTitle.value = unit.learningMode === 'lab' ? '当前实践能力尚未开放' : '当前学习节点不能进入实验'
+      lessonDescription.value = unit.learningMode === 'lab' ? '当前节点需要先构建知行 Gym，但对应的实践能力暂未开放。' : '请从路线图进入对应的知识学习或代码实践入口。'
       lessonUnavailable.value = true
       return
     }
@@ -78,16 +95,19 @@ async function initialize() {
 }
 
 function startCurrentPractice() {
-  if (planStore.productPlan && currentUnit.value?.learningMode === 'lab' && currentUnit.value.availability === 'available' && currentUnit.value.caseId) void practiceStore.startPlanned(planStore.productPlan.id, currentUnit.value.id)
-  else practiceStore.error = '请从当前计划选择一个可用的实验室单元。'
+  const plan = planStore.productPlan
+  const unit = currentUnit.value
+  if (plan && unit && isFixedMysql(unit)) void practiceStore.startPlanned(plan.id, unit.id)
+  else if (plan && unit && isBuildablePractice(unit)) void router.push({ name: 'gym-build', query: { planId: plan.id, planUnitId: unit.id } })
+  else practiceStore.error = '请从当前计划选择一个可用的实践单元。'
 }
 </script>
 
 <template>
-  <div v-if="lessonLoading || labStore.loading || practiceStore.restoring" class="lesson-loading" role="status">正在确认知行 Gym 入口…</div>
-  <section v-else-if="lessonUnavailable" class="lesson-unavailable"><LockKeyhole :size="18" aria-hidden="true" /><div><div class="eyebrow">Gym entry unavailable</div><h1>{{ lessonTitle }}</h1><p>{{ lessonDescription }}</p><RouterLink class="primary-button" :to="{ name: planStore.productPlan ? 'overview' : 'start' }">{{ planStore.productPlan ? '返回总览' : '开始建立计划' }} <ArrowRight :size="14" aria-hidden="true" /></RouterLink></div></section>
+  <div v-if="lessonLoading || labStore.loading || practiceStore.restoring || practiceStore.starting" class="lesson-loading" role="status">正在确认知行 Gym 入口…</div>
+  <section v-else-if="lessonUnavailable" class="lesson-unavailable"><LockKeyhole :size="18" aria-hidden="true" /><div><div class="eyebrow">实践入口状态</div><h1>{{ lessonTitle }}</h1><p>{{ lessonDescription }}</p><RouterLink class="primary-button" :to="{ name: planStore.productPlan ? 'overview' : 'start' }">{{ planStore.productPlan ? '返回总览' : '开始建立计划' }} <ArrowRight :size="14" aria-hidden="true" /></RouterLink></div></section>
   <PracticeWorkspace
-    v-else-if="currentUnit?.learningMode === 'lab' && practiceStore.run?.planUnitId === currentUnit.id"
+    v-else-if="currentUnit?.learningMode === 'lab' && (isFixedMysql(currentUnit) || isDynamicGym(currentUnit)) && practiceStore.run?.planUnitId === currentUnit.id && labStore.run"
     :practice="practiceStore.run"
     :snapshot="practiceStore.snapshot"
     :completion="practiceStore.completion"
@@ -125,7 +145,7 @@ function startCurrentPractice() {
     @verify="practiceStore.verify"
   />
   <PracticeLauncher
-    v-else
+    v-else-if="isFixedMysql(currentUnit)"
     :history="practiceStore.history"
     :cases="labStore.cases"
     :health="labStore.health"

@@ -10,8 +10,6 @@ const isWorkspacePage = computed(() => currentPage.value === 'lesson' || current
 const tocItems = computed(() => ({
   overview: [{ label: '总目标', href: '#goal' }, { label: '当前状况', href: '#status' }, { label: '整体路线', href: '#overview-route' }, { label: '当前节点', href: '#current-node' }],
   start: [{ label: '开始学习', href: '#capture-title' }],
-  diagnostic: [{ label: '诊断输入', href: '#diagnostic-title' }],
-  'plan-preview': [{ label: '计划路线', href: '#proposal-title' }, { label: '安排依据', href: '#proposal-rationale' }],
   route: [{ label: '知识树', href: '#route-tree' }, { label: '当前节点', href: '#route-selected' }],
   lesson: [{ label: 'MySQL 实验室', href: '#lab-run-title' }, { label: 'SQL 工作台', href: '#sql-workbench-title' }, { label: '执行结果', href: '#execution-result-title' }],
   notes: [{ label: '实践记录', href: '#note-capture' }, { label: '整理大纲', href: '#note-outline' }, { label: '成文发布', href: '#note-article' }],

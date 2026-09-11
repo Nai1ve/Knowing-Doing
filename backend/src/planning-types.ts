@@ -6,7 +6,19 @@ export type RoadmapStatus = 'draft' | 'active' | 'archived' | 'superseded'
 export type RoadmapNodeStatus = 'locked' | 'available' | 'in_progress' | 'completed' | 'verified' | 'self_reported'
 export type RoadmapNodeType = 'domain' | 'capability' | 'concept' | 'lab' | 'project'
 export type RoadmapLearningMode = 'lab' | 'workspace' | 'knowledge' | 'unavailable'
-export type RoadmapEntryKind = 'gym' | 'workspace_setup' | 'roadmap_node' | 'unavailable'
+export type RoadmapEntryKind = 'gym' | 'practice_setup' | 'workspace_setup' | 'roadmap_node' | 'unavailable'
+export type DynamicRuntimeStatus = 'none' | 'queued' | 'active' | 'expired' | 'failed'
+
+export interface ExecutionProposalOption {
+  unitKey: string
+  rationale: string[]
+  orderedInitialUnitKeys: string[]
+}
+
+export interface ExecutionProposal {
+  recommendedUnitKey: string
+  options: ExecutionProposalOption[]
+}
 
 export interface PlanningTurn {
   id: string
@@ -69,6 +81,7 @@ export interface Roadmap {
   inputSnapshot: Record<string, unknown>
   createdAt: string
   updatedAt: string
+  executionProposal: ExecutionProposal | null
   progress: { total: number; completed: number; verified: number; available: number }
 }
 
@@ -95,7 +108,12 @@ export interface CurrentLearning {
   learningMode: RoadmapLearningMode
   availability: 'available' | 'coming_soon'
   caseId: string | null
+  learningCaseId: string | null
+  capabilityKey: string | null
   entryKind: RoadmapEntryKind
+  practiceRunId: string | null
+  practiceStatus: 'none' | 'active' | 'ready_to_close' | 'resolved' | 'ended'
+  runtimeStatus: DynamicRuntimeStatus
 }
 
 export interface RoadmapTree {

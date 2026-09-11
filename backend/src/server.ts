@@ -18,6 +18,7 @@ import { DockerWorkspaceRuntimeAdapter } from './runtime-adapter.js'
 import { WorkspaceCompletionService } from './workspace-completion-service.js'
 import { SourceSnapshotService, ZhihuSourceContentProvider } from './case-source-snapshot.js'
 import { MySqlDynamicCaseService } from './mysql-dynamic-case-service.js'
+import { GymBuildService } from './gym-build-service.js'
 
 const config = loadConfig()
 const productRepository = new ProductRepository(config.productDbPath)
@@ -50,6 +51,7 @@ const { app, scheduler } = buildApp({
   agentPlanningServiceFactory: () => agentPlanningService,
   caseWorkspaceServiceFactory: () => caseWorkspaceService,
   mysqlDynamicCaseServiceFactory: (scheduler) => new MySqlDynamicCaseService(productRepository, scheduler),
+  gymBuildServiceFactory: (workspace, mysql) => new GymBuildService(productRepository, workspace, mysql),
   runtimeStatus: async () => ({ model: { configured: Boolean(config.modelBaseUrl && config.modelApiKey), name: config.modelName }, zhihu: { configured: Boolean(config.zhihuAccessSecret), executable: Boolean(config.zhihuAccessSecret), lastRetrieval: null } }),
 })
 

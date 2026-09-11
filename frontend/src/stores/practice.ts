@@ -1,7 +1,7 @@
 import { computed, ref } from 'vue'
 import { defineStore } from 'pinia'
 import { ApiError } from '@/api/client'
-import { createProductPin, deleteProductPin, executeProductLab, getProductLabAccess, getProductPracticeHistory, getProductSnapshot, reopenProductLab, retryProductTutor, startPlannedProductPractice, startProductPractice, streamProductTutor, submitProductArtifact, verifyProductPractice } from '@/api/productService'
+import { createProductPin, deleteProductPin, executeProductLab, getDynamicPracticeRuntime, getProductLabAccess, getProductPracticeHistory, getProductSnapshot, reopenProductLab, retryProductTutor, startPlannedProductPractice, streamProductTutor, submitProductArtifact, verifyProductPractice } from '@/api/productService'
 import type { LabCaseId, LabExecutionResult } from '@/types/lab'
 import type { ProductPracticeCompletion, ProductPracticeHistoryItem, ProductPracticePin, ProductPracticeRun, ProductPracticeStart, ProductSnapshot, ProductTutorMessage, ProductTutorResponse, ProductTutorSource, ProductTutorStreamEvent } from '@/types/product'
 import { useLabStore } from './lab'
@@ -26,6 +26,7 @@ export const usePracticeStore = defineStore('practice', () => {
   const restoring = ref(false)
   const error = ref<string | null>(null)
   let queueTimer: number | null = null
+  let queueGeneration = 0
   const currentGap = computed(() => snapshot.value?.stageMemories.find((memory) => memory.stage === run.value?.stage)?.memory.currentGap as string | undefined)
   const nextQuestion = computed(() => [...messages.value].reverse().find((message) => message.role === 'assistant')?.content ?? '先说明你观察到的现象和当前判断。')
 
@@ -104,28 +105,6 @@ export const usePracticeStore = defineStore('practice', () => {
     }
   }
 
-  async function start(planId: string, planUnitId: string) {
-    if (starting.value) return
-    starting.value = true; error.value = null
-    try {
-      const result: ProductPracticeStart = await startProductPractice(planId, planUnitId)
-      run.value = result.practice
-      window.localStorage.setItem('zhixing.active.practice.id', result.practice.id)
-      window.localStorage.setItem(lastPracticeKey, result.practice.id)
-      if (result.lab) {
-        const labStore = useLabStore()
-        await labStore.adoptRun(result.lab.run, result.lab.accessToken)
-      }
-      snapshot.value = await getProductSnapshot(result.practice.id)
-      hydrate(snapshot.value)
-      await loadHistory()
-      if (result.queue) {
-        error.value = `当前案例正在排队，第 ${result.queue.position ?? '—'} 位`
-        pollLabAccess(result.practice.id)
-      }
-    } catch (cause) { error.value = cause instanceof Error ? cause.message : '实践启动失败' } finally { starting.value = false }
-  }
-
   async function startPlanned(planId: string, planUnitId: string) {
     if (starting.value) return
     starting.value = true; error.value = null
@@ -138,14 +117,64 @@ export const usePracticeStore = defineStore('practice', () => {
       snapshot.value = await getProductSnapshot(result.practice.id)
       hydrate(snapshot.value)
       await loadHistory()
-      if (result.queue) { error.value = `当前实践正在排队，第 ${result.queue.position ?? '—'} 位`; void pollLabAccess(result.practice.id) }
+      if (result.queue) {
+        error.value = `当前实践正在排队，第 ${result.queue.position ?? '—'} 位`
+        if (result.practice.learningCaseId) void pollDynamicRuntime(result.practice.id)
+        else void pollLabAccess(result.practice.id)
+      }
     } catch (cause) { error.value = cause instanceof Error ? cause.message : '实践启动失败' } finally { starting.value = false }
   }
 
+  async function adoptStartedPractice(result: ProductPracticeStart) {
+    queueGeneration += 1
+    if (queueTimer !== null && typeof window !== 'undefined') window.clearTimeout(queueTimer)
+    queueTimer = null
+    run.value = result.practice
+    if (typeof window !== 'undefined') {
+      window.localStorage.setItem(activePracticeKey, result.practice.id)
+      window.localStorage.setItem(lastPracticeKey, result.practice.id)
+    }
+    if (result.lab) await useLabStore().adoptRun(result.lab.run, result.lab.accessToken)
+    hydrate(await getProductSnapshot(result.practice.id))
+    await loadHistory()
+    if (result.queue && result.practice.learningCaseId) {
+      error.value = `当前实践正在排队，第 ${result.queue.position ?? '—'} 位`
+      void pollDynamicRuntime(result.practice.id)
+    }
+  }
+
+  async function pollDynamicRuntime(practiceId: string) {
+    const generation = ++queueGeneration
+    if (queueTimer !== null && typeof window !== 'undefined') window.clearTimeout(queueTimer)
+    try {
+      const runtime = await getDynamicPracticeRuntime(practiceId)
+      if (generation !== queueGeneration) return
+      if (runtime.status === 'active' && runtime.lab) {
+        const labStore = useLabStore()
+        await labStore.adoptRun(runtime.lab.run, runtime.lab.accessToken)
+        run.value = runtime.practice
+        hydrate(await getProductSnapshot(practiceId))
+        error.value = null
+        return
+      }
+      if (runtime.status === 'queued') {
+        error.value = `当前实践正在排队，第 ${runtime.queue?.position ?? '—'} 位`
+        queueTimer = window.setTimeout(() => { void pollDynamicRuntime(practiceId) }, runtime.queue?.pollAfterMs ?? 2000)
+        return
+      }
+      useLabStore().clear()
+      error.value = runtime.error?.message ?? (runtime.status === 'expired' ? '实验运行已失效，请重新启动 Gym。' : '动态 Gym 尚未启动。')
+    } catch (cause) {
+      if (generation === queueGeneration) error.value = cause instanceof Error ? cause.message : '动态 Gym 状态获取失败'
+    }
+  }
+
   async function pollLabAccess(practiceId: string) {
+    const generation = ++queueGeneration
     if (queueTimer !== null) window.clearTimeout(queueTimer)
     try {
       const access = await getProductLabAccess(practiceId)
+      if (generation !== queueGeneration) return
       if (access.status === 'ready' && access.run && access.accessToken) {
         const labStore = useLabStore()
         await labStore.adoptRun(access.run, access.accessToken)
@@ -158,7 +187,7 @@ export const usePracticeStore = defineStore('practice', () => {
         return
       }
       queueTimer = window.setTimeout(() => { void pollLabAccess(practiceId) }, 2000)
-    } catch (cause) { error.value = cause instanceof Error ? cause.message : '队列状态获取失败' }
+    } catch (cause) { if (generation === queueGeneration) error.value = cause instanceof Error ? cause.message : '队列状态获取失败' }
   }
 
   async function ask(message: string) {
@@ -261,6 +290,6 @@ export const usePracticeStore = defineStore('practice', () => {
     await deleteProductPin(run.value.id, pinId)
     if (snapshot.value) snapshot.value = { ...snapshot.value, pins: snapshot.value.pins.filter((item) => item.id !== pinId) }
   }
-  function clear() { if (queueTimer !== null) window.clearTimeout(queueTimer); queueTimer = null; run.value = null; snapshot.value = null; completion.value = null; messages.value = []; lastTutor.value = null; sources.value = []; tutorFailure.value = null; invocationId.value = null; error.value = null; if (typeof window !== 'undefined') window.localStorage.removeItem(activePracticeKey) }
-  return { run, snapshot, completion, messages, history, historyLoading, sources, tutorFailure, invocationId, lastTutor, starting, restoring, tutorLoading, verifying, error, currentGap, nextQuestion, start, startPlanned, loadHistory, selectHistory, restoreActive, restoreRecord, ask, retryTutor, reopen, execute, verify, addExternal, pin, unpin, clear }
+  function clear() { queueGeneration += 1; if (queueTimer !== null && typeof window !== 'undefined') window.clearTimeout(queueTimer); queueTimer = null; run.value = null; snapshot.value = null; completion.value = null; messages.value = []; lastTutor.value = null; sources.value = []; tutorFailure.value = null; invocationId.value = null; error.value = null; if (typeof window !== 'undefined') window.localStorage.removeItem(activePracticeKey) }
+  return { run, snapshot, completion, messages, history, historyLoading, sources, tutorFailure, invocationId, lastTutor, starting, restoring, tutorLoading, verifying, error, currentGap, nextQuestion, startPlanned, adoptStartedPractice, loadHistory, selectHistory, restoreActive, restoreRecord, ask, retryTutor, reopen, execute, verify, addExternal, pin, unpin, clear }
 })

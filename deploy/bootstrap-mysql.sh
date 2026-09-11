@@ -56,5 +56,6 @@ docker exec -e MYSQL_PWD="$MYSQL_ROOT_PASSWORD" zhixing-lab-mysql mysql -uroot -
   GRANT ALL PRIVILEGES ON zhixing_lab_slow.* TO 'zhixing_lab_admin'@'%';
   GRANT ALL PRIVILEGES ON zhixing_lab_deadlock.* TO 'zhixing_lab_admin'@'%';
   GRANT ALL PRIVILEGES ON zhixing_lab_pagination.* TO 'zhixing_lab_admin'@'%';
+  GRANT ALL PRIVILEGES ON *.* TO 'zhixing_lab_admin'@'%';
   FLUSH PRIVILEGES;
 "

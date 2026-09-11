@@ -26,8 +26,10 @@ token 不能继续访问。token 仍有 20 分钟最长生命周期。
 1. 使用平台提供的 MySQL 8 管理连接，人工执行
    `migrations/001_zhixing_lab_schema.sql`。应用启动不会执行 migration 或 DDL。
 2. 预先创建应用账号，并只授予 runner 对三个案例 schema 的
-   `SELECT, INSERT, UPDATE, DELETE, INDEX, ALTER` 权限。admin 账号只由 reset
-   路径使用。账号密码只通过环境变量注入，不进入日志或 HTTP 响应。
+   `SELECT, INSERT, UPDATE, DELETE, INDEX, ALTER` 权限。admin 账号由 reset 和
+   动态案例注册路径使用，需要具备 `ALL PRIVILEGES ON *.*`，以便为动态案例创建
+   隔离 schema 并把最小运行权限授予 runner。该账号只在服务端使用，不向用户暴露。
+   账号密码只通过环境变量注入，不进入日志或 HTTP 响应。
 3. 人工确认三个 schema 的 fixture version 都是 `2026-08-28.1`，再启动 API。
 
 权限示例（由部署人员按平台账号策略执行，不由应用执行）：
@@ -71,6 +73,21 @@ npm start
 `VITE_API_PROXY_TARGET` 分别覆盖。
 构建会把 TypeScript 输出到 `dist`；reset 脚本
 运行时优先读取构建目录外的 `fixtures`，因此不会依赖应用启动时生成文件。
+
+本地演示数据需要全量重置时，先停止 API，再先查看影响范围：
+
+```bash
+npm run product:reset-local -- --include-mysql
+```
+
+确认输出的 SQLite、简历目录和 Docker 卷均为本地目标后，执行：
+
+```bash
+npm run product:reset-local -- --apply --include-mysql
+npm run db:migrate
+```
+
+该操作不会自动执行 MySQL schema、账号或 fixture 初始化；仍需按本节既有步骤重新初始化后再启动 API。
 
 ## HTTP 调用示例
 

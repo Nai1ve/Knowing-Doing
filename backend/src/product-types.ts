@@ -421,8 +421,23 @@ export interface ResumeAttachment {
   pageCount: number
   textLength: number
   parseError: string | null
+  version: number
+  includedAt: string
+  includedInPlanningContext: boolean
   createdAt: string
   updatedAt: string
+}
+
+export interface ResumeContextChunk {
+  id: string
+  documentId: string
+  position: number
+  content: string
+}
+
+export interface LearnerResumeContext {
+  attachment: ResumeAttachment
+  chunks: ResumeContextChunk[]
 }
 
 export interface PlanProposalUnit {
@@ -464,6 +479,7 @@ export interface PlanUnit {
   title: string
   objective: string
   caseId: CaseId | null
+  learningCaseId?: string | null
   status: 'upcoming' | 'current' | 'completed'
   availability: 'available' | 'coming_soon'
   completedAt: string | null
@@ -499,6 +515,8 @@ export interface PracticeRun {
   practiceKind?: PracticeKind
   learningCaseId?: string | null
   labRunId: string | null
+  runtimeQueueTicketId?: string | null
+  runtimeQueueExpiresAt?: string | null
   stage: CaseStage
   hintLevel: number
   noProgressCount: number

@@ -8,15 +8,16 @@ import { usePlanStore } from '@/stores/plan'
 import { useLessonStore } from '@/stores/lesson'
 import { useNotesStore } from '@/stores/notes'
 import { usePracticeStore } from '@/stores/practice'
+import type { EventType, PracticeEvent } from '@/types/domain'
 
 const planStore = usePlanStore()
 const lessonStore = useLessonStore()
 const notesStore = useNotesStore()
 const practiceStore = usePracticeStore()
-const productEvents = computed(() => (practiceStore.snapshot?.events ?? []).map((event) => ({ id: event.id, type: event.type === 'evidence_captured' ? 'evidence' as const : event.type === 'user_message' ? 'question' as const : event.type === 'artifact_added' ? 'reference' as const : event.type === 'tutor_reply' ? 'observation' as const : 'observation' as const, title: event.type, body: JSON.stringify(event.payload), source: event.actor, createdAt: event.createdAt })))
+const productEvents = computed<PracticeEvent[]>(() => (practiceStore.snapshot?.events ?? []).map((event) => ({ id: event.id, type: event.type === 'evidence_captured' ? 'evidence' : event.type === 'user_message' ? 'question' : event.type === 'artifact_added' ? 'reference' : event.type === 'tutor_reply' ? 'observation' : 'observation', title: event.type, body: JSON.stringify(event.payload), source: event.actor, createdAt: event.createdAt })))
 const filteredEvents = computed(() => {
   const events = practiceStore.snapshot ? productEvents.value : lessonStore.events
-  return notesStore.filter === 'all' ? events : events.filter((event) => event.type === notesStore.filter)
+  return notesStore.filter === 'all' ? events : events.filter((event: PracticeEvent) => event.type === notesStore.filter as EventType)
 })
 
 onMounted(() => {

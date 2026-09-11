@@ -1,5 +1,5 @@
 import { apiClient } from './client'
-import type { AgentPlanningSession, AgentPlanningState, AgentRoadmapGeneration, CurrentRoadmapResponse, KnowledgeRoute, PlanningSession, PlanningStreamEvent, ProductResumeAttachment, RoadmapDraft, RoadmapNode, RoadmapNodePage, RoadmapTree } from '@/types/product'
+import type { AgentPlanningSession, AgentPlanningState, AgentRoadmapGeneration, CurrentRoadmapResponse, KnowledgeRoute, PlanningStreamEvent, ProductPlanAdjustment, ProductResumeAttachment, RoadmapDraft, RoadmapNode, RoadmapNodePage, RoadmapTree } from '@/types/product'
 import { createClientId } from '@/utils/client-id'
 
 const learnerKey = 'zhixing.learner.id'
@@ -43,14 +43,13 @@ export function getKnowledgeRoute(roadmapId: string, nodeId: string, refresh = f
 }
 export function sendKnowledgeFeedback(routeSetId: string, sourceItemId: string, feedback: 'read' | 'too_hard' | 'too_easy' | 'irrelevant' | 'helpful'): Promise<void> { return request<void>(`/product/knowledge-routes/${routeSetId}/feedback`, { method: 'POST', body: JSON.stringify({ sourceItemId, feedback }) }) }
 
-export function createPlanningSession(goal?: string): Promise<PlanningSession> { return request<PlanningSession>('/product/planning-sessions', { method: 'POST', body: JSON.stringify({ goal, clientRequestId: createClientId() }) }) }
-export function getPlanningSession(id: string): Promise<PlanningSession> { return request<PlanningSession>(`/product/planning-sessions/${id}`) }
-export function uploadPlanningResume(sessionId: string, file: File): Promise<ProductResumeAttachment> { const body = new FormData(); body.append('resume', file, file.name); return request<ProductResumeAttachment>(`/product/planning-sessions/${sessionId}/resume`, { method: 'POST', body }) }
-export function addPlanningTurn(id: string, input: { revision: number; stepKey: string; answer: string; structuredValue?: unknown }): Promise<PlanningSession> { return request<PlanningSession>(`/product/planning-sessions/${id}/turns`, { method: 'POST', body: JSON.stringify(input) }) }
-export function adjustPlanning(id: string, input: { revision: number; weeklyMinutes?: number; priorityDomain?: string; masteredNodeKeys?: string[] }): Promise<RoadmapDraft> { return request<RoadmapDraft>(`/product/planning-sessions/${id}/adjustments`, { method: 'POST', body: JSON.stringify(input) }) }
+export function uploadPlanningResume(sessionId: string, file: File, clientRequestId = createClientId()): Promise<ProductResumeAttachment> { const body = new FormData(); body.append('resume', file, file.name); return request<ProductResumeAttachment>(`/product/planning-sessions/${sessionId}/resume`, { method: 'POST', headers: { 'X-Client-Request-Id': clientRequestId }, body }) }
 export function getRoadmapDraft(id: string): Promise<RoadmapDraft> { return request<RoadmapDraft>(`/product/roadmap-drafts/${id}`) }
-export function confirmRoadmap(id: string, revision: number): Promise<unknown> { return request<unknown>(`/product/roadmap-drafts/${id}/confirm`, { method: 'POST', body: JSON.stringify({ revision }) }) }
+export function confirmRoadmap(id: string, revision: number, startUnitKey?: string): Promise<unknown> { return request<unknown>(`/product/roadmap-drafts/${id}/confirm`, { method: 'POST', body: JSON.stringify({ revision, ...(startUnitKey ? { startUnitKey } : {}) }) }) }
 export function getCurrentRoadmap(): Promise<CurrentRoadmapResponse> { return request<CurrentRoadmapResponse>('/product/roadmaps/current') }
 export function getRoadmapTree(id: string, focusNodeId: string | null = null): Promise<RoadmapTree> { const query = new URLSearchParams({ depth: '2' }); if (focusNodeId) query.set('focusNodeId', focusNodeId); return request<RoadmapTree>(`/product/roadmaps/${id}/tree?${query.toString()}`) }
 export function getRoadmapNodes(id: string, parentId: string | null): Promise<RoadmapNodePage> { const suffix = parentId ? `?parentId=${encodeURIComponent(parentId)}&depth=1` : '?depth=1'; return request<RoadmapNodePage>(`/product/roadmaps/${id}/nodes${suffix}`) }
 export function completeRoadmapNode(roadmapId: string, nodeId: string, revision: number, status: 'completed' | 'self_reported' = 'completed'): Promise<RoadmapNode> { return request<RoadmapNode>(`/product/roadmaps/${roadmapId}/nodes/${nodeId}/complete`, { method: 'POST', body: JSON.stringify({ revision, status }) }) }
+export function createPlanAdjustment(planId: string, requestText: string, clientRequestId: string): Promise<ProductPlanAdjustment> { return request<ProductPlanAdjustment>(`/product/plans/${planId}/adjustments`, { method: 'POST', body: JSON.stringify({ request: requestText, clientRequestId }) }) }
+export function getPlanAdjustment(id: string): Promise<ProductPlanAdjustment> { return request<ProductPlanAdjustment>(`/product/plan-adjustments/${id}`) }
+export function confirmPlanAdjustment(id: string): Promise<unknown> { return request<unknown>(`/product/plan-adjustments/${id}/confirm`, { method: 'POST' }) }

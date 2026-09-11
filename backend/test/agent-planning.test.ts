@@ -68,7 +68,7 @@ describe('AgentPlanningService', () => {
       expect(streamedResume).toContain('支付平台负责订单服务')
       expect(streamedFacts).toContain('在支付平台负责订单服务、MySQL 性能和发布决策。')
       expect(interpretedResume).toContain('MySQL 性能')
-      expect(service.getSession(learnerId, session.id).profile?.evidence).toEqual(expect.arrayContaining([expect.objectContaining({ sourceType: 'resume', sourceId: 'resume-attachment-1' })]))
+      expect(service.getSession(learnerId, session.id).profile?.evidence).toEqual(expect.arrayContaining([expect.objectContaining({ sourceType: 'resume', excerpt: expect.stringContaining('MySQL 性能') })]))
     }, provider)
   })
 
@@ -221,17 +221,42 @@ describe('AgentPlanningService', () => {
     const planning = new PlanningService(repository)
     const draft = planning.getDraftForLearner('dynamic-learner', completed.roadmapId as string)
     expect(draft.templateKey).toBe('agent-roadmap-v2')
-    expect(draft.nodes.some((node) => node.caseId === 'mysql-order-list-index-001')).toBe(true)
+    expect(draft.nodes.some((node) => node.learningMode === 'lab' && node.caseId === null)).toBe(true)
     expect(draft.nodes.some((node) => node.evidence.length > 0)).toBe(true)
-    const plan = planning.confirm('dynamic-learner', draft.id, draft.revision)
+    const plan = planning.confirm('dynamic-learner', draft.id, draft.revision, draft.executionProposal?.recommendedUnitKey)
     expect(plan.units[0].learningMode).toBe('lab')
-    expect(plan.units[0].caseId).toBe('mysql-order-list-index-001')
+    expect(plan.units[0].caseId).toBeNull()
 
     const nodePlan = repository.db.prepare('EXPLAIN QUERY PLAN SELECT n.id FROM roadmap_nodes n WHERE n.roadmap_id = ? AND n.parent_id IS NULL ORDER BY n.position').all(draft.id) as Array<{ detail: string }>
     expect(nodePlan.some((row) => row.detail.includes('idx_roadmap_nodes_parent_position'))).toBe(true)
-    const evidencePlan = repository.db.prepare('EXPLAIN QUERY PLAN SELECT e.source_type, e.source_id FROM roadmap_node_evidence e WHERE e.roadmap_id = ? AND e.node_id = ? ORDER BY e.position').all(draft.id, draft.nodes.find((node) => node.caseId === 'mysql-order-list-index-001')?.id) as Array<{ detail: string }>
+    const evidencePlan = repository.db.prepare('EXPLAIN QUERY PLAN SELECT e.source_type, e.source_id FROM roadmap_node_evidence e WHERE e.roadmap_id = ? AND e.node_id = ? ORDER BY e.position').all(draft.id, draft.nodes.find((node) => node.learningMode === 'lab')?.id) as Array<{ detail: string }>
     expect(evidencePlan.some((row) => row.detail.includes('idx_roadmap_node_evidence_node_position'))).toBe(true)
   }))
+
+  it('adds a catalog-backed Gym node only through a confirmed plan adjustment', async () => {
+    const provider: PlanningProvider = {
+      providerName: 'adjustment-test', modelName: 'test-model',
+      async stream(_input, onDelta) { await onDelta('先确认目标。'); return '先确认目标。' },
+      async interpret() { return { coveredTopics: ['goal_deadline'], dimensions: [], evidence: [], followUpTopic: null } },
+      async generateRoadmap(input) {
+        for (const phase of ['domain', 'module', 'unit', 'critic'] as const) { await input.onPhase({ phase, status: 'started' }); await input.onPhase({ phase, status: 'succeeded', output: {} }) }
+        return JSON.parse(JSON.stringify({ ...validRoadmap, executionProposal: { recommendedUnitKey: 'concept', options: [{ unitKey: 'concept', rationale: ['先从系统设计基础开始。'], orderedInitialUnitKeys: ['concept'] }] } })) as never
+      },
+    }
+    await withService(async (service, repository) => {
+      const learnerId = 'gym-adjustment-learner'
+      const session = service.createSession(learnerId, { message: '我想系统学习服务设计', clientRequestId: 'gym-adjustment-start' })
+      const generation = await service.generateRoadmap(learnerId, session.id, 'gym-adjustment-roadmap')
+      await new Promise((resolve) => setTimeout(resolve, 20))
+      const draft = new PlanningService(repository).getDraftForLearner(learnerId, service.getRoadmapGeneration(learnerId, generation.id).roadmapId as string)
+      const plan = new PlanningService(repository).confirm(learnerId, draft.id, draft.revision, 'concept')
+      const adjustment = await service.createPlanAdjustment(learnerId, plan.id, '我希望先进入 MySQL 慢查询和索引优化 Gym', 'gym-adjustment-request')
+      expect(adjustment.proposal.appendGym?.capabilityKey).toBe('mysql.slow-query-index')
+      const updated = service.confirmPlanAdjustment(learnerId, adjustment.id)
+      expect(updated.units.find((unit) => unit.status === 'current')).toMatchObject({ learningMode: 'lab', caseId: null })
+      expect(repository.db.prepare("SELECT COUNT(*) AS count FROM roadmap_nodes WHERE roadmap_id = ? AND capability_key = 'mysql.slow-query'").get(draft.id)).toMatchObject({ count: 1 })
+    }, provider)
+  })
 
   it('replaces only the active roadmap owned by the planning session and preserves its lineage', async () => withService(async (service, repository) => {
     const learnerId = 'repair-learner'
@@ -239,7 +264,8 @@ describe('AgentPlanningService', () => {
     const firstGeneration = await service.generateRoadmap(learnerId, session.id, 'repair-initial')
     await new Promise((resolve) => setTimeout(resolve, 20))
     const oldRoadmapId = service.getRoadmapGeneration(learnerId, firstGeneration.id).roadmapId as string
-    const plan = new PlanningService(repository).confirm(learnerId, oldRoadmapId, 1)
+    const firstDraft = new PlanningService(repository).getDraftForLearner(learnerId, oldRoadmapId)
+    const plan = new PlanningService(repository).confirm(learnerId, oldRoadmapId, 1, firstDraft.executionProposal?.recommendedUnitKey)
 
     const replacement = await service.repairCurrentRoadmap(learnerId, session.id, 'repair-replace')
     await new Promise((resolve) => setTimeout(resolve, 20))
@@ -261,7 +287,8 @@ describe('AgentPlanningService', () => {
     const generation = await service.generateRoadmap(learnerId, session.id, 'repair-practice-initial')
     await new Promise((resolve) => setTimeout(resolve, 20))
     const roadmapId = service.getRoadmapGeneration(learnerId, generation.id).roadmapId as string
-    const plan = new PlanningService(repository).confirm(learnerId, roadmapId, 1)
+    const draft = new PlanningService(repository).getDraftForLearner(learnerId, roadmapId)
+    const plan = new PlanningService(repository).confirm(learnerId, roadmapId, 1, draft.executionProposal?.recommendedUnitKey)
     repository.startPlanUnitPractice({ learnerId, planId: plan.id, planUnitId: plan.units[0].id, caseId: 'mysql-order-list-index-001' })
     await expect(service.repairCurrentRoadmap(learnerId, session.id, 'repair-practice-replace')).rejects.toMatchObject({ code: 'roadmap_replace_has_practice' })
   }))

@@ -7,12 +7,12 @@ import WritingDraftProgress from '@/components/writing/WritingDraftProgress.vue'
 import WritingArticleWorkspace from '@/components/writing/WritingArticleWorkspace.vue'
 import { useWritingStore } from '@/stores/writing'
 import { usePracticeStore } from '@/stores/practice'
-import type { ProductWritingBlock } from '@/types/product'
+import type { ProductPracticeHistoryItem, ProductWritingBlock } from '@/types/product'
 
 const route = useRoute(); const router = useRouter(); const writingStore = useWritingStore(); const practiceStore = usePracticeStore(); const historyOpen = ref(false)
 function storedPracticeId(): string | null { if (typeof window === 'undefined') return null; return window.localStorage.getItem('zhixing.active.practice.id') ?? window.localStorage.getItem('zhixing.last.practice.id') }
 const currentRunId = computed(() => (typeof route.query.runId === 'string' ? route.query.runId : null) ?? writingStore.runId ?? practiceStore.run?.id ?? storedPracticeId())
-const currentPractice = computed(() => practiceStore.history.find((item) => item.id === currentRunId.value) ?? null)
+const currentPractice = computed(() => practiceStore.history.find((item: ProductPracticeHistoryItem) => item.id === currentRunId.value) ?? null)
 
 async function selectHistory(practiceId: string) { await practiceStore.selectHistory(practiceId); historyOpen.value = false; await router.replace({ name: 'writing', query: { runId: practiceId } }) }
 async function initialize() { if (currentRunId.value) await writingStore.initialize(currentRunId.value) }

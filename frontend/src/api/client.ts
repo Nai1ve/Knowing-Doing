@@ -10,6 +10,12 @@ export class ApiError extends Error {
   }
 }
 
+export function hasApiErrorCode(error: unknown, code: string): error is ApiError {
+  if (!(error instanceof ApiError) || !error.payload || typeof error.payload !== 'object' || !('error' in error.payload)) return false
+  const payloadError = (error.payload as { error?: { code?: unknown } }).error
+  return payloadError?.code === code
+}
+
 function isJsonResponse(response: Response): boolean {
   return response.headers.get('content-type')?.toLowerCase().includes('application/json') ?? false
 }

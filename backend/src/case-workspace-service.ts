@@ -362,7 +362,7 @@ export class CaseWorkspaceService {
     }
   }
 
-  async startPractice(learnerId: string, caseId: string): Promise<WorkspaceSummary> {
+  async startPractice(learnerId: string, caseId: string, planUnitId: string | null = null): Promise<WorkspaceSummary> {
     return this.withLock(this.caseLocks, `${learnerId}:${caseId}`, async () => {
       const item = this.caseForLearner(learnerId, caseId); if (item.status !== 'ready' || !item.spec) throw new LabError('case_not_ready', '案例尚未生成完成', 409, true)
       const environment = getEnvironmentTemplate(item.environmentKey ?? item.templateKey, item.environmentVersion ?? '1')
@@ -372,7 +372,7 @@ export class CaseWorkspaceService {
       const now = new Date().toISOString(); const practiceId = randomUUID(); const workspaceId = randomUUID(); const caseRunId = `workspace:${caseId}`
       this.db.transaction(() => {
         this.db.prepare(`INSERT INTO practice_runs(id, learner_id, plan_unit_id, case_id, lab_run_id, practice_kind, learning_case_id, stage, status, created_at, updated_at)
-          VALUES (?, ?, NULL, ?, NULL, 'code_workspace', ?, 'observe', 'active', ?, ?)`).run(practiceId, learnerId, caseRunId, caseId, now, now)
+          VALUES (?, ?, ?, ?, NULL, 'code_workspace', ?, 'observe', 'active', ?, ?)`).run(practiceId, learnerId, planUnitId, caseRunId, caseId, now, now)
         this.db.prepare(`INSERT INTO workspace_runs(id, learner_id, practice_run_id, learning_case_id, template_key, status, revision, created_at, updated_at)
           VALUES (?, ?, ?, ?, ?, 'provisioning', 1, ?, ?)`).run(workspaceId, learnerId, practiceId, caseId, item.templateKey, now, now)
       })()

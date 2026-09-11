@@ -12,6 +12,13 @@ export class ResumeParseError extends Error {
   }
 }
 
+export class ResumeTextUnavailableError extends ResumeParseError {
+  constructor() {
+    super('PDF 中没有可提取的文本，可能是扫描图片格式')
+    this.name = 'ResumeTextUnavailableError'
+  }
+}
+
 interface TextItemLike {
   str?: unknown
   hasEOL?: unknown
@@ -67,7 +74,7 @@ export async function parseResumePdf(data: Buffer, options: { timeoutMs?: number
       }
     }
     const text = pages.filter(Boolean).join('\n\n').replace(/[ \t]+\n/g, '\n').trim()
-    if (!text) throw new ResumeParseError('PDF 中没有可提取的文本，可能是扫描图片格式')
+    if (!text) throw new ResumeTextUnavailableError()
     return { pageCount: document.numPages, text }
   } catch (error) {
     if (error instanceof ResumeParseError) throw error

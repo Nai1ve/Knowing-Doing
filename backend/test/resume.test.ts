@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs'
 import { Readable } from 'node:stream'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
@@ -35,8 +35,8 @@ function textPdf(text: string): Buffer {
   return Buffer.from(`${body}${xref}trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xrefOffset}\n%%EOF\n`)
 }
 
-describe('PlanningService resume attachments', () => {
-  it('accepts PDF content, persists metadata, and replaces the previous file', async () => withPlanning(async (service, repository, storagePath) => {
+describe('PlanningService learner resume documents', () => {
+  it('accepts PDF content, versions learner documents, and retains historical files', async () => withPlanning(async (service, repository, storagePath) => {
     const session = service.createSession('resume-learner', { goal: '学习后端系统', clientRequestId: 'resume-session' })
     const first = await service.uploadResume('resume-learner', session.id, { filename: 'resume.pdf', mimetype: 'application/pdf', file: Readable.from(textPdf('first resume')) })
     expect(first.mimeType).toBe('application/pdf')
@@ -45,9 +45,19 @@ describe('PlanningService resume attachments', () => {
     expect(readFileSync(path.join(storagePath, `${first.id}.pdf`), 'utf8')).toContain('%PDF-1.4')
     const second = await service.uploadResume('resume-learner', session.id, { filename: 'resume-v2.PDF', mimetype: 'application/pdf', file: Readable.from(textPdf('second resume')) })
     expect(service.getSession('resume-learner', session.id).resume?.id).toBe(second.id)
-    expect(repository.db.prepare('SELECT extracted_text FROM planning_resume_attachments WHERE id = ?').get(second.id)).toMatchObject({ extracted_text: 'second resume' })
-    expect(existsSync(path.join(storagePath, `${first.id}.pdf`))).toBe(false)
+    expect(repository.db.prepare('SELECT extracted_text, version, is_current FROM learner_resume_documents WHERE id = ?').get(second.id)).toMatchObject({ extracted_text: 'second resume', version: 2, is_current: 1 })
+    expect(existsSync(path.join(storagePath, `${first.id}.pdf`))).toBe(true)
     expect(readFileSync(path.join(storagePath, `${second.id}.pdf`), 'utf8')).toContain('second')
+  }))
+
+  it('inherits the learner current resume for a new planning session and replays an upload request', async () => withPlanning(async (service, repository) => {
+    const first = service.createSession('resume-memory-learner', { goal: '学习后端系统', clientRequestId: 'resume-memory-first' })
+    const uploaded = await service.uploadResume('resume-memory-learner', first.id, { filename: 'resume.pdf', mimetype: 'application/pdf', file: Readable.from(textPdf('payment service and MySQL performance')), clientRequestId: 'resume-upload-1' })
+    const replay = await service.uploadResume('resume-memory-learner', first.id, { filename: 'resume.pdf', mimetype: 'application/pdf', file: Readable.from(textPdf('ignored by idempotency')), clientRequestId: 'resume-upload-1' })
+    const next = service.createSession('resume-memory-learner', { goal: '重新规划后端路线', clientRequestId: 'resume-memory-next' })
+    expect(replay.id).toBe(uploaded.id)
+    expect(service.getSession('resume-memory-learner', next.id).resume?.id).toBe(uploaded.id)
+    expect(repository.getPlanningResumeContext(next.id, 'resume-memory-learner')?.chunks[0]?.content).toContain('payment service')
   }))
 
   it('rejects non-PDF names, MIME types, and file contents', async () => withPlanning(async (service) => {
@@ -56,6 +66,16 @@ describe('PlanningService resume attachments', () => {
     await expect(service.uploadResume('resume-validation', session.id, { filename: 'resume.pdf', mimetype: 'text/plain', file: Readable.from(Buffer.from('%PDF-1.7\nlooks like a pdf')) })).rejects.toMatchObject({ code: 'resume_pdf_only' })
     await expect(service.uploadResume('resume-validation', session.id, { filename: 'resume.pdf', mimetype: 'application/pdf', file: Readable.from(Buffer.from('plain text')) })).rejects.toMatchObject({ code: 'resume_pdf_only' })
     await expect(service.uploadResume('resume-validation', session.id, { filename: 'broken.pdf', mimetype: 'application/pdf', file: Readable.from(Buffer.from('%PDF-1.7\nbroken')) })).rejects.toMatchObject({ code: 'resume_parse_failed' })
+  }))
+
+  it('identifies a scanned PDF without persisting it as resume context', async () => withPlanning(async (service, repository, storagePath) => {
+    const session = service.createSession('resume-scan', { goal: '学习后端系统', clientRequestId: 'resume-scan-session' })
+
+    await expect(service.uploadResume('resume-scan', session.id, { filename: 'scanned.pdf', mimetype: 'application/pdf', file: Readable.from(textPdf('')) })).rejects.toMatchObject({ code: 'resume_text_unavailable' })
+    expect(service.getSession('resume-scan', session.id).resume).toBeNull()
+    expect(repository.db.prepare('SELECT COUNT(*) AS count FROM learner_resume_documents WHERE learner_id = ?').get('resume-scan')).toMatchObject({ count: 0 })
+    expect(existsSync(storagePath)).toBe(true)
+    expect(readdirSync(storagePath)).toEqual([])
   }))
 
   it('enforces the configured size limit', async () => withPlanning(async (service, repository, storagePath) => {
