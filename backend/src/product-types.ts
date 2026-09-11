@@ -27,6 +27,7 @@ export type EventType =
   | 'workspace_verified'
   | 'workspace_reset'
   | 'workspace_ended'
+  | 'gym_case_superseded'
 
 export type WritingStatus = 'materials_ready' | 'outline_review' | 'article_review' | 'ready_for_preview'
 export type WritingDocumentKind = 'outline' | 'article'
@@ -223,14 +224,28 @@ export type MySqlMaterializationStatus = 'pending' | 'materialized' | 'failed' |
 export type MySqlFaultKey = 'wrong_index' | 'missing_index' | 'non_sargable_query'
 
 export interface MySqlExerciseRequest {
-  capabilityKey: 'mysql.slow-query'
+  capabilityKey: 'mysql.slow-query' | 'mysql.explain-plan'
   environmentKey: 'mysql-performance-v1'
   environmentVersion: '1'
-  schemaTemplateKey: 'orders-v1'
+  schemaTemplateKey: 'orders-v1' | 'orders-explain-v1'
   seedProfileKey: 'orders-100k-v1' | 'orders-1m-v1'
   faultKey: MySqlFaultKey
-  queryTemplateKey: 'orders-by-user-created-v1'
+  queryTemplateKey: 'orders-by-user-created-v1' | 'orders-explain-filter-sort-v1'
   parameters: { rowCount: number; distribution: 'uniform' | 'skewed' }
+}
+
+export interface MySqlExerciseSpec {
+  specVersion: 3
+  kind: 'mysql_data_diagnosis'
+  capabilityKey: MySqlExerciseRequest['capabilityKey']
+  exerciseProfileKey: string
+  title: string
+  scenario: string
+  learningGoal: string
+  tasks: Array<{ key: string; instruction: string; expectedObservation: string }>
+  verification: { signals: string[] }
+  tutorContext: { concepts: string[]; likelyMisconceptions: string[]; evidenceToNotice: string[] }
+  materialization: MySqlExerciseRequest
 }
 
 export interface MySqlMaterializationPlan {
@@ -275,6 +290,8 @@ export interface LearningCase {
   provider: 'fixture' | 'model'
   version: number
   status: CaseGenerationStatus
+  // Runtime adapters interpret their own persisted contract. Keeping the shared
+  // case surface as CaseSpec preserves the workspace contract and its callers.
   spec: CaseSpec | null
   specVersion?: number
   preflightStatus?: 'not_required' | 'queued' | 'running' | 'passed' | 'failed'
@@ -480,6 +497,7 @@ export interface PlanUnit {
   objective: string
   caseId: CaseId | null
   learningCaseId?: string | null
+  exerciseProfileKey?: string | null
   status: 'upcoming' | 'current' | 'completed'
   availability: 'available' | 'coming_soon'
   completedAt: string | null
@@ -673,6 +691,15 @@ export interface PracticeSnapshot {
   tutorTurns: Array<{ id: string; userArtifactId: string | null; assistantArtifactId: string | null; mode: string; provider: string; sourceStatus: string; createdAt: string }>
   pins: PracticePin[]
   completion: PracticeCompletion
+  gymContext?: MySqlGymContext | null
+}
+
+/** Safe, learner-facing context for a dynamic MySQL Gym. Reference fixes stay server-side. */
+export interface MySqlGymContext {
+  card: { title: string; summary: string; completionStandard: string; keyPoints: string[] }
+  exercise: Pick<MySqlExerciseSpec, 'title' | 'scenario' | 'learningGoal' | 'tasks' | 'verification' | 'tutorContext'>
+  visibleSql: string
+  currentTask: MySqlExerciseSpec['tasks'][number] | null
 }
 
 export interface WorkspaceTutorHistory {

@@ -6,7 +6,7 @@ import PinnedReferences from './PinnedReferences.vue'
 import PracticeCompletionPanel from './PracticeCompletionPanel.vue'
 import TutorAgent from './TutorAgent.vue'
 import type { LabExecutionResponse, LabRun } from '@/types/lab'
-import type { ProductPracticeCompletion, ProductPracticePin, ProductPracticeRun, ProductSnapshot, ProductTutorMessage, ProductTutorSource } from '@/types/product'
+import type { ProductMySqlGymContext, ProductPracticeCompletion, ProductPracticePin, ProductPracticeRun, ProductSnapshot, ProductTutorMessage, ProductTutorSource } from '@/types/product'
 
 const props = defineProps<{
   practice: ProductPracticeRun
@@ -31,6 +31,7 @@ const props = defineProps<{
   tutorQuestion?: string
   currentGap?: string
   tutorFailure?: { invocationId: string; code: string; message: string; retryable: boolean } | null
+  gymContext?: ProductMySqlGymContext | null
 }>()
 const emit = defineEmits<{
   'update:sql': [value: string]
@@ -52,6 +53,9 @@ const runStatus = computed(() => props.labRun ? '实验室已连接' : '需要�
 const leaseLabel = computed(() => props.labRun ? new Date(props.labRun.idleExpiresAt).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }) : '—')
 const pinnedIds = computed(() => (props.snapshot?.pins ?? []).map((pin) => pin.targetId))
 const contextOpen = computed(() => !props.messages.length)
+const title = computed(() => props.gymContext?.exercise.title ?? 'MySQL 慢查询与联合索引')
+const scenario = computed(() => props.gymContext?.exercise.scenario ?? '这条慢查询为什么会让 p99 升高？先从脱敏慢日志和表结构中定位 SQL，再用 EXPLAIN 验证你的假设。')
+const task = computed(() => props.gymContext?.currentTask)
 const resultArtifact = computed(() => {
   const result = props.latestResult
   if (!result || !('executionId' in result) || !props.snapshot) return undefined
@@ -70,14 +74,14 @@ function pinResult() {
 <template>
   <div class="workspace">
     <header class="workspace-bar">
-      <div class="workspace-heading"><span class="workspace-icon"><Database :size="15" aria-hidden="true" /></span><div><div class="eyebrow">知行 Gym · MySQL 实验室 · {{ practice.caseId }}</div><h1>MySQL 慢查询与联合索引</h1></div></div>
+      <div class="workspace-heading"><span class="workspace-icon"><Database :size="15" aria-hidden="true" /></span><div><div class="eyebrow">知行 Gym · MySQL 实验室 · {{ practice.caseId }}</div><h1>{{ title }}</h1></div></div>
       <div class="workspace-metrics"><span class="metric-stage"><strong>{{ stageLabel }}</strong><small>阶段</small></span><span><strong>r{{ labRun?.revision ?? '—' }}</strong><small>revision</small></span><span><strong>{{ leaseLabel }}</strong><small>空闲回收</small></span><span class="lab-state" :class="{ ready: labRun }"><CircleCheck :size="12" aria-hidden="true" />{{ runStatus }}</span></div>
       <div class="workspace-actions"><button v-if="!labRun && practice.status !== 'resolved'" type="button" class="secondary-button" :disabled="practiceStarting" @click="emit('reopen')"><RotateCcw :size="12" aria-hidden="true" />{{ practiceStarting ? '续开中…' : '继续实践' }}</button><button v-else-if="labRun" type="button" class="secondary-button" :disabled="labResetting || labEnding" @click="emit('reset')"><RotateCcw :size="12" aria-hidden="true" />{{ labResetting ? '重置中…' : '重置' }}</button><button v-if="labRun" type="button" class="danger-button" :disabled="labResetting || labEnding" @click="emit('end')"><Square :size="11" aria-hidden="true" />{{ labEnding ? '结束中…' : '结束实验室' }}</button></div>
     </header>
     <div class="workspace-columns">
       <section class="workbench-column" aria-label="实验工作台">
-        <section class="task-context"><details :open="contextOpen"><summary><span><ShieldCheck :size="14" aria-hidden="true" />任务上下文</span><ChevronDown :size="14" aria-hidden="true" /></summary><div class="context-content"><div><strong>先回答一个问题</strong><p>这条慢查询为什么会让 p99 升高？先从脱敏慢日志和表结构中定位 SQL，再用 EXPLAIN 验证你的假设。</p></div><dl><div><dt>表</dt><dd><code>orders</code></dd></div><div><dt>基线索引</dt><dd><code>idx_orders_user_id</code></dd></div><div><dt>可用会话</dt><dd><code>default</code></dd></div></dl></div></details></section>
-        <SqlWorkbench :sql="labSql" :result="latestResult" :can-execute="Boolean(labRun && labReady && activeSessionName && practice.status !== 'resolved')" :executing="labExecuting" :session-name="activeSessionName" :result-artifact-id="resultArtifact?.id" :result-pinned="resultPinned" @update:sql="emit('update:sql', $event)" @execute="emit('execute')" @load-default="emit('load-default')" @load-create-index="emit('load-create-index')" @load-optimized="emit('load-optimized')" @pin="pinResult" />
+        <section class="task-context"><details :open="contextOpen"><summary><span><ShieldCheck :size="14" aria-hidden="true" />任务上下文</span><ChevronDown :size="14" aria-hidden="true" /></summary><div class="context-content"><div><strong>{{ task?.instruction ?? '先回答一个问题' }}</strong><p>{{ scenario }}</p><p v-if="task" class="expected-observation">预期观察：{{ task.expectedObservation }}</p></div><dl><div><dt>路线卡片</dt><dd>{{ gymContext?.card.title ?? '慢查询与索引' }}</dd></div><div><dt>完成标准</dt><dd>{{ gymContext?.card.completionStandard ?? '用执行计划验证判断' }}</dd></div><div><dt>可用会话</dt><dd><code>default</code></dd></div></dl></div></details></section>
+        <SqlWorkbench :sql="labSql" :result="latestResult" :can-execute="Boolean(labRun && labReady && activeSessionName && practice.status !== 'resolved')" :executing="labExecuting" :session-name="activeSessionName" :result-artifact-id="resultArtifact?.id" :result-pinned="resultPinned" :show-reference-actions="!gymContext" @update:sql="emit('update:sql', $event)" @execute="emit('execute')" @load-default="emit('load-default')" @load-create-index="emit('load-create-index')" @load-optimized="emit('load-optimized')" @pin="pinResult" />
         <section v-if="labError || practiceError" class="workspace-error" role="alert"><AlertCircle :size="14" aria-hidden="true" /><div><strong>当前状态</strong><p>{{ labError || practiceError }}</p></div></section>
         <PracticeCompletionPanel v-if="completion" :completion="completion" :verifying="practiceVerifying" @verify="emit('verify')" />
         <PinnedReferences :items="snapshot?.pins ?? []" @remove="emit('unpin', $event)" />

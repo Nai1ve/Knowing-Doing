@@ -34,6 +34,17 @@ function workspaceGuidance(stage: PracticeRun['stage']): Pick<TutorResponse, 'in
   return { intent: 'reflect', nextQuestion: '这次案例中最值得迁移到其他代码的问题解决方法是什么？', suggestedActions: ['整理根因与验证', '记录仍需进一步练习的地方'] }
 }
 
+function mysqlGymGuidance(context: TutorContext): Pick<TutorResponse, 'intent' | 'nextQuestion' | 'suggestedActions'> {
+  const gym = context.mysqlGym
+  if (!gym) return stageGuidance(context.hot.stage as PracticeRun['stage'])
+  const task = gym.currentTask
+  return {
+    intent: task ? 'clarify' : 'reflect',
+    nextQuestion: task?.instruction ?? `请用当前案例的证据说明：${gym.node.completionStandard}`,
+    suggestedActions: task ? [task.expectedObservation, ...gym.case.tutorContext.evidenceToNotice.slice(0, 2)] : gym.verificationSignals.slice(0, 3),
+  }
+}
+
 function stripThinking(value: string): string {
   const endTokens = ['<｜end▁of▁thinking｜>', '</think>', '</thinking>']
   let result = value
@@ -83,7 +94,7 @@ function sourcesForPrompt(sources: SourceItem[]): Array<Pick<SourceItem, 'id' | 
 }
 
 export function tutorResponseFromGenerated(run: PracticeRun, context: TutorContext, generated: TutorGenerated, sources: SourceItem[], retrievalStatus: 'retrieved' | 'empty' | 'unavailable' = sources.length > 0 ? 'retrieved' : 'empty'): TutorResponse {
-  const guidance = context.workspace ? workspaceGuidance(run.stage) : stageGuidance(run.stage)
+  const guidance = context.workspace ? workspaceGuidance(run.stage) : context.mysqlGym ? mysqlGymGuidance(context) : stageGuidance(run.stage)
   return { response: generated.response, ...guidance, currentGap: context.hot.currentGap ?? '还需要一份可验证的实验或解释证据。', evidenceRefs: context.rawEvidence.map((item) => item.id), sourceRefs: generated.sourceRefs, provider: 'model', sourceStatus: generated.sourceRefs.length > 0 || sources.length > 0 ? 'retrieved' : retrievalStatus === 'unavailable' ? 'unavailable' : 'not_needed' }
 }
 
@@ -102,7 +113,7 @@ export class TutorEngine {
       const response = await fetch(modelUrl(this.config.modelBaseUrl), {
         method: 'POST', signal: controller.signal, headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${this.config.modelApiKey}` },
         body: JSON.stringify({ model: this.config.modelName, temperature: 0.2, stream: true, thinking: { type: 'disabled' }, messages: [
-          { role: 'system', content: context.workspace ? '你是知行代码工作区 Tutor。请用中文自然语言回答，不要输出 JSON、思维过程或固定模板。只根据当前案例、代码文件、pytest 输出、实践事件和给定来源回答：帮助用户观察代码行为、提出可验证假设、设计最小修改和验证步骤。不要替用户写文件，不要把测试通过直接宣布为能力掌握，不得伪造知乎来源。需要引用来源时，在对应句末使用 [[source:来源id]]；不需要引用时不要添加标记。' : '你是知行 Tutor。请用中文自然语言回答，不要输出 JSON、思维过程或固定模板。只根据实践上下文和给定来源回答：帮助用户观察、提出可验证假设、设计最小实验并解释证据。不要替用户宣布实验成功，不得伪造知乎来源。需要引用来源时，在对应句末使用 [[source:来源id]]；不需要引用时不要添加标记。' },
+          { role: 'system', content: context.workspace ? '你是知行代码工作区 Tutor。请用中文自然语言回答，不要输出 JSON、思维过程或固定模板。只根据当前案例、代码文件、pytest 输出、实践事件和给定来源回答：帮助用户观察代码行为、提出可验证假设、设计最小修改和验证步骤。不要替用户写文件，不要把测试通过直接宣布为能力掌握，不得伪造知乎来源。需要引用来源时，在对应句末使用 [[source:来源id]]；不需要引用时不要添加标记。' : context.mysqlGym ? '你是知行 MySQL Gym Tutor。只围绕冻结的路线卡片、当前案例任务、用户已经执行的 SQL/EXPLAIN 与可见验证目标回答。引导用户观察 type、key、rows、Extra 或当前卡片指定的证据，提出可检验的假设。不得泄露参考索引、参考修复 SQL、容器信息、内部凭据或直接给出答案；不要把一次执行宣布为能力掌握。用中文自然语言回答，不输出 JSON 或思维过程。需要引用来源时使用 [[source:来源id]]。' : '你是知行 Tutor。请用中文自然语言回答，不要输出 JSON、思维过程或固定模板。只根据实践上下文和给定来源回答：帮助用户观察、提出可验证假设、设计最小实验并解释证据。不要替用户宣布实验成功，不得伪造知乎来源。需要引用来源时，在对应句末使用 [[source:来源id]]；不需要引用时不要添加标记。' },
           { role: 'user', content: JSON.stringify({ message, context: { ...context, availableSourceIds: sources.map((source) => source.id), sources: sourcesForPrompt(sources) } }) },
         ] }),
       })

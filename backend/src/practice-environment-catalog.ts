@@ -1,5 +1,6 @@
 import type Database from 'better-sqlite3'
 import { resolveCapability } from './environment-registry.js'
+import { mysqlExerciseProfileForCapability } from './environment-registry.js'
 import type { ExerciseKind, LearningMode, RuntimeKind } from './product-types.js'
 
 type Row = Record<string, unknown>
@@ -16,6 +17,7 @@ export interface AgentPracticeEnvironment {
   agentSummary: string
   exerciseKinds: ExerciseKind[]
   aliases: string[]
+  exerciseProfileKey: string | null
 }
 
 function text(row: Row, key: string): string { return String(row[key]) }
@@ -37,7 +39,7 @@ export class PracticeEnvironmentCatalog {
       return [{
         planningKey: text(row, 'planning_key'), capabilityKey: text(row, 'capability_key'), environmentKey: text(row, 'environment_key'), environmentVersion: text(row, 'environment_version'), runtimeKind: text(row, 'runtime_kind') as RuntimeKind,
         learningMode: text(row, 'learning_mode') as Extract<LearningMode, 'lab' | 'workspace'>, caseIntent: text(row, 'case_intent'), displayName: text(row, 'display_name'), agentSummary: text(row, 'agent_summary'),
-        exerciseKinds: json<ExerciseKind[]>(row.exercise_kinds_json, []), aliases: json<string[]>(row.aliases_json, []),
+        exerciseKinds: json<ExerciseKind[]>(row.exercise_kinds_json, []), aliases: json<string[]>(row.aliases_json, []), exerciseProfileKey: mysqlExerciseProfileForCapability(text(row, 'capability_key')),
       }]
     })
   }

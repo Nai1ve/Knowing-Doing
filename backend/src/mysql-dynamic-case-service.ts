@@ -4,10 +4,13 @@ import { LabError } from './errors.js'
 import type { LearningCase, MySqlExerciseRequest, PracticeRun } from './product-types.js'
 import type { ProductRepository } from './product-repository.js'
 import { parseMySqlExerciseRequest } from './mysql-case-interpreter.js'
+import { mysqlRequestForProfile } from './mysql-case-interpreter.js'
 import { MySqlCaseMaterializationService } from './mysql-case-materialization-service.js'
 import type { LabScheduler } from './scheduler.js'
 import { PracticeEnvironmentCatalog } from './practice-environment-catalog.js'
 import type { DynamicRuntimeStatus } from './planning-types.js'
+import type { LabConfig, } from './config.js'
+import { MySqlExerciseAgent, type MySqlExerciseCardContext } from './mysql-exercise-agent.js'
 
 type Row = Record<string, unknown>
 const text = (row: Row, key: string) => String(row[key])
@@ -21,10 +24,12 @@ export class MySqlDynamicCaseService {
   private readonly materializations: MySqlCaseMaterializationService
   private readonly environments: PracticeEnvironmentCatalog
   private readonly locks = new Map<string, Promise<void>>()
+  private readonly agent: MySqlExerciseAgent
 
-  constructor(private readonly repository: ProductRepository, private readonly scheduler: LabScheduler) {
+  constructor(private readonly repository: ProductRepository, private readonly scheduler: LabScheduler, config: Pick<LabConfig, 'modelBaseUrl' | 'modelApiKey' | 'modelName' | 'modelTimeoutMs'> = { modelBaseUrl: '', modelApiKey: '', modelName: 'unconfigured', modelTimeoutMs: 30_000 }) {
     this.materializations = new MySqlCaseMaterializationService(repository)
     this.environments = new PracticeEnvironmentCatalog(repository.db)
+    this.agent = new MySqlExerciseAgent(config)
   }
 
   private log(stage: string, details: Record<string, unknown>): void {
@@ -41,25 +46,28 @@ export class MySqlDynamicCaseService {
     try { return await action() } finally { release(); if (this.locks.get(key) === queued) this.locks.delete(key) }
   }
 
-  async createCase(learnerId: string, input: { roadmapNodeId: string; request: unknown; clientRequestId: string }): Promise<{ case: LearningCase; materialization: ReturnType<MySqlCaseMaterializationService['materialize']> }> {
+  async createCase(learnerId: string, input: { roadmapNodeId: string; request?: unknown; profileKey?: string; card?: MySqlExerciseCardContext; clientRequestId: string }): Promise<{ case: LearningCase; materialization: ReturnType<MySqlCaseMaterializationService['materialize']> }> {
     this.repository.ensureLearner(learnerId)
-    const request = parseMySqlExerciseRequest(input.request)
-    const fingerprint = createHash('sha256').update(stable({ roadmapNodeId: input.roadmapNodeId, request })).digest('hex')
+    const request = input.profileKey ? mysqlRequestForProfile(input.profileKey) : parseMySqlExerciseRequest(input.request)
+    const fingerprint = createHash('sha256').update(stable({ protocol: input.profileKey ? 'mysql-card-gym-v1' : 'mysql-direct-v1', roadmapNodeId: input.roadmapNodeId, profileKey: input.profileKey ?? null, card: input.card ?? null, request })).digest('hex')
     this.log('create_started', { learnerId, roadmapNodeId: input.roadmapNodeId, fingerprint })
     return this.withLock(`${learnerId}:mysql-case:${fingerprint}`, async () => this.createCaseLocked(learnerId, input, request, fingerprint))
   }
 
-  private async createCaseLocked(learnerId: string, input: { roadmapNodeId: string; request: unknown; clientRequestId: string }, request: MySqlExerciseRequest, fingerprint: string): Promise<{ case: LearningCase; materialization: ReturnType<MySqlCaseMaterializationService['materialize']> }> {
-    const node = this.repository.db.prepare(`SELECT n.id, n.capability_key, n.learning_mode, n.roadmap_id, r.learner_id, r.status
+  private async createCaseLocked(learnerId: string, input: { roadmapNodeId: string; request?: unknown; profileKey?: string; card?: MySqlExerciseCardContext; clientRequestId: string }, request: MySqlExerciseRequest, fingerprint: string): Promise<{ case: LearningCase; materialization: ReturnType<MySqlCaseMaterializationService['materialize']> }> {
+    const node = this.repository.db.prepare(`SELECT n.id, n.node_key, n.capability_key, n.exercise_profile_key, n.learning_mode, n.roadmap_id, r.learner_id, r.status
       FROM roadmap_nodes n INNER JOIN learning_roadmaps r ON r.id = n.roadmap_id
       WHERE n.id = ? AND r.learner_id = ? AND r.status IN ('draft', 'active')`).get(input.roadmapNodeId, learnerId) as Row | undefined
     if (!node) throw new LabError('roadmap_node_not_found', '路线节点不存在', 404)
     const nodeCapability = node.capability_key == null ? null : text(node, 'capability_key')
-    const resolvedCapability = nodeCapability
-      ? this.environments.byCapability(nodeCapability)
-      : this.environments.byCapability(request.capabilityKey) ?? this.environments.recommend([text(node, 'node_key'), text(node, 'title')].join(' '))
-    if (text(node, 'learning_mode') !== 'lab' || resolvedCapability?.capabilityKey !== 'mysql.slow-query') throw new LabError('mysql_case_capability_unavailable', '当前路线节点不是可用的 MySQL 慢查询实验', 409)
-    if (request.capabilityKey !== 'mysql.slow-query') throw new LabError('mysql_case_capability_mismatch', '案例能力与路线节点不一致', 422)
+    // Only the historical direct API may supply an explicit capability when an
+    // old route row predates capability snapshots. GymBuildService never takes
+    // this branch, so new card-scoped Gym construction cannot infer from title.
+    const resolvedCapability = nodeCapability ? this.environments.byCapability(nodeCapability) : !input.profileKey ? this.environments.byCapability(request.capabilityKey) : null
+    if (text(node, 'learning_mode') !== 'lab' || !resolvedCapability || !['mysql.slow-query', 'mysql.explain-plan'].includes(resolvedCapability.capabilityKey)) throw new LabError('mysql_case_capability_unavailable', '当前路线节点不是可用的 MySQL 实验', 409)
+    if (request.capabilityKey !== resolvedCapability.capabilityKey) throw new LabError('mysql_case_capability_mismatch', '案例能力与路线节点不一致', 422)
+    if (input.profileKey && (!input.card || input.card.nodeId !== input.roadmapNodeId)) throw new LabError('mysql_card_context_invalid', 'MySQL Gym 缺少冻结学习卡片', 422)
+    if (input.profileKey && text(node, 'exercise_profile_key') !== input.profileKey) throw new LabError('mysql_case_profile_mismatch', '案例 profile 与路线卡片不一致', 422)
     const now = new Date().toISOString()
     this.log('persist_started', { learnerId, roadmapNodeId: input.roadmapNodeId, fingerprint })
     const persisted = this.repository.db.transaction(() => {
@@ -72,19 +80,33 @@ export class MySqlDynamicCaseService {
       const id = existing ? text(existing, 'id') : randomUUID()
       if (!existing) {
         this.repository.db.prepare(`INSERT INTO learning_cases(id, learner_id, roadmap_node_id, capability_key, template_key, environment_key, environment_version, runtime_kind, input_kind, input_snapshot_json, input_fingerprint, provider, version, status, case_spec_json, created_at, updated_at)
-          VALUES (?, ?, ?, 'mysql.slow-query', 'mysql-performance-v1', 'mysql-performance-v1', '1', 'mysql_lab', 'brief', ?, ?, 'fixture', 1, 'ready', '{}', ?, ?)`).run(id, learnerId, input.roadmapNodeId, JSON.stringify({ request }), fingerprint, now, now)
+          VALUES (?, ?, ?, ?, 'mysql-performance-v1', 'mysql-performance-v1', '1', 'mysql_lab', 'brief', ?, ?, ?, 3, 'generating', '{}', ?, ?)`).run(id, learnerId, input.roadmapNodeId, request.capabilityKey, JSON.stringify({ protocol: input.profileKey ? 'mysql-card-gym-v1' : 'mysql-direct-v1', profileKey: input.profileKey ?? null, request, card: input.card ?? null }), fingerprint, input.profileKey ? 'model' : 'fixture', now, now)
         this.repository.db.prepare(`INSERT INTO case_generation_jobs(id, learner_id, learning_case_id, client_request_id, input_fingerprint, provider, status, attempt_count, completed_at, created_at, updated_at)
-          VALUES (?, ?, ?, ?, ?, 'fixture', 'succeeded', 1, ?, ?, ?)`).run(randomUUID(), learnerId, id, input.clientRequestId, fingerprint, now, now, now)
+          VALUES (?, ?, ?, ?, ?, ?, 'running', 1, NULL, ?, ?)`).run(randomUUID(), learnerId, id, input.clientRequestId, fingerprint, input.profileKey ? 'model' : 'fixture', now, now)
       }
       return id
     })()
     this.log('persist_finished', { learnerId, learningCaseId: persisted, fingerprint })
-    const learningCase = this.repository.getLearningCaseForLearner(persisted, learnerId)
+    let learningCase = this.repository.getLearningCaseForLearner(persisted, learnerId)
     const existingStatus = this.repository.db.prepare('SELECT status, preflight_status FROM learning_cases WHERE id = ? AND learner_id = ?').get(persisted, learnerId) as Row
     const existingMaterialization = this.materializations.get(learnerId, persisted)
     if (String(existingStatus.status) === 'ready' && String(existingStatus.preflight_status) === 'passed' && existingMaterialization?.status === 'materialized') {
       this.log('create_reused', { learnerId, learningCaseId: persisted, fingerprint })
       return { case: learningCase, materialization: existingMaterialization }
+    }
+    if (input.profileKey && learningCase.status !== 'ready') {
+      try {
+        const spec = await this.agent.build({ profileKey: input.profileKey, request, card: input.card! })
+        this.repository.db.prepare("UPDATE learning_cases SET case_spec_json = ?, updated_at = ? WHERE id = ? AND learner_id = ? AND status = 'generating'").run(JSON.stringify(spec), new Date().toISOString(), persisted, learnerId)
+        learningCase = this.repository.getLearningCaseForLearner(persisted, learnerId)
+      } catch (error) {
+        const message = error instanceof Error ? error.message.slice(0, 500) : 'MySQL 案例 Agent 失败'
+        this.repository.db.transaction(() => {
+          this.repository.db.prepare("UPDATE learning_cases SET status = 'failed', failure_code = 'mysql_exercise_generation_failed', failure_message = ?, updated_at = ? WHERE id = ? AND learner_id = ?").run(message, new Date().toISOString(), persisted, learnerId)
+          this.repository.db.prepare("UPDATE case_generation_jobs SET status = 'failed', failure_code = 'mysql_exercise_generation_failed', failure_message = ?, completed_at = ?, updated_at = ? WHERE learning_case_id = ? AND learner_id = ? AND status = 'running'").run(message, new Date().toISOString(), new Date().toISOString(), persisted, learnerId)
+        })()
+        throw new LabError('mysql_exercise_generation_failed', 'MySQL 案例 Agent 未能生成可用案例', 503, true)
+      }
     }
     this.log('materialization_started', { learnerId, learningCaseId: persisted })
     const materialization = this.materializations.materialize(learnerId, persisted, request)
@@ -98,13 +120,15 @@ export class MySqlDynamicCaseService {
       await this.preflight(learnerId, learningCase, materialization)
       this.log('preflight_finished', { learnerId, learningCaseId: persisted })
     }
+    const completed = new Date().toISOString()
+    this.repository.db.prepare("UPDATE case_generation_jobs SET status = 'succeeded', completed_at = ?, updated_at = ? WHERE learning_case_id = ? AND learner_id = ? AND status = 'running'").run(completed, completed, persisted, learnerId)
     return { case: this.repository.getLearningCaseForLearner(persisted, learnerId), materialization: this.materializations.get(learnerId, persisted)! }
   }
 
   async startPractice(learnerId: string, learningCaseId: string, planUnitId: string | null = null): Promise<{ practice: PracticeRun; lab?: { run: RunView; accessToken: string }; queue?: QueueTicketView }> {
     return this.withLock(`${learnerId}:${learningCaseId}`, async () => {
       const item = this.repository.getLearningCaseForLearner(learningCaseId, learnerId)
-      if (item.capabilityKey !== 'mysql.slow-query' || item.runtimeKind !== 'mysql_lab') throw new LabError('mysql_case_capability_mismatch', '该案例不能进入 MySQL Lab', 409)
+      if (!['mysql.slow-query', 'mysql.explain-plan'].includes(item.capabilityKey) || item.runtimeKind !== 'mysql_lab') throw new LabError('mysql_case_capability_mismatch', '该案例不能进入 MySQL Gym', 409)
       const materialization = this.materializations.get(learnerId, learningCaseId)
       if (!materialization?.plan || materialization.status !== 'materialized') throw new LabError('mysql_case_not_materialized', 'MySQL 案例物料尚未完成', 409, true)
       const plan = materialization.plan
@@ -170,6 +194,16 @@ export class MySqlDynamicCaseService {
     if (access) return { status: 'active', practice, lab: { run: access.run, accessToken: access.accessToken } }
     this.repository.finishLabSegment(practice.labRunId, 'scheduler_unavailable_or_expired')
     return { status: 'expired', practice: this.repository.updatePracticeRun(practiceRunId, { labRunId: null }), error: { code: 'runtime_expired', message: '实验运行已失效，需要重新启动 Gym', retryable: true } }
+  }
+
+  async supersedeEmptyPractice(practice: PracticeRun, replacementCaseId: string): Promise<void> {
+    if (!practice.learningCaseId) return
+    if (practice.labRunId) await this.scheduler.release(practice.labRunId, undefined).catch(() => undefined)
+    this.repository.db.transaction(() => {
+      if (practice.labRunId) this.repository.finishLabSegment(practice.labRunId, 'gym_case_superseded')
+      this.repository.updatePracticeRun(practice.id, { status: 'ended', labRunId: null, runtimeQueueTicketId: null, runtimeQueueExpiresAt: null })
+      this.repository.appendEvent({ learnerId: practice.learnerId, practiceRunId: practice.id, actor: 'system', type: 'gym_case_superseded', stage: practice.stage, payload: { learningCaseId: practice.learningCaseId, replacementCaseId } })
+    })()
   }
 
   private adoptQueuedRun(practice: PracticeRun, ticket: QueueTicketView): { status: 'active'; practice: PracticeRun; lab: { run: RunView; accessToken: string } } {

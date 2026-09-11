@@ -10,6 +10,15 @@ export type EnvironmentCapability = {
   aliases: readonly string[]
 }
 
+export const MYSQL_EXERCISE_PROFILES = {
+  'mysql.slow-query': 'mysql.slow-query-v1',
+  'mysql.explain-plan': 'mysql.explain-plan-v1',
+} as const
+
+export function mysqlExerciseProfileForCapability(capabilityKey: string): string | null {
+  return MYSQL_EXERCISE_PROFILES[capabilityKey as keyof typeof MYSQL_EXERCISE_PROFILES] ?? null
+}
+
 const templates: EnvironmentTemplate[] = [
   {
     key: 'python-pytest-v1', version: '1', runtimeKind: 'docker_workspace', status: 'available', displayName: 'Python + pytest 工作区',
@@ -53,6 +62,7 @@ const capabilities: EnvironmentCapability[] = [
   { capabilityKey: 'python.collections.list', environmentKey: 'python-pytest-v1', environmentVersion: '1', provider: 'model', status: 'available', exerciseKinds: ['concept_drill', 'code_repair'], aliases: ['Python list', 'Python 列表', '列表', '索引', '切片', '可变性'] },
   { capabilityKey: 'mysql.performance', environmentKey: 'mysql-performance-v1', environmentVersion: '1', provider: 'fixture', status: 'available', exerciseKinds: ['data_diagnosis'], aliases: ['MySQL 性能'] },
   { capabilityKey: 'mysql.slow-query', environmentKey: 'mysql-performance-v1', environmentVersion: '1', provider: 'fixture', status: 'available', exerciseKinds: ['data_diagnosis'], aliases: ['MySQL 慢查询', 'EXPLAIN', '索引优化'] },
+  { capabilityKey: 'mysql.explain-plan', environmentKey: 'mysql-performance-v1', environmentVersion: '1', provider: 'model', status: 'available', exerciseKinds: ['data_diagnosis'], aliases: ['MySQL EXPLAIN', '执行计划', 'EXPLAIN 字段'] },
   { capabilityKey: 'go.testing', environmentKey: 'go-test-v1', environmentVersion: '1', provider: 'fixture', status: 'available', exerciseKinds: ['code_repair', 'concept_drill'], aliases: ['Go 测试', 'Go testing'] },
   { capabilityKey: 'java.testing', environmentKey: 'java-maven-v1', environmentVersion: '1', provider: 'model', status: 'planned', exerciseKinds: ['code_repair', 'concept_drill'], aliases: ['Java 测试'] },
   { capabilityKey: 'rust.testing', environmentKey: 'rust-cargo-v1', environmentVersion: '1', provider: 'model', status: 'planned', exerciseKinds: ['code_repair', 'concept_drill'], aliases: ['Rust 测试'] },

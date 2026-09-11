@@ -1,4 +1,4 @@
-import type { Artifact, CaseSpec, LearningCase, PathNode, PracticeEvent, PracticeRun, StageMemory } from './product-types.js'
+import type { Artifact, CaseSpec, LearningCase, MySqlExerciseSpec, PathNode, PracticeEvent, PracticeRun, StageMemory } from './product-types.js'
 
 export interface TutorContext {
   hot: { goal: string; caseId: string; stage: string; latestError: string | null; currentGap: string | null }
@@ -8,6 +8,23 @@ export interface TutorContext {
   stageMemory: Array<{ stage: string; memory: Record<string, unknown>; sourceEventRefs: string[] }>
   availableSourceIds: string[]
   workspace?: WorkspaceTutorContext['workspace']
+  mysqlGym?: MySqlTutorContext['mysqlGym']
+}
+
+export interface MySqlTutorContext {
+  hot: TutorContext['hot']
+  recentEvents: TutorContext['recentEvents']
+  rawEvidence: TutorContext['rawEvidence']
+  path: TutorContext['path']
+  stageMemory: TutorContext['stageMemory']
+  availableSourceIds: string[]
+  mysqlGym: {
+    node: { title: string; summary: string; completionStandard: string; keyPoints: string[] }
+    case: Pick<MySqlExerciseSpec, 'title' | 'scenario' | 'learningGoal' | 'tutorContext'>
+    currentTask: MySqlExerciseSpec['tasks'][number] | null
+    verificationSignals: string[]
+    recentSql: Array<{ kind: string; content: string }>
+  }
 }
 
 export interface WorkspaceTutorContext {
@@ -39,6 +56,35 @@ export function buildTutorContext(input: { goal: string; run: PracticeRun; event
     path: input.pathNodes.slice(-8).map((node) => ({ stage: node.stage, judgment: node.judgment, outcome: node.outcome, judgmentChange: node.judgmentChange, nextGap: node.nextGap })),
     stageMemory: input.stageMemories.map((memory) => ({ stage: memory.stage, memory: memory.memory, sourceEventRefs: memory.sourceEventRefs })),
     availableSourceIds: input.sourceIds ?? [],
+  }
+}
+
+export function buildMySqlTutorContext(input: {
+  goal: string; run: PracticeRun; learningCase: LearningCase; events: PracticeEvent[]; artifacts: Artifact[]; pathNodes: PathNode[]; stageMemories: StageMemory[]; sourceIds?: string[]
+}): MySqlTutorContext {
+  const base = buildTutorContext(input)
+  const spec = input.learningCase.spec as unknown
+  const mysqlSpec = spec && typeof spec === 'object' && 'kind' in spec && (spec as { kind?: unknown }).kind === 'mysql_data_diagnosis' ? spec as MySqlExerciseSpec : null
+  const snapshot = input.learningCase.inputSnapshot
+  const card = snapshot.card && typeof snapshot.card === 'object' ? snapshot.card as Record<string, unknown> : {}
+  const knowledgeCard = card.knowledgeCard && typeof card.knowledgeCard === 'object' ? card.knowledgeCard as Record<string, unknown> : {}
+  const relevant = input.artifacts.filter((artifact) => ['sql', 'explain', 'benchmark', 'result_set', 'error'].includes(artifact.kind)).slice(-8)
+  const currentTask = mysqlSpec?.tasks[Math.min(relevant.filter((artifact) => artifact.kind === 'sql' || artifact.kind === 'explain').length, (mysqlSpec?.tasks.length ?? 1) - 1)] ?? null
+  return {
+    ...base,
+    rawEvidence: relevant.map((artifact) => ({ id: artifact.id, kind: artifact.kind, verificationStatus: artifact.verificationStatus, content: artifact.content, metadata: artifact.metadata })),
+    mysqlGym: {
+      node: {
+        title: typeof card.title === 'string' ? card.title : mysqlSpec?.title ?? input.learningCase.roadmapNodeId,
+        summary: typeof card.summary === 'string' ? card.summary : mysqlSpec?.scenario ?? '',
+        completionStandard: typeof card.completionStandard === 'string' ? card.completionStandard : mysqlSpec?.learningGoal ?? '',
+        keyPoints: Array.isArray(knowledgeCard.keyPoints) ? knowledgeCard.keyPoints.filter((value): value is string => typeof value === 'string').slice(0, 8) : [],
+      },
+      case: mysqlSpec ? { title: mysqlSpec.title, scenario: mysqlSpec.scenario, learningGoal: mysqlSpec.learningGoal, tutorContext: mysqlSpec.tutorContext } : { title: input.learningCase.id, scenario: '', learningGoal: input.goal, tutorContext: { concepts: [], likelyMisconceptions: [], evidenceToNotice: [] } },
+      currentTask,
+      verificationSignals: mysqlSpec?.verification.signals ?? [],
+      recentSql: relevant.map((artifact) => ({ kind: artifact.kind, content: artifact.content.slice(0, 4000) })),
+    },
   }
 }
 

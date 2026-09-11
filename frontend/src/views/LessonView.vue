@@ -66,6 +66,7 @@ async function initialize() {
     if (isDynamicGym(unit)) {
       await practiceStore.startPlanned(planStore.productPlan.id, unit.id)
       if (run !== initialization) return
+      if (practiceStore.snapshot?.gymContext?.visibleSql) labStore.sql = practiceStore.snapshot.gymContext.visibleSql
       if (practiceStore.run?.planUnitId === unit.id && labStore.run) {
         labStore.startHeartbeat()
         return
@@ -110,6 +111,7 @@ function startCurrentPractice() {
     v-else-if="currentUnit?.learningMode === 'lab' && (isFixedMysql(currentUnit) || isDynamicGym(currentUnit)) && practiceStore.run?.planUnitId === currentUnit.id && labStore.run"
     :practice="practiceStore.run"
     :snapshot="practiceStore.snapshot"
+    :gym-context="practiceStore.snapshot?.gymContext"
     :completion="practiceStore.completion"
     :lab-run="labStore.run"
     :lab-error="labStore.error"
@@ -117,7 +119,7 @@ function startCurrentPractice() {
     :lab-sql="labStore.sql"
     :latest-result="labStore.latestResult"
     :active-session-name="labStore.activeSession?.name"
-    :lab-ready="labStore.environmentReady"
+    :lab-ready="isDynamicGym(currentUnit) || labStore.environmentReady"
     :lab-executing="labStore.executing"
     :practice-starting="practiceStore.starting"
     :lab-resetting="labStore.resetting"

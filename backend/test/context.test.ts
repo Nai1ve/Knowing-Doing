@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { buildWorkspaceTutorContext } from '../src/context.js'
+import { buildMySqlTutorContext, buildWorkspaceTutorContext } from '../src/context.js'
 import type { Artifact, LearningCase, PracticeEvent, PracticeRun, StageMemory } from '../src/product-types.js'
 
 const run: PracticeRun = { id: 'practice-1', learnerId: 'learner-1', planUnitId: null, caseId: 'workspace:case-1', practiceKind: 'code_workspace', learningCaseId: 'case-1', labRunId: null, stage: 'attempt', hintLevel: 0, noProgressCount: 0, status: 'active', createdAt: '', updatedAt: '' }
@@ -26,5 +26,21 @@ describe('workspace tutor context', () => {
     expect(context.workspace.recentExecutions[0]).toMatchObject({ command: 'pytest -q', status: 'failed', stderr: 'FAILED test_order.py::test_empty' })
     expect(context.workspace.recentFiles).toEqual([{ path: 'order.py', revision: 2, content: expect.stringContaining('def total') }])
     expect(context.rawEvidence.map((item) => item.kind)).not.toContain('sql')
+  })
+})
+
+describe('MySQL Gym tutor context', () => {
+  it('uses the frozen card and excludes a reference repair from Tutor input', () => {
+    const mysqlCase = {
+      ...learningCase,
+      id: 'mysql-case',
+      capabilityKey: 'mysql.explain-plan',
+      inputSnapshot: { card: { title: 'EXPLAIN 执行计划解读实验', summary: '观察 type、key、rows 与 Extra', completionStandard: '解释执行计划差异', knowledgeCard: { keyPoints: ['type', 'key', 'rows', 'Extra'] } } },
+      spec: { kind: 'mysql_data_diagnosis', title: '订单筛选执行计划', scenario: '观察多条件筛选', learningGoal: '解释计划字段', tasks: [{ key: 'observe', instruction: '执行当前 EXPLAIN', expectedObservation: '记录 type、key、rows、Extra' }], verification: { signals: ['前后计划差异'] }, tutorContext: { concepts: ['执行计划'], likelyMisconceptions: ['只看 key'], evidenceToNotice: ['rows'] } },
+    } as unknown as LearningCase
+    const context = buildMySqlTutorContext({ goal: '理解 EXPLAIN', run: { ...run, practiceKind: 'mysql_lab', learningCaseId: mysqlCase.id }, learningCase: mysqlCase, events: [], artifacts: [artifact({ id: 'explain-1', kind: 'explain', content: 'type=ALL key=NULL rows=100000 Extra=Using filesort' })], pathNodes: [], stageMemories: [] })
+    expect(context.mysqlGym.node.title).toBe('EXPLAIN 执行计划解读实验')
+    expect(context.mysqlGym.currentTask?.expectedObservation).toContain('type')
+    expect(JSON.stringify(context)).not.toContain('CREATE INDEX')
   })
 })

@@ -50,7 +50,7 @@ const { app, scheduler } = buildApp({
   planningServiceFactory: () => planningService,
   agentPlanningServiceFactory: () => agentPlanningService,
   caseWorkspaceServiceFactory: () => caseWorkspaceService,
-  mysqlDynamicCaseServiceFactory: (scheduler) => new MySqlDynamicCaseService(productRepository, scheduler),
+  mysqlDynamicCaseServiceFactory: (scheduler) => new MySqlDynamicCaseService(productRepository, scheduler, config),
   gymBuildServiceFactory: (workspace, mysql) => new GymBuildService(productRepository, workspace, mysql),
   runtimeStatus: async () => ({ model: { configured: Boolean(config.modelBaseUrl && config.modelApiKey), name: config.modelName }, zhihu: { configured: Boolean(config.zhihuAccessSecret), executable: Boolean(config.zhihuAccessSecret), lastRetrieval: null } }),
 })

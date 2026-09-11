@@ -20,7 +20,7 @@ export class MySqlCaseMaterializationService {
   materialize(learnerId: string, learningCaseId: string, input: unknown): CaseMaterialization {
     const caseRow = this.db.prepare('SELECT id, learner_id, capability_key, environment_key, environment_version, runtime_kind FROM learning_cases WHERE id = ? AND learner_id = ?').get(learningCaseId, learnerId) as Row | undefined
     if (!caseRow) throw new Error('learning_case_not_found')
-    if (text(caseRow, 'capability_key') !== 'mysql.slow-query' || text(caseRow, 'environment_key') !== 'mysql-performance-v1' || text(caseRow, 'runtime_kind') !== 'mysql_lab') throw new Error('mysql_case_capability_mismatch')
+    if (!['mysql.slow-query', 'mysql.explain-plan'].includes(text(caseRow, 'capability_key')) || text(caseRow, 'environment_key') !== 'mysql-performance-v1' || text(caseRow, 'runtime_kind') !== 'mysql_lab') throw new Error('mysql_case_capability_mismatch')
     const fingerprint = mysqlMaterializationFingerprint(input)
     const existing = this.db.prepare('SELECT * FROM case_materializations WHERE learning_case_id = ? AND materialization_fingerprint = ?').get(learningCaseId, fingerprint) as Row | undefined
     if (existing && text(existing, 'status') === 'materialized') return from(existing)

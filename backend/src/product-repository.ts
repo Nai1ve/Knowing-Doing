@@ -3,7 +3,7 @@ import Database from 'better-sqlite3'
 import { assertProductMigrations, openProductDatabase } from './product-migrate.js'
 import { evaluatePracticeCompletion } from './coach.js'
 import type {
-  Artifact, ArtifactKind, ArtifactSourceKind, CaseGenerationJob, CaseGenerationJobStatus, CaseInputKind, CaseSpec, CaseStage, DiagnosticSession, DiagnosticSessionStatus, DiagnosticTargetKey, DiagnosticTurn, EventActor, EventType, Intake, LearningCase, LearningPlan,
+  Artifact, ArtifactKind, ArtifactSourceKind, CaseGenerationJob, CaseGenerationJobStatus, CaseInputKind, CaseSpec, CaseStage, DiagnosticSession, DiagnosticSessionStatus, DiagnosticTargetKey, DiagnosticTurn, EventActor, EventType, Intake, LearningCase, LearningPlan, MySqlExerciseSpec, MySqlGymContext,
   LabSegment, Learner, LearnerResumeContext, MemoryItem, PathNode, PlanProposal, PlanProposalStatus, PlanProposalUnit, PlanUnit, PracticeEvent, PracticePin, PracticeRun, PracticeSnapshot, ProfileEvidence, ResumeAttachment, ResumeContextChunk, SourceItem,
   StageMemory, TutorInvocation, TutorInvocationStatus, VerificationStatus, WorkspaceExecution, WorkspaceExecutionStatus, WorkspaceFile, WorkspaceRun, WorkspaceRunStatus, WritingBlockEvidence, WritingEvidenceReference, WritingCapsuleMember, WritingClusterCapsule, WritingClaim, WritingCluster, WritingClusterDetail, WritingClusterKey, WritingClusterMember, WritingClusterMemberRole, WritingClusterOverview, WritingClusterStatus, WritingClusterSummaryStatus, WritingDocument, WritingDocumentBlock, WritingEvidenceItem, WritingEvidencePack, WritingGenerationJob, WritingGenerationKind, WritingGenerationStatus, WritingMaterial, WritingProject, WritingReviewItem, WritingSection, WritingSectionBlock, WritingDraftRun, WritingDraftPhase, WritingDraftStatus,
 } from './product-types.js'
@@ -62,7 +62,7 @@ function intakeFrom(row: Row): Intake {
 function unitFrom(row: Row): PlanUnit {
   return {
     id: text(row, 'id'), planId: text(row, 'plan_id'), roadmapNodeId: nullableText(row, 'roadmap_node_id'), position: number(row, 'position'), title: text(row, 'title'),
-    objective: text(row, 'objective'), caseId: nullableText(row, 'case_id') as PlanUnit['caseId'], learningCaseId: nullableText(row, 'learning_case_id'),
+    objective: text(row, 'objective'), caseId: nullableText(row, 'case_id') as PlanUnit['caseId'], learningCaseId: nullableText(row, 'learning_case_id'), exerciseProfileKey: nullableText(row, 'exercise_profile_key'),
     status: text(row, 'status') as PlanUnit['status'], availability: text(row, 'availability') as PlanUnit['availability'], completedAt: nullableText(row, 'completed_at'), sourceRefs: json<string[]>(row.source_refs_json, []),
     learningMode: (nullableText(row, 'learning_mode') ?? (row.case_id ? 'lab' : 'unavailable')) as PlanUnit['learningMode'], estimatedMinutes: row.estimated_minutes == null ? 60 : number(row, 'estimated_minutes'), rationale: nullableText(row, 'rationale') ?? '',
   }
@@ -1868,6 +1868,33 @@ export class ProductRepository {
   snapshot(practiceRunId: string): PracticeSnapshot {
     const run = this.getPracticeRun(practiceRunId)
     const snapshot = { run, events: this.listEvents(practiceRunId), artifacts: this.listArtifacts(practiceRunId), pathNodes: this.listPathNodes(practiceRunId), stageMemories: this.listStageMemories(practiceRunId), memories: this.listMemories(run.learnerId), tutorTurns: this.listTutorTurns(practiceRunId), pins: this.listPracticePins(practiceRunId) }
-    return { ...snapshot, completion: evaluatePracticeCompletion(run, snapshot) }
+    return { ...snapshot, completion: evaluatePracticeCompletion(run, snapshot), gymContext: this.mysqlGymContext(run, snapshot.artifacts) }
+  }
+
+  private mysqlGymContext(run: PracticeRun, artifacts: Artifact[]): MySqlGymContext | null {
+    if (run.practiceKind !== 'mysql_lab' || !run.learningCaseId) return null
+    const row = this.db.prepare(`SELECT c.input_snapshot_json, c.case_spec_json, m.materialization_json
+      FROM learning_cases c LEFT JOIN case_materializations m ON m.id = c.materialization_id
+      WHERE c.id = ? AND c.learner_id = ?`).get(run.learningCaseId, run.learnerId) as Row | undefined
+    if (!row) return null
+    const exercise = json<MySqlExerciseSpec | null>(row.case_spec_json, null)
+    if (!exercise || exercise.kind !== 'mysql_data_diagnosis') return null
+    const input = json<Record<string, unknown>>(row.input_snapshot_json, {})
+    const cardValue = input.card && typeof input.card === 'object' ? input.card as Record<string, unknown> : {}
+    const knowledgeCard = cardValue.knowledgeCard && typeof cardValue.knowledgeCard === 'object' ? cardValue.knowledgeCard as Record<string, unknown> : {}
+    const plan = json<{ query?: { sql?: unknown } }>(row.materialization_json, {})
+    const visibleSql = typeof plan.query?.sql === 'string' ? `EXPLAIN ${plan.query.sql.replaceAll('?', '1')}` : ''
+    const observed = artifacts.filter((artifact) => artifact.kind === 'sql' || artifact.kind === 'explain').length
+    return {
+      card: {
+        title: typeof cardValue.title === 'string' ? cardValue.title : exercise.title,
+        summary: typeof cardValue.summary === 'string' ? cardValue.summary : exercise.scenario,
+        completionStandard: typeof cardValue.completionStandard === 'string' ? cardValue.completionStandard : exercise.learningGoal,
+        keyPoints: Array.isArray(knowledgeCard.keyPoints) ? knowledgeCard.keyPoints.filter((value): value is string => typeof value === 'string').slice(0, 8) : [],
+      },
+      exercise: { title: exercise.title, scenario: exercise.scenario, learningGoal: exercise.learningGoal, tasks: exercise.tasks, verification: exercise.verification, tutorContext: exercise.tutorContext },
+      visibleSql,
+      currentTask: exercise.tasks[Math.min(observed, exercise.tasks.length - 1)] ?? null,
+    }
   }
 }

@@ -61,6 +61,8 @@ export interface RoadmapNode {
   priority: number
   position: number
   learningMode: RoadmapLearningMode
+  capabilityKey?: string | null
+  exerciseProfileKey?: string | null
   caseId: string | null
   status: RoadmapNodeStatus
   progressSource: string
