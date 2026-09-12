@@ -13,6 +13,13 @@ archive_path="${ZHIXING_RELEASE_ARCHIVE:-}"
 default_case_builder_base_image='ghcr.io/openhands/openhands@sha256:392743af9edb3e6b407f57a64815006859d2feb9178ff1a3404c69e17c0f749f'
 case_builder_env_file="$data_root/case-builder-agent.env"
 
+# A first-time manual clone may leave the repository one level below the
+# configured root when that root already exists. Reuse that checkout instead
+# of failing before the controlled fetch/commit verification can run.
+if [ ! -e "$repo_root/.git" ] && [ -e "$repo_root/Knowing-Doing/.git" ]; then
+  repo_root="$repo_root/Knowing-Doing"
+fi
+
 read_env_value() {
   local key="$1" file="$2" line
   while IFS= read -r line; do
