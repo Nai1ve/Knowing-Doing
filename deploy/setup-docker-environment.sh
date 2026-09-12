@@ -28,8 +28,12 @@ fi
 
 fetch_main() {
   local attempt
+  local fetch_timeout="${ZHIXING_GIT_FETCH_TIMEOUT_SECONDS:-20}"
   for attempt in 1 2 3; do
-    if git -C "$repo_root" fetch --quiet origin main; then
+    if timeout "$fetch_timeout" git -C "$repo_root" \
+      -c http.lowSpeedLimit=1 \
+      -c http.lowSpeedTime=10 \
+      fetch --quiet origin main; then
       return 0
     fi
     sleep "$((attempt * 2))"
@@ -38,16 +42,57 @@ fetch_main() {
   return 1
 }
 
-fetch_main
-if [ -z "$commit" ]; then
-  commit="$(git -C "$repo_root" rev-parse origin/main)"
+fetch_commit_archive() {
+  local attempt
+  local fetch_timeout="${ZHIXING_CODELOAD_TIMEOUT_SECONDS:-120}"
+  local codeload_base="${ZHIXING_CODELOAD_URL:-$repo_url}"
+  codeload_base="${codeload_base%.git}"
+  codeload_base="${codeload_base/github.com/codeload.github.com}"
+
+  commit_archive_path="$data_root/.docker-env-$commit.tar.gz"
+  rm -f -- "$commit_archive_path"
+  for attempt in 1 2 3; do
+    if curl --fail --location --silent --show-error \
+      --connect-timeout 10 --max-time "$fetch_timeout" \
+      "$codeload_base/tar.gz/$commit" -o "$commit_archive_path" \
+      && tar -tzf "$commit_archive_path" >/dev/null 2>&1; then
+      echo "Fetched immutable source archive for $commit from $codeload_base"
+      return 0
+    fi
+    rm -f -- "$commit_archive_path"
+    sleep "$((attempt * 2))"
+  done
+
+  echo "Unable to fetch source archive for $commit from $codeload_base" >&2
+  return 1
+}
+
+source_archive_path=''
+if fetch_main; then
+  if [ -z "$commit" ]; then
+    commit="$(git -C "$repo_root" rev-parse origin/main)"
+  fi
+  git -C "$repo_root" cat-file -e "${commit}^{commit}"
+else
+  if [ -z "$commit" ]; then
+    echo 'Git fetch failed and no explicit commit was provided for archive fallback.' >&2
+    exit 1
+  fi
+  fetch_commit_archive
+  source_archive_path="$commit_archive_path"
 fi
-git -C "$repo_root" cat-file -e "${commit}^{commit}"
 
 build_root="$data_root/.server-docker-build-$commit"
 rm -rf -- "$build_root"
 mkdir -p "$build_root"
-git -C "$repo_root" archive "$commit" | tar -x -C "$build_root"
+if [ -n "$source_archive_path" ]; then
+  tar -xzf "$source_archive_path" --strip-components=1 -C "$build_root"
+else
+  git -C "$repo_root" archive "$commit" | tar -x -C "$build_root"
+fi
+if [ -n "$source_archive_path" ]; then
+  rm -f -- "$source_archive_path"
+fi
 trap 'rm -rf -- "$build_root"' EXIT
 
 go_version="${WORKSPACE_GO_VERSION:-1.24.6}"

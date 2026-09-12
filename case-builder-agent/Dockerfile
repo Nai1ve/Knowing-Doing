@@ -15,4 +15,8 @@ ENV CASE_BUILDER_PORT=3102 \
     CASE_BUILDER_STATE_DIR=/var/lib/case-builder-agent
 
 EXPOSE 3102
+# The server-managed base image is OpenHands and carries its own entrypoint.
+# The wrapper service must run directly and delegate OpenHands work only from
+# its controlled task path.
+ENTRYPOINT []
 CMD ["node", "src/server.mjs"]

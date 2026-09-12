@@ -21,13 +21,10 @@ if [ ! -e "$repo_root/.git" ] && [ -e "$repo_root/Knowing-Doing/.git" ]; then
 fi
 
 read_env_value() {
-  local key="$1" file="$2" line
-  while IFS= read -r line; do
-    case "$line" in
-      "$key="*) printf '%s' "${line#*=}"; return 0 ;;
-    esac
-  done < "$file"
-  return 1
+  local key="$1" file="$2"
+  sudo -n awk -v key="$key" \
+    'index($0, key "=") == 1 { print substr($0, length(key) + 2); found = 1; exit }
+     END { exit found ? 0 : 1 }' "$file"
 }
 
 fetch_main() {
@@ -121,7 +118,7 @@ prepare_case_builder_image() {
 ensure_server_docker_images() {
   local image
   local required_images=(zhixing-python-pytest-v1:local zhixing-go-test-v1:local zhixing-workspace-runner:server)
-  if grep -q '^CASE_BUILDER_ENABLED=true$' /etc/knowing-doing/backend.env; then
+  if sudo -n grep -q '^CASE_BUILDER_ENABLED=true$' /etc/knowing-doing/backend.env; then
     required_images+=(zhixing-case-builder-agent:server)
   fi
   for image in "${required_images[@]}"; do
@@ -185,13 +182,13 @@ fi
 cd "$release_dir/backend"
 NODE_ENV=production ZHIXING_PRODUCT_DB_PATH="$data_root/zhixing-product.db" npm run db:migrate
 
-if grep -q '^CASE_BUILDER_ENABLED=true$' /etc/knowing-doing/backend.env; then
+if sudo -n grep -q '^CASE_BUILDER_ENABLED=true$' /etc/knowing-doing/backend.env; then
   prepare_case_builder_image
 fi
 ensure_server_docker_images
 
 cd "$release_dir/deploy"
-if docker compose version >/dev/null 2>&1; then
+if sudo -n docker compose version >/dev/null 2>&1; then
   compose=(docker compose -f docker-compose.production.yml)
 elif command -v docker-compose >/dev/null 2>&1; then
   compose=(docker-compose -f docker-compose.production.yml)
@@ -199,11 +196,11 @@ else
   echo "Docker Compose is not installed" >&2
   exit 1
 fi
-if grep -q '^CASE_BUILDER_ENABLED=true$' /etc/knowing-doing/backend.env; then
-  "${compose[@]}" up -d workspace-runner case-builder-agent
+if sudo -n grep -q '^CASE_BUILDER_ENABLED=true$' /etc/knowing-doing/backend.env; then
+  sudo -n "${compose[@]}" up -d workspace-runner case-builder-agent
 else
-  "${compose[@]}" stop case-builder-agent >/dev/null 2>&1 || true
-  "${compose[@]}" up -d workspace-runner
+  sudo -n "${compose[@]}" stop case-builder-agent >/dev/null 2>&1 || true
+  sudo -n "${compose[@]}" up -d workspace-runner
 fi
 
 ln -sfn "$release_dir" "$current_link"
