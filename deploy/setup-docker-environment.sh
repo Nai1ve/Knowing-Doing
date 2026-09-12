@@ -56,7 +56,7 @@ go_tarball_path="$build_root/deploy/$go_tarball"
 if [ ! -f "$go_tarball_path" ]; then
   echo "Downloading Go $go_version for the server-managed Go runtime"
   curl --fail --location --retry 3 --connect-timeout 10 --max-time 300 \
-    "https://go.dev/dl/$go_tarball" --output "$go_tarball_path"
+    "https://dl.google.com/go/$go_tarball" --output "$go_tarball_path"
 fi
 
 if ! docker image inspect zhixing-openhands-local:current --format '{{.Id}}' >/dev/null 2>&1; then
