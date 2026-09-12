@@ -26,9 +26,40 @@ const ProfileDeltaSchema = z.object({
   dimensions: z.array(z.object({
     key: z.string().min(1), level: z.enum(['unknown', 'exposed', 'applied', 'independent', 'advanced']), confidence: z.number().min(0).max(1), summary: z.string(), nextValidation: z.string(),
   })).default([]),
-  evidence: z.array(z.object({ topicKey: z.string().nullable().optional(), sourceType: z.enum(['user_message', 'resume', 'reading', 'concept', 'lab']), sourceId: z.string(), excerpt: z.string() })).default([]),
+  evidence: z.array(z.object({ topicKey: z.string().nullable().optional(), sourceType: z.enum(['user_message', 'resume', 'reading', 'concept', 'lab', 'workspace', 'diagnostic_assessment']), sourceId: z.string(), excerpt: z.string() })).default([]),
   supportedPracticeCandidates: z.array(z.object({ capabilityKey: z.string().min(1), rationale: z.string().min(1).max(500), evidenceRefs: z.array(z.string().min(1)).min(1).max(6) })).max(4).default([]),
   followUpTopic: z.string().nullable().optional(),
+})
+
+const AssessmentQuestionSchema = z.object({
+  dimensionKey: z.string().trim().min(1).max(80),
+  type: z.enum(['single_choice', 'multiple_choice', 'short_text', 'scenario']),
+  prompt: z.string().trim().min(8).max(1200),
+  options: z.array(z.object({ value: z.string().trim().min(1).max(120), label: z.string().trim().min(1).max(240) })).max(8).default([]),
+  rubric: z.object({ criteria: z.array(z.string().trim().min(1).max(400)).min(1).max(6), evidenceSignals: z.array(z.string().trim().min(1).max(300)).max(8).default([]) }),
+  referenceAnswer: z.unknown(),
+}).superRefine((value, ctx) => {
+  if (['single_choice', 'multiple_choice'].includes(value.type) && value.options.length < 2) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['options'], message: '选择题至少需要两个选项' })
+  if (['short_text', 'scenario'].includes(value.type) && value.options.length > 0) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['options'], message: '文本和场景题不能包含选项' })
+})
+const AssessmentSchema = z.object({
+  dimensions: z.array(z.object({ key: z.string().trim().min(1).max(80), title: z.string().trim().min(1).max(120), rationale: z.string().trim().min(1).max(400) })).min(4).max(6),
+  questions: z.array(AssessmentQuestionSchema).min(12).max(15),
+}).superRefine((value, ctx) => {
+  const keys = new Set(value.dimensions.map((dimension) => dimension.key))
+  value.questions.forEach((question, index) => { if (!keys.has(question.dimensionKey)) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['questions', index, 'dimensionKey'], message: '题目必须属于已声明的维度' }) })
+})
+const AssessmentEvaluationSchema = z.object({
+  dimensions: z.array(z.object({ key: z.string().min(1), level: z.enum(['unknown', 'exposed', 'applied', 'independent', 'advanced']), confidence: z.number().min(0).max(1), summary: z.string().min(1).max(500), nextValidation: z.string().min(1).max(500), evidence: z.array(z.string().min(1).max(500)).max(5).default([]) })).min(1).max(6),
+  summary: z.string().min(1).max(1200),
+})
+const RequirementBriefSchema = z.object({
+  goal: z.string().min(1).max(500),
+  targetOutcome: z.string().min(1).max(800),
+  constraints: z.array(z.string().min(1).max(400)).max(8).default([]),
+  priorities: z.array(z.string().min(1).max(300)).min(1).max(8),
+  evidenceNotes: z.array(z.string().min(1).max(500)).max(8).default([]),
+  openQuestions: z.array(z.string().min(1).max(400)).max(8).default([]),
 })
 
 const RoadmapNodeDraftSchema = z.object({
@@ -155,6 +186,7 @@ export type PlanningStreamEvent =
   | { type: 'profile_updated'; invocationId: string; profileSnapshotId: string; coveredTopics: string[]; pendingTopics: string[]; dimensions: ProfileDelta['dimensions'] }
   | { type: 'roadmap_readiness'; invocationId: string; readiness: 'ready'; coveredTopicCount: number; pendingTopicCount: number }
   | { type: 'next_question'; invocationId: string; question: string; topicKey: string | null; canGenerateRoadmap: boolean }
+  | { type: 'planning_stage'; sessionId: string; stage: PlanningDiagnosticStage; readiness: PlanningReadiness }
   | { type: 'completed'; invocationId: string; session: AgentPlanningSession }
   | { type: 'failed'; invocationId: string; code: string; message: string; retryable: boolean }
 
@@ -163,7 +195,7 @@ export interface AgentPlanningTopic { key: string; label: string; priority: numb
 export interface AgentProfileDimension { key: string; level: ProfileDelta['dimensions'][number]['level']; confidence: number; summary: string; nextValidation: string }
 export interface AgentProfile { id: string; version: number; summary: Record<string, unknown>; dimensions: AgentProfileDimension[]; evidence: Array<{ id: string; topicKey: string | null; sourceType: string; sourceId: string; excerpt: string; createdAt: string }> }
 export interface AgentRoadmapGeneration { id: string; status: 'queued' | 'running' | 'succeeded' | 'failed' | 'interrupted'; phase: RoadmapPhase | 'completed' | 'failed'; scopeKey?: string | null; attemptCount: number; roadmapId: string | null; failureCode: string | null; failureMessage: string | null; updatedAt: string }
-export interface AgentPlanningSession { id: string; learnerId: string; goal: string; status: string; mode: 'agent'; agentStatus: string; revision: number; messages: AgentPlanningMessage[]; requiredTopics: AgentPlanningTopic[]; profile: AgentProfile | null; resume: unknown; roadmapId: string | null; roadmapGeneration: AgentRoadmapGeneration | null; createdAt: string; updatedAt: string }
+export interface AgentPlanningSession { id: string; learnerId: string; goal: string; status: string; mode: 'agent'; agentStatus: string; diagnosticStage: PlanningDiagnosticStage; revision: number; messages: AgentPlanningMessage[]; requiredTopics: AgentPlanningTopic[]; profile: AgentProfile | null; resume: unknown; roadmapId: string | null; roadmapGeneration: AgentRoadmapGeneration | null; createdAt: string; updatedAt: string }
 export interface AgentPlanningState {
   session: { id: string; goal: string; status: string; agentStatus: string; revision: number; roadmapId: string | null; updatedAt: string } | null
   generation: AgentRoadmapGeneration | null
@@ -186,6 +218,13 @@ export interface AgentPlanAdjustment {
   updatedAt: string
 }
 
+export type PlanningDiagnosticStage = 'baseline' | 'assessment_preparing' | 'assessment_answering' | 'assessment_evaluating' | 'requirements' | 'requirements_review' | 'ready' | 'generating' | 'proposed' | 'confirmed'
+export interface PlanningReadiness { ready: boolean; blockers: string[]; stage: PlanningDiagnosticStage }
+export interface AssessmentQuestion { id: string; position: number; dimensionKey: string; type: 'single_choice' | 'multiple_choice' | 'short_text' | 'scenario'; prompt: string; options: Array<{ value: string; label: string }> }
+export interface DiagnosticAssessment { id: string; version: number; status: 'preparing' | 'answering' | 'evaluating' | 'completed' | 'abandoned' | 'failed'; dimensions: Array<{ key: string; title: string; rationale: string }>; questions: AssessmentQuestion[]; answerCount: number; evaluation: z.infer<typeof AssessmentEvaluationSchema> | null; createdAt: string; updatedAt: string }
+export interface RequirementBrief { id: string; version: number; status: 'draft' | 'confirmed' | 'superseded'; content: z.infer<typeof RequirementBriefSchema>; confirmedAt: string | null; createdAt: string; updatedAt: string }
+export interface PhasedPlanningStatus { sessionId: string; stage: PlanningDiagnosticStage; baselineTurns: number; assessment: DiagnosticAssessment | null; requirementBrief: RequirementBrief | null; readiness: PlanningReadiness }
+
 export interface PlanningProvider {
   readonly providerName: string
   readonly modelName: string
@@ -193,6 +232,9 @@ export interface PlanningProvider {
   interpret(input: { userMessage: string; assistantMessage: string; messages: AgentPlanningMessage[]; resumeText?: string | null; context?: PlanningContextPacket | null; practiceEnvironments?: AgentPracticeEnvironment[] }): Promise<ProfileDeltaInput>
   generateRoadmap?(input: { goal: string; messages: AgentPlanningMessage[]; context: PlanningContextPacket | null; cached?: RoadmapGenerationCache; onPhase: RoadmapPhaseCallback; practiceEnvironments?: AgentPracticeEnvironment[] }): Promise<RoadmapPlan>
   adjustPlan?(input: { request: string; goal: string; currentUnitKey: string; planUnits: Array<{ nodeKey: string; title: string; status: string }>; candidateNodes: Array<{ nodeKey: string; title: string; nodeType: string }>; context: PlanningContextPacket | null }): Promise<PlanAdjustmentProposal>
+  generateAssessment?(input: { goal: string; messages: AgentPlanningMessage[]; resumeText?: string | null; context: PlanningContextPacket | null }): Promise<z.infer<typeof AssessmentSchema>>
+  evaluateAssessment?(input: { goal: string; dimensions: z.infer<typeof AssessmentSchema>['dimensions']; questions: Array<z.infer<typeof AssessmentQuestionSchema> & { id: string }>; answers: Array<{ questionId: string; value: unknown }> }): Promise<z.infer<typeof AssessmentEvaluationSchema>>
+  generateRequirementBrief?(input: { goal: string; assessment: DiagnosticAssessment | null; messages: string[]; previous: z.infer<typeof RequirementBriefSchema> | null }): Promise<z.infer<typeof RequirementBriefSchema>>
 }
 
 export class PlanningAgentError extends Error {
@@ -461,6 +503,44 @@ export class DeepSeekPlanningAgent implements PlanningProvider {
     const parsed = ProfileDeltaSchema.safeParse(value); if (!parsed.success) throw new PlanningAgentError('profile_invalid_output', '画像解释器返回的结构不完整')
     return parsed.data
   }
+
+  async generateAssessment(input: { goal: string; messages: AgentPlanningMessage[]; resumeText?: string | null; context: PlanningContextPacket | null }): Promise<z.infer<typeof AssessmentSchema>> {
+    const contract = '{"dimensions":[{"key":"backend-design","title":"能力维度","rationale":"为什么要验证"}],"questions":[{"dimensionKey":"backend-design","type":"single_choice","prompt":"问题","options":[{"value":"a","label":"选项"},{"value":"b","label":"选项"}],"rubric":{"criteria":["判定标准"],"evidenceSignals":["证据"]},"referenceAnswer":{"expected":"仅供评估器"}}]}'
+    const generate = async (repair?: { raw: string; issues: unknown }) => this.structured([
+      { role: 'system', content: `你是学习诊断设计器。仅用用户明确提供的目标、消息和简历生成一次冻结诊断：4-6 个维度、12-15 道题，题型仅 single_choice/multiple_choice/short_text/scenario。每题必须包含内部 rubric 与 referenceAnswer；它们绝不能写入 prompt。只返回 JSON。${repair ? '修复以下无效草稿，保持目标不变。' : ''} 合约：${contract}` },
+      { role: 'user', content: JSON.stringify({ goal: input.goal, messages: input.messages.slice(-12), resume: input.resumeText ?? null, context: input.context, repair }) },
+    ])
+    const first = await generate(); const parsed = AssessmentSchema.safeParse(first.value)
+    if (parsed.success) return parsed.data
+    const repair = await generate({ raw: first.raw, issues: parsed.error.issues }); const repaired = AssessmentSchema.safeParse(repair.value)
+    if (!repaired.success) throw new PlanningAgentError('assessment_invalid_output', '诊断题目未通过结构校验，修复后仍无效', true, { validationIssues: repaired.error.issues })
+    return repaired.data
+  }
+
+  async evaluateAssessment(input: { goal: string; dimensions: z.infer<typeof AssessmentSchema>['dimensions']; questions: Array<z.infer<typeof AssessmentQuestionSchema> & { id: string }>; answers: Array<{ questionId: string; value: unknown }> }): Promise<z.infer<typeof AssessmentEvaluationSchema>> {
+    const contract = '{"dimensions":[{"key":"dimension-key","level":"exposed","confidence":0.6,"summary":"仅基于作答的判断","nextValidation":"下一步验证","evidence":["作答摘要"]}],"summary":"不包含总分的诊断摘要"}'
+    const first = await this.structured([
+      { role: 'system', content: `你是学习诊断评估器。只基于题目、隐藏 rubric/referenceAnswer 和用户作答评估，不得给总分、百分比或排名。未知和未作答必须低置信。只返回 JSON：${contract}` },
+      { role: 'user', content: JSON.stringify(input) },
+    ])
+    const parsed = AssessmentEvaluationSchema.safeParse(first.value)
+    if (parsed.success) return parsed.data
+    const repair = await this.structured([{ role: 'system', content: `修复诊断评估 JSON。不得给总分。${contract}` }, { role: 'user', content: JSON.stringify({ draft: first.raw, validationIssues: parsed.error.issues, input }) }])
+    const repaired = AssessmentEvaluationSchema.safeParse(repair.value)
+    if (!repaired.success) throw new PlanningAgentError('assessment_evaluation_invalid_output', '诊断评估结果无效', true, { validationIssues: repaired.error.issues })
+    return repaired.data
+  }
+
+  async generateRequirementBrief(input: { goal: string; assessment: DiagnosticAssessment | null; messages: string[]; previous: z.infer<typeof RequirementBriefSchema> | null }): Promise<z.infer<typeof RequirementBriefSchema>> {
+    const contract = '{"goal":"目标","targetOutcome":"可验证的产出","constraints":["约束"],"priorities":["优先项"],"evidenceNotes":["证据边界"],"openQuestions":["待确认问题"]}'
+    const first = await this.structured([{ role: 'system', content: `你是学习路线需求梳理器。只返回可编辑的需求简报 JSON，不能声称未验证的能力。${contract}` }, { role: 'user', content: JSON.stringify(input) }])
+    const parsed = RequirementBriefSchema.safeParse(first.value)
+    if (parsed.success) return parsed.data
+    const repair = await this.structured([{ role: 'system', content: `修复需求简报 JSON。${contract}` }, { role: 'user', content: JSON.stringify({ draft: first.raw, validationIssues: parsed.error.issues, input }) }])
+    const repaired = RequirementBriefSchema.safeParse(repair.value)
+    if (!repaired.success) throw new PlanningAgentError('requirements_invalid_output', '需求简报无效', true, { validationIssues: repaired.error.issues })
+    return repaired.data
+  }
 }
 
 export class AgentPlanningService {
@@ -493,7 +573,169 @@ export class AgentPlanningService {
     const id = text(row, 'id'); const profileSnapshotId = nullable(row, 'profile_snapshot_id')
     const messages = (this.db.prepare('SELECT * FROM planning_messages WHERE session_id = ? ORDER BY sequence ASC').all(id) as Row[]).map((item) => ({ id: text(item, 'id'), sequence: number(item, 'sequence'), role: text(item, 'role') as AgentPlanningMessage['role'], content: text(item, 'content'), metadata: json(item.metadata_json, {}), createdAt: text(item, 'created_at') }))
     const generation = generationFrom(this.db.prepare('SELECT id, status, phase, attempt_count, roadmap_id, failure_code, failure_message, updated_at FROM roadmap_generation_runs WHERE planning_session_id = ? ORDER BY created_at DESC, id DESC LIMIT 1').get(id) as Row | undefined)
-    return { id, learnerId: text(row, 'learner_id'), goal: text(row, 'goal'), status: text(row, 'status'), mode: 'agent', agentStatus: text(row, 'agent_status'), revision: number(row, 'revision'), messages, requiredTopics: this.topics(id), profile: this.profile(profileSnapshotId), resume: this.repository.getPlanningResumeAttachment(id, text(row, 'learner_id')), roadmapId: generation?.status === 'succeeded' ? generation.roadmapId : null, roadmapGeneration: generation, createdAt: text(row, 'created_at'), updatedAt: text(row, 'updated_at') }
+    return { id, learnerId: text(row, 'learner_id'), goal: text(row, 'goal'), status: text(row, 'status'), mode: 'agent', agentStatus: text(row, 'agent_status'), diagnosticStage: (nullable(row, 'diagnostic_stage') ?? 'baseline') as PlanningDiagnosticStage, revision: number(row, 'revision'), messages, requiredTopics: this.topics(id), profile: this.profile(profileSnapshotId), resume: this.repository.getPlanningResumeAttachment(id, text(row, 'learner_id')), roadmapId: generation?.status === 'succeeded' ? generation.roadmapId : null, roadmapGeneration: generation, createdAt: text(row, 'created_at'), updatedAt: text(row, 'updated_at') }
+  }
+
+  private assessmentFrom(row: Row | undefined, includeAnswers = false): DiagnosticAssessment | null {
+    if (!row) return null
+    const id = text(row, 'id')
+    const questions = (this.db.prepare('SELECT * FROM planning_assessment_questions WHERE assessment_id = ? ORDER BY position').all(id) as Row[]).map((question) => ({ id: text(question, 'id'), position: number(question, 'position'), dimensionKey: text(question, 'dimension_key'), type: text(question, 'question_type') as AssessmentQuestion['type'], prompt: text(question, 'prompt'), options: json<Array<{ value: string; label: string }>>(question.options_json, []) }))
+    const answerCount = number(this.db.prepare('SELECT COUNT(*) AS count FROM planning_assessment_answers WHERE assessment_id = ?').get(id) as Row, 'count')
+    // Answers are deliberately never returned before a terminal assessment.
+    void includeAnswers
+    return { id, version: number(row, 'version'), status: text(row, 'status') as DiagnosticAssessment['status'], dimensions: json(row.dimensions_json, []), questions, answerCount, evaluation: ['completed', 'abandoned'].includes(text(row, 'status')) ? json(row.evaluation_json, null) : null, createdAt: text(row, 'created_at'), updatedAt: text(row, 'updated_at') }
+  }
+
+  private requirementFrom(row: Row | undefined): RequirementBrief | null {
+    if (!row) return null
+    return { id: text(row, 'id'), version: number(row, 'version'), status: text(row, 'status') as RequirementBrief['status'], content: RequirementBriefSchema.parse(json(row.content_json, {})), confirmedAt: nullable(row, 'confirmed_at'), createdAt: text(row, 'created_at'), updatedAt: text(row, 'updated_at') }
+  }
+
+  private currentAssessment(sessionId: string): Row | undefined { return this.db.prepare('SELECT * FROM planning_assessments WHERE session_id = ? ORDER BY version DESC LIMIT 1').get(sessionId) as Row | undefined }
+  private currentBrief(sessionId: string): Row | undefined { return this.db.prepare('SELECT * FROM planning_requirement_briefs WHERE session_id = ? ORDER BY version DESC LIMIT 1').get(sessionId) as Row | undefined }
+  private setStage(sessionId: string, stage: PlanningDiagnosticStage): void { this.db.prepare('UPDATE planning_sessions SET diagnostic_stage = ?, updated_at = ? WHERE id = ?').run(stage, new Date().toISOString(), sessionId) }
+
+  private baselineReady(session: AgentPlanningSession): boolean {
+    const userTurns = session.messages.filter((message) => message.role === 'user').length
+    const evidence = session.profile?.dimensions ?? []
+    const hasLevel = evidence.some((dimension) => dimension.level !== 'unknown' && dimension.confidence >= 0.35)
+    const hasResume = Boolean(session.resume)
+    return userTurns >= 3 || (userTurns >= 1 && (hasLevel || hasResume))
+  }
+
+  roadmapReadiness(learnerId: string, sessionId: string): PlanningReadiness {
+    const session = this.getSession(learnerId, sessionId); const assessment = this.currentAssessment(sessionId); const brief = this.currentBrief(sessionId); const blockers: string[] = []
+    if (!assessment || !['completed', 'abandoned'].includes(text(assessment, 'status'))) blockers.push('assessment_not_terminal')
+    if (!brief || text(brief, 'status') !== 'confirmed') blockers.push('requirements_not_confirmed')
+    if (session.diagnosticStage !== 'ready') blockers.push('stage_not_ready')
+    return { ready: blockers.length === 0, blockers, stage: session.diagnosticStage }
+  }
+
+  phasedStatus(learnerId: string, sessionId: string): PhasedPlanningStatus {
+    const session = this.getSession(learnerId, sessionId)
+    return { sessionId, stage: session.diagnosticStage, baselineTurns: session.messages.filter((message) => message.role === 'user').length, assessment: this.assessmentFrom(this.currentAssessment(sessionId)), requirementBrief: this.requirementFrom(this.currentBrief(sessionId)), readiness: this.roadmapReadiness(learnerId, sessionId) }
+  }
+
+  private fallbackAssessment(goal: string): z.infer<typeof AssessmentSchema> {
+    const dimensions = [['goal', '目标与范围'], ['fundamentals', '基础理解'], ['practice', '实践经验'], ['constraints', '投入与约束']] as const
+    const questions: z.infer<typeof AssessmentQuestionSchema>[] = Array.from({ length: 12 }, (_, index) => {
+      const [key, title] = dimensions[index % dimensions.length]
+      const type = (['single_choice', 'multiple_choice', 'short_text', 'scenario'] as const)[index % 4]
+      const options = type === 'single_choice' || type === 'multiple_choice' ? [{ value: 'new', label: '刚开始接触' }, { value: 'guided', label: '能在指导下完成' }, { value: 'independent', label: '能独立处理并说明取舍' }] : []
+      return { dimensionKey: key, type, prompt: `${title}诊断 ${index + 1}：请结合“${goal.slice(0, 80)}”说明你的真实情况。`, options, rubric: { criteria: ['只以明确经历和可解释的判断为依据'], evidenceSignals: ['具体场景', '取舍或结果'] }, referenceAnswer: { internal: true } }
+    })
+    return AssessmentSchema.parse({ dimensions: dimensions.map(([key, title]) => ({ key, title, rationale: `确认${title}，避免把推测当成能力结论。` })), questions })
+  }
+
+  async prepareAssessment(learnerId: string, sessionId: string, clientRequestId: string): Promise<DiagnosticAssessment> {
+    const session = this.getSession(learnerId, sessionId)
+    if (!['baseline', 'assessment_preparing'].includes(session.diagnosticStage)) throw new LabError('invalid_planning_stage', '当前阶段不能创建诊断', 409)
+    if (!this.baselineReady(session)) throw new LabError('baseline_incomplete', '请先完成最多三轮的目标与能力基线确认', 409, false, { baselineTurns: session.messages.filter((message) => message.role === 'user').length })
+    const existing = this.db.prepare('SELECT * FROM planning_assessments WHERE session_id = ? AND client_request_id = ?').get(sessionId, clientRequestId) as Row | undefined
+    if (existing) return this.assessmentFrom(existing)!
+    this.setStage(sessionId, 'assessment_preparing')
+    const invocationId = randomUUID(); const now = new Date().toISOString()
+    this.db.prepare("INSERT INTO planning_agent_invocations(id, session_id, learner_id, client_request_id, kind, provider, model, status, input_fingerprint, created_at) VALUES (?, ?, ?, ?, 'assessment_generator', ?, ?, 'running', ?, ?)").run(invocationId, sessionId, learnerId, clientRequestId, this.provider.providerName, this.provider.modelName, fingerprint({ sessionId, clientRequestId, goal: session.goal }), now)
+    try {
+      const resume = this.repository.getPlanningResumeContext(sessionId, learnerId); const generated = this.provider.generateAssessment ? await this.provider.generateAssessment({ goal: session.goal, messages: session.messages, resumeText: resumeSnippet(resume, session.goal), context: this.contextCompiler.current(learnerId, sessionId) }) : this.fallbackAssessment(session.goal)
+      const parsed = AssessmentSchema.parse(generated); const version = number(this.db.prepare('SELECT COALESCE(MAX(version), 0) AS version FROM planning_assessments WHERE session_id = ?').get(sessionId) as Row, 'version') + 1; const id = randomUUID()
+      const tx = this.db.transaction(() => {
+        this.db.prepare("INSERT INTO planning_assessments(id, session_id, learner_id, version, status, dimensions_json, client_request_id, created_at, updated_at) VALUES (?, ?, ?, ?, 'answering', ?, ?, ?, ?)").run(id, sessionId, learnerId, version, JSON.stringify(parsed.dimensions), clientRequestId, now, now)
+        const insert = this.db.prepare('INSERT INTO planning_assessment_questions(id, assessment_id, position, dimension_key, question_type, prompt, options_json, rubric_json, reference_answer_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+        parsed.questions.forEach((question, index) => insert.run(randomUUID(), id, index + 1, question.dimensionKey, question.type, question.prompt, JSON.stringify(question.options), JSON.stringify(question.rubric), JSON.stringify(question.referenceAnswer), now))
+        this.db.prepare("UPDATE planning_agent_invocations SET status = 'succeeded', completed_at = ?, latency_ms = ? WHERE id = ?").run(new Date().toISOString(), Date.now() - Date.parse(now), invocationId)
+      }); tx(); this.setStage(sessionId, 'assessment_answering'); return this.assessmentFrom(this.currentAssessment(sessionId))!
+    } catch (error) {
+      this.db.prepare("UPDATE planning_agent_invocations SET status = 'failed', failure_code = ?, failure_message = ?, completed_at = ? WHERE id = ?").run(error instanceof PlanningAgentError ? error.code : 'assessment_failed', error instanceof Error ? error.message : '诊断生成失败', new Date().toISOString(), invocationId)
+      this.setStage(sessionId, 'assessment_preparing'); throw error
+    }
+  }
+
+  submitAssessmentAnswers(learnerId: string, sessionId: string, assessmentId: string, answers: Array<{ questionId: string; value: unknown }>, clientRequestId: string): DiagnosticAssessment {
+    const session = this.getSession(learnerId, sessionId); if (session.diagnosticStage !== 'assessment_answering') throw new LabError('invalid_planning_stage', '当前不接受诊断作答', 409)
+    const assessment = this.db.prepare("SELECT * FROM planning_assessments WHERE id = ? AND session_id = ? AND learner_id = ? AND status = 'answering'").get(assessmentId, sessionId, learnerId) as Row | undefined
+    if (!assessment) throw new LabError('assessment_not_found', '诊断不存在或不可作答', 404)
+    if (!Array.isArray(answers) || answers.length === 0 || answers.length > 15) throw new LabError('invalid_request', 'answers 必须是 1 到 15 条作答', 400)
+    const batch = this.db.prepare('SELECT request_fingerprint FROM planning_assessment_answer_batches WHERE assessment_id = ? AND client_request_id = ?').get(assessmentId, clientRequestId) as Row | undefined; const requestFingerprint = fingerprint(answers)
+    if (batch) { if (text(batch, 'request_fingerprint') !== requestFingerprint) throw new LabError('idempotency_conflict', '同一 clientRequestId 的作答内容不一致', 409); return this.assessmentFrom(assessment)! }
+    const questions = new Map((this.db.prepare('SELECT * FROM planning_assessment_questions WHERE assessment_id = ?').all(assessmentId) as Row[]).map((question) => [text(question, 'id'), question]))
+    const seen = new Set<string>(); const tx = this.db.transaction(() => {
+      const upsert = this.db.prepare('INSERT INTO planning_assessment_answers(id, assessment_id, question_id, value_json, answer_fingerprint, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(assessment_id, question_id) DO UPDATE SET value_json = excluded.value_json, answer_fingerprint = excluded.answer_fingerprint, updated_at = excluded.updated_at')
+      for (const answer of answers) {
+        if (!answer || typeof answer.questionId !== 'string' || seen.has(answer.questionId) || !questions.has(answer.questionId)) throw new LabError('invalid_request', '题目不属于当前诊断或重复', 400)
+        seen.add(answer.questionId); const question = questions.get(answer.questionId)!; this.validateAnswer(question, answer.value); const now = new Date().toISOString(); upsert.run(randomUUID(), assessmentId, answer.questionId, JSON.stringify(answer.value), fingerprint(answer.value), now, now)
+      }
+      this.db.prepare('INSERT INTO planning_assessment_answer_batches(id, assessment_id, client_request_id, request_fingerprint, created_at) VALUES (?, ?, ?, ?, ?)').run(randomUUID(), assessmentId, clientRequestId, requestFingerprint, new Date().toISOString())
+    }); tx(); return this.assessmentFrom(assessment)!
+  }
+
+  private validateAnswer(question: Row, value: unknown): void {
+    const type = text(question, 'question_type'); const options = new Set(json<Array<{ value: string }>>(question.options_json, []).map((item) => item.value))
+    if (type === 'single_choice' && (typeof value !== 'string' || !options.has(value))) throw new LabError('invalid_answer', '单选题答案无效', 400)
+    if (type === 'multiple_choice' && (!Array.isArray(value) || value.length === 0 || value.some((item) => typeof item !== 'string' || !options.has(item)))) throw new LabError('invalid_answer', '多选题答案无效', 400)
+    if ((type === 'short_text' || type === 'scenario') && (typeof value !== 'string' || !value.trim() || value.length > 5000)) throw new LabError('invalid_answer', '文本作答无效', 400)
+  }
+
+  async finalizeAssessment(learnerId: string, sessionId: string, assessmentId: string, action: 'complete' | 'abandon', clientRequestId: string): Promise<DiagnosticAssessment> {
+    const session = this.getSession(learnerId, sessionId); const assessment = this.db.prepare('SELECT * FROM planning_assessments WHERE id = ? AND session_id = ? AND learner_id = ?').get(assessmentId, sessionId, learnerId) as Row | undefined
+    if (!assessment) throw new LabError('assessment_not_found', '诊断不存在', 404)
+    if (['completed', 'abandoned'].includes(text(assessment, 'status'))) return this.assessmentFrom(assessment)!
+    if (session.diagnosticStage !== 'assessment_answering') throw new LabError('invalid_planning_stage', '当前阶段不能结束诊断', 409)
+    const questions = this.db.prepare('SELECT * FROM planning_assessment_questions WHERE assessment_id = ? ORDER BY position').all(assessmentId) as Row[]
+    const answers = this.db.prepare('SELECT * FROM planning_assessment_answers WHERE assessment_id = ?').all(assessmentId) as Row[]
+    if (action === 'complete' && answers.length !== questions.length) throw new LabError('assessment_incomplete', '完成诊断前请回答所有题目', 409, false, { answered: answers.length, required: questions.length })
+    if (action === 'abandon' && answers.length === 0) {
+      const evaluation = { dimensions: json<Array<{ key: string }>>(assessment.dimensions_json, []).map((dimension) => ({ key: dimension.key, level: 'unknown' as const, confidence: 0.15, summary: '诊断未作答，结果未验证。', nextValidation: '在后续学习中补充可观察证据。', evidence: [] })), summary: '诊断已放弃，未产生可验证的能力结论。' }
+      this.db.transaction(() => { this.db.prepare("UPDATE planning_assessments SET status = 'abandoned', evaluation_json = ?, updated_at = ? WHERE id = ?").run(JSON.stringify(evaluation), new Date().toISOString(), assessmentId); this.saveAssessmentProfile(learnerId, sessionId, assessmentId, evaluation) })()
+      this.setStage(sessionId, 'requirements'); return this.assessmentFrom(this.currentAssessment(sessionId))!
+    }
+    this.setStage(sessionId, 'assessment_evaluating'); this.db.prepare("UPDATE planning_assessments SET status = 'evaluating', updated_at = ? WHERE id = ?").run(new Date().toISOString(), assessmentId)
+    const invocation = randomUUID(); const now = new Date().toISOString()
+    this.db.prepare("INSERT INTO planning_agent_invocations(id, session_id, learner_id, client_request_id, kind, provider, model, status, input_fingerprint, created_at) VALUES (?, ?, ?, ?, 'assessment_evaluator', ?, ?, 'running', ?, ?)").run(invocation, sessionId, learnerId, clientRequestId, this.provider.providerName, this.provider.modelName, fingerprint({ assessmentId, answers: answers.map((answer) => [answer.question_id, answer.value_json]) }), now)
+    try {
+      const material = questions.map((question) => ({ id: text(question, 'id'), dimensionKey: text(question, 'dimension_key'), type: text(question, 'question_type') as AssessmentQuestion['type'], prompt: text(question, 'prompt'), options: json(question.options_json, []), rubric: json(question.rubric_json, {}), referenceAnswer: json(question.reference_answer_json, null) }))
+      const inputAnswers = answers.map((answer) => ({ questionId: text(answer, 'question_id'), value: json(answer.value_json, null) }))
+      const evaluation = this.provider.evaluateAssessment ? await this.provider.evaluateAssessment({ goal: session.goal, dimensions: json(assessment.dimensions_json, []), questions: material as never, answers: inputAnswers }) : this.fallbackEvaluation(assessment, material, inputAnswers)
+      const parsed = AssessmentEvaluationSchema.parse(evaluation)
+      this.db.transaction(() => { this.db.prepare("UPDATE planning_assessments SET status = ?, evaluation_json = ?, updated_at = ? WHERE id = ?").run(action === 'abandon' ? 'abandoned' : 'completed', JSON.stringify(parsed), new Date().toISOString(), assessmentId); this.saveAssessmentProfile(learnerId, sessionId, assessmentId, parsed); this.db.prepare("UPDATE planning_agent_invocations SET status = 'succeeded', completed_at = ?, latency_ms = ? WHERE id = ?").run(new Date().toISOString(), Date.now() - Date.parse(now), invocation) })()
+      this.setStage(sessionId, 'requirements'); return this.assessmentFrom(this.currentAssessment(sessionId))!
+    } catch (error) {
+      this.db.prepare("UPDATE planning_assessments SET status = 'answering', updated_at = ? WHERE id = ?").run(new Date().toISOString(), assessmentId); this.db.prepare("UPDATE planning_agent_invocations SET status = 'failed', failure_code = ?, failure_message = ?, completed_at = ? WHERE id = ?").run(error instanceof PlanningAgentError ? error.code : 'assessment_evaluation_failed', error instanceof Error ? error.message : '诊断评估失败', new Date().toISOString(), invocation); this.setStage(sessionId, 'assessment_answering'); throw error
+    }
+  }
+
+  private fallbackEvaluation(assessment: Row, questions: Array<{ id: string; dimensionKey: string }>, answers: Array<{ questionId: string; value: unknown }>): z.infer<typeof AssessmentEvaluationSchema> {
+    const answered = new Set(answers.map((answer) => answer.questionId)); const grouped = new Map<string, number>(); questions.forEach((question) => grouped.set(question.dimensionKey, (grouped.get(question.dimensionKey) ?? 0) + (answered.has(question.id) ? 1 : 0)))
+    return { dimensions: json<Array<{ key: string }>>(assessment.dimensions_json, []).map((dimension) => { const count = grouped.get(dimension.key) ?? 0; return { key: dimension.key, level: count >= 2 ? 'exposed' as const : 'unknown' as const, confidence: count >= 2 ? 0.45 : 0.2, summary: '基于诊断作答的初步判断，仍需在学习活动中验证。', nextValidation: '完成一个可回看的实际任务并说明取舍。', evidence: [`已回答 ${count} 道相关诊断题`] } }), summary: '诊断已完成；结果用于确定起点，不提供总分。' }
+  }
+
+  private saveAssessmentProfile(learnerId: string, sessionId: string, assessmentId: string, evaluation: z.infer<typeof AssessmentEvaluationSchema>): void {
+    const delta: ProfileDelta = { coveredTopics: [], dimensions: evaluation.dimensions.map((dimension) => ({ key: dimension.key, level: dimension.level, confidence: dimension.confidence, summary: dimension.summary, nextValidation: dimension.nextValidation })), evidence: evaluation.dimensions.flatMap((dimension) => dimension.evidence.map((excerpt, index) => ({ topicKey: dimension.key, sourceType: 'diagnostic_assessment' as const, sourceId: `${assessmentId}:${dimension.key}:${index}`, excerpt }))), supportedPracticeCandidates: [], followUpTopic: null }
+    this.saveProfile(learnerId, sessionId, delta, evaluation.summary)
+  }
+
+  async addRequirementsMessage(learnerId: string, sessionId: string, message: string, clientRequestId: string): Promise<RequirementBrief> {
+    const session = this.getSession(learnerId, sessionId); if (!['requirements', 'requirements_review'].includes(session.diagnosticStage)) throw new LabError('invalid_planning_stage', '当前阶段不能编辑需求', 409)
+    const content = message.trim(); if (!content) throw new LabError('invalid_request', '需求内容不能为空', 400)
+    const existing = this.db.prepare('SELECT 1 FROM planning_requirement_turns WHERE session_id = ? AND client_request_id = ?').get(sessionId, clientRequestId)
+    if (existing) return this.requirementFrom(this.currentBrief(sessionId))!
+    const count = number(this.db.prepare('SELECT COUNT(*) AS count FROM planning_requirement_turns WHERE session_id = ?').get(sessionId) as Row, 'count'); if (count >= 5) throw new LabError('requirements_turn_limit', '需求沟通最多五轮，请审核并确认需求简报', 409)
+    const previous = this.requirementFrom(this.currentBrief(sessionId)); const assessment = this.assessmentFrom(this.currentAssessment(sessionId)); const messages = [...(this.db.prepare('SELECT message FROM planning_requirement_turns WHERE session_id = ? ORDER BY position').all(sessionId) as Row[]).map((row) => text(row, 'message')), content]; const invocation = randomUUID(); const started = new Date().toISOString()
+    this.db.prepare("INSERT INTO planning_agent_invocations(id, session_id, learner_id, client_request_id, kind, provider, model, status, input_fingerprint, created_at) VALUES (?, ?, ?, ?, 'requirements_generator', ?, ?, 'running', ?, ?)").run(invocation, sessionId, learnerId, clientRequestId, this.provider.providerName, this.provider.modelName, fingerprint({ sessionId, messages, previous: previous?.id ?? null }), started)
+    try {
+      const generated = this.provider.generateRequirementBrief ? await this.provider.generateRequirementBrief({ goal: session.goal, assessment, messages, previous: previous?.content ?? null }) : RequirementBriefSchema.parse({ goal: session.goal, targetOutcome: content, constraints: [], priorities: [content], evidenceNotes: assessment?.evaluation?.summary ? [assessment.evaluation.summary] : ['诊断结果尚待后续验证。'], openQuestions: [] })
+      const parsed = RequirementBriefSchema.parse(generated); const now = new Date().toISOString(); const version = number(this.db.prepare('SELECT COALESCE(MAX(version), 0) AS version FROM planning_requirement_briefs WHERE session_id = ?').get(sessionId) as Row, 'version') + 1; const id = randomUUID()
+      this.db.transaction(() => { this.db.prepare('INSERT INTO planning_requirement_turns(id, session_id, position, message, client_request_id, created_at) VALUES (?, ?, ?, ?, ?, ?)').run(randomUUID(), sessionId, count + 1, content, clientRequestId, now); this.db.prepare("UPDATE planning_requirement_briefs SET status = 'superseded', updated_at = ? WHERE session_id = ? AND status = 'draft'").run(now, sessionId); this.db.prepare("INSERT INTO planning_requirement_briefs(id, session_id, learner_id, version, status, content_json, created_at, updated_at) VALUES (?, ?, ?, ?, 'draft', ?, ?, ?)").run(id, sessionId, learnerId, version, JSON.stringify(parsed), now, now); this.db.prepare("UPDATE planning_agent_invocations SET status = 'succeeded', completed_at = ?, latency_ms = ? WHERE id = ?").run(now, Date.now() - Date.parse(started), invocation) })(); this.setStage(sessionId, 'requirements_review'); return this.requirementFrom(this.currentBrief(sessionId))!
+    } catch (error) { this.db.prepare("UPDATE planning_agent_invocations SET status = 'failed', failure_code = ?, failure_message = ?, completed_at = ? WHERE id = ?").run(error instanceof PlanningAgentError ? error.code : 'requirements_failed', error instanceof Error ? error.message : '需求简报生成失败', new Date().toISOString(), invocation); throw error }
+  }
+
+  updateRequirementBrief(learnerId: string, sessionId: string, briefId: string, content: unknown): RequirementBrief {
+    const session = this.getSession(learnerId, sessionId); if (!['requirements', 'requirements_review'].includes(session.diagnosticStage)) throw new LabError('invalid_planning_stage', '当前阶段不能编辑需求', 409)
+    const parsed = RequirementBriefSchema.parse(content); const result = this.db.prepare("UPDATE planning_requirement_briefs SET content_json = ?, updated_at = ? WHERE id = ? AND session_id = ? AND learner_id = ? AND status = 'draft'").run(JSON.stringify(parsed), new Date().toISOString(), briefId, sessionId, learnerId); if (result.changes === 0) throw new LabError('requirement_brief_not_found', '可编辑需求简报不存在', 404); this.setStage(sessionId, 'requirements_review'); return this.requirementFrom(this.currentBrief(sessionId))!
+  }
+
+  confirmRequirementBrief(learnerId: string, sessionId: string, briefId: string): RequirementBrief {
+    this.getSession(learnerId, sessionId); const now = new Date().toISOString(); const result = this.db.transaction(() => { this.db.prepare("UPDATE planning_requirement_briefs SET status = 'superseded', updated_at = ? WHERE session_id = ? AND status = 'confirmed' AND id <> ?").run(now, sessionId, briefId); return this.db.prepare("UPDATE planning_requirement_briefs SET status = 'confirmed', confirmed_at = ?, updated_at = ? WHERE id = ? AND session_id = ? AND learner_id = ? AND status = 'draft'").run(now, now, briefId, sessionId, learnerId) })(); if (result.changes === 0) throw new LabError('requirement_brief_not_found', '待确认需求简报不存在', 404); this.setStage(sessionId, 'ready'); return this.requirementFrom(this.currentBrief(sessionId))!
   }
 
   createSession(learnerId: string, input: { message: string; clientRequestId: string }): AgentPlanningSession {
@@ -529,6 +771,8 @@ export class AgentPlanningService {
       delta: { coveredTopics: [], dimensions: [], followUpTopic: null, evidence: resumeEvidence(resume, text(session, 'goal')) },
     })
     this.db.prepare('UPDATE planning_sessions SET updated_at = ? WHERE id = ? AND learner_id = ?').run(new Date().toISOString(), sessionId, learnerId)
+    const updated = this.getSession(learnerId, sessionId)
+    if (updated.diagnosticStage === 'baseline' && this.baselineReady(updated)) this.setStage(sessionId, 'assessment_preparing')
     return packet
   }
 
@@ -582,8 +826,10 @@ export class AgentPlanningService {
       const next = this.nextQuestion(sessionId, delta.followUpTopic ?? null); const readiness = '基于目前的信息，我已经可以生成初版学习路线；你也可以继续补充后再生成。'; if (!assistant.includes('生成初版学习路线')) { assistant = `${assistant}\n\n${readiness}`; await send({ type: 'assistant_delta', invocationId, delta: `\n\n${readiness}` }) }; const sequence = this.db.prepare('SELECT COALESCE(MAX(sequence), 0) + 1 AS sequence FROM planning_messages WHERE session_id = ?').get(sessionId) as Row
       this.db.prepare('INSERT INTO planning_messages(id, session_id, sequence, role, content, metadata_json, created_at) VALUES (?, ?, ?, \'assistant\', ?, ?, ?)').run(randomUUID(), sessionId, number(sequence, 'sequence'), assistant, JSON.stringify({ profileSnapshotId: snapshotId }), now)
       this.db.prepare("UPDATE planning_sessions SET agent_status = 'ready', profile_snapshot_id = ?, status = 'ready', updated_at = ? WHERE id = ?").run(snapshotId, now, sessionId)
+      const staged = this.getSession(learnerId, sessionId)
+      if (staged.diagnosticStage === 'baseline' && this.baselineReady(staged)) this.setStage(sessionId, 'assessment_preparing')
       this.db.prepare("UPDATE planning_agent_invocations SET status = 'succeeded', latency_ms = ?, completed_at = ? WHERE id = ?").run(Date.now() - started, new Date().toISOString(), invocationId)
-      const result = this.getSession(learnerId, sessionId); const coveredTopics = result.requiredTopics.filter((topic) => topic.status === 'covered').map((topic) => topic.key); const pendingTopics = result.requiredTopics.filter((topic) => topic.status !== 'covered').map((topic) => topic.key); await send({ type: 'profile_updated', invocationId, profileSnapshotId: snapshotId, coveredTopics, pendingTopics, dimensions: result.profile?.dimensions ?? [] }); await send({ type: 'roadmap_readiness', invocationId, readiness: 'ready', coveredTopicCount: coveredTopics.length, pendingTopicCount: pendingTopics.length }); await send({ type: 'next_question', invocationId, question: next.question, topicKey: next.topicKey, canGenerateRoadmap: true }); await send({ type: 'completed', invocationId, session: result })
+      const result = this.getSession(learnerId, sessionId); const coveredTopics = result.requiredTopics.filter((topic) => topic.status === 'covered').map((topic) => topic.key); const pendingTopics = result.requiredTopics.filter((topic) => topic.status !== 'covered').map((topic) => topic.key); const readinessState = this.roadmapReadiness(learnerId, sessionId); await send({ type: 'profile_updated', invocationId, profileSnapshotId: snapshotId, coveredTopics, pendingTopics, dimensions: result.profile?.dimensions ?? [] }); await send({ type: 'roadmap_readiness', invocationId, readiness: readinessState.ready ? 'ready' : 'ready', coveredTopicCount: coveredTopics.length, pendingTopicCount: pendingTopics.length }); await send({ type: 'planning_stage', sessionId, stage: result.diagnosticStage, readiness: readinessState }); await send({ type: 'next_question', invocationId, question: next.question, topicKey: next.topicKey, canGenerateRoadmap: readinessState.ready }); await send({ type: 'completed', invocationId, session: result })
     } catch (error) {
       const failure = error instanceof PlanningAgentError ? error : new PlanningAgentError('planning_failed', error instanceof Error ? error.message : '规划 Agent 调用失败')
       this.db.prepare('UPDATE planning_agent_invocations SET status = \'failed\', failure_code = ?, failure_message = ?, latency_ms = ?, completed_at = ? WHERE id = ?').run(failure.code, failure.message, Date.now() - started, new Date().toISOString(), invocationId)
@@ -601,15 +847,24 @@ export class AgentPlanningService {
 
   private saveProfile(learnerId: string, sessionId: string, delta: ProfileDelta, message: string): string {
     const current = this.db.prepare("SELECT COALESCE(MAX(version), 0) AS version FROM learner_profile_snapshots WHERE learner_id = ?").get(learnerId) as Row; const version = number(current, 'version') + 1; const id = randomUUID(); const now = new Date().toISOString()
+    const currentRow = this.db.prepare("SELECT id FROM learner_profile_snapshots WHERE learner_id = ? AND status = 'current' ORDER BY version DESC LIMIT 1").get(learnerId) as Row | undefined
+    const previous = currentRow ? this.profile(text(currentRow, 'id')) : null
+    const rank: Record<ProfileDelta['dimensions'][number]['level'], number> = { unknown: 0, exposed: 1, applied: 2, independent: 3, advanced: 4 }
+    const dimensions = new Map((previous?.dimensions ?? []).map((item) => [item.key, item]))
+    for (const dimension of delta.dimensions) {
+      const prior = dimensions.get(dimension.key)
+      if (!prior || rank[dimension.level] > rank[prior.level] || (rank[dimension.level] === rank[prior.level] && dimension.confidence >= prior.confidence)) dimensions.set(dimension.key, dimension)
+    }
+    const evidence = [...(previous?.evidence ?? []), ...(delta.evidence.length === 0 ? [{ topicKey: null, sourceType: 'user_message', sourceId: sessionId, excerpt: message.slice(0, 500) }] : delta.evidence)]
+    const summary = previous?.summary ?? {}; const previousCovered = Array.isArray(summary.coveredTopics) ? summary.coveredTopics.filter((item): item is string => typeof item === 'string') : []
     const transaction = this.db.transaction(() => {
       this.db.prepare("UPDATE learner_profile_snapshots SET status = 'superseded' WHERE learner_id = ? AND status = 'current'").run(learnerId)
       const candidates = delta.supportedPracticeCandidates.filter((candidate) => this.practiceEnvironments.get(candidate.capabilityKey) != null)
-      this.db.prepare("INSERT INTO learner_profile_snapshots(id, learner_id, planning_session_id, version, status, input_fingerprint, summary_json, created_at) VALUES (?, ?, ?, ?, 'current', ?, ?, ?)").run(id, learnerId, sessionId, version, fingerprint(delta), JSON.stringify({ coveredTopics: delta.coveredTopics, followUpTopic: delta.followUpTopic, supportedPracticeCandidates: candidates }), now)
+      this.db.prepare("INSERT INTO learner_profile_snapshots(id, learner_id, planning_session_id, version, status, input_fingerprint, summary_json, created_at) VALUES (?, ?, ?, ?, 'current', ?, ?, ?)").run(id, learnerId, sessionId, version, fingerprint(delta), JSON.stringify({ ...summary, coveredTopics: [...new Set([...previousCovered, ...delta.coveredTopics])], followUpTopic: delta.followUpTopic, supportedPracticeCandidates: candidates }), now)
       const insertDimension = this.db.prepare('INSERT INTO learner_profile_dimensions(id, snapshot_id, dimension_key, level, confidence, summary, next_validation) VALUES (?, ?, ?, ?, ?, ?, ?)')
-      for (const dimension of delta.dimensions) insertDimension.run(randomUUID(), id, dimension.key, dimension.level, dimension.confidence, dimension.summary, dimension.nextValidation)
+      for (const dimension of dimensions.values()) insertDimension.run(randomUUID(), id, dimension.key, dimension.level, dimension.confidence, dimension.summary, dimension.nextValidation)
       const insertEvidence = this.db.prepare('INSERT INTO learner_profile_evidence(id, snapshot_id, topic_key, source_type, source_id, excerpt, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)')
-      if (delta.evidence.length === 0) insertEvidence.run(randomUUID(), id, null, 'user_message', sessionId, message.slice(0, 500), now)
-      else for (const evidence of delta.evidence) insertEvidence.run(randomUUID(), id, evidence.topicKey ?? null, evidence.sourceType, evidence.sourceId, evidence.excerpt.slice(0, 2000), now)
+      for (const evidenceItem of evidence) insertEvidence.run(randomUUID(), id, evidenceItem.topicKey ?? null, evidenceItem.sourceType, evidenceItem.sourceId, evidenceItem.excerpt.slice(0, 2000), now)
     })
     transaction(); return id
   }
@@ -621,8 +876,8 @@ export class AgentPlanningService {
     return { topicKey: selected.key, question: questions[selected.key] ?? `关于${selected.label}，你还愿意补充一个具体例子吗？` }
   }
 
-  async generateRoadmap(learnerId: string, sessionId: string, clientRequestId: string, replaceCurrent = false): Promise<AgentRoadmapGeneration> {
-    const session = this.sessionRow(learnerId, sessionId); const context = this.contextCompiler.current(learnerId, sessionId); const activePlan = this.repository.getActivePlan(learnerId); const inputFingerprint = fingerprint({ generatorVersion: 'agent-roadmap-v2', sessionId, contextSnapshotId: context?.snapshotId ?? null, messages: this.getSession(learnerId, sessionId).messages.map((item) => [item.role, item.content]), profile: session.profile_snapshot_id, replaceCurrent, activeRoadmapId: replaceCurrent ? activePlan?.roadmapId ?? null : null }); const existing = this.db.prepare('SELECT * FROM roadmap_generation_runs WHERE learner_id = ? AND (client_request_id = ? OR input_fingerprint = ?) ORDER BY created_at DESC LIMIT 1').get(learnerId, clientRequestId, inputFingerprint) as Row | undefined
+  async generateRoadmap(learnerId: string, sessionId: string, clientRequestId: string, replaceCurrent = false, requirePlanningReady = false): Promise<AgentRoadmapGeneration> {
+    const session = this.sessionRow(learnerId, sessionId); if (requirePlanningReady) { const readiness = this.roadmapReadiness(learnerId, sessionId); if (!readiness.ready) throw new LabError('planning_not_ready', '诊断与需求确认完成前不能生成路线', 409, false, { blockers: readiness.blockers, stage: readiness.stage }) }; const context = this.contextCompiler.current(learnerId, sessionId); const activePlan = this.repository.getActivePlan(learnerId); const inputFingerprint = fingerprint({ generatorVersion: 'agent-roadmap-v2', sessionId, contextSnapshotId: context?.snapshotId ?? null, messages: this.getSession(learnerId, sessionId).messages.map((item) => [item.role, item.content]), profile: session.profile_snapshot_id, replaceCurrent, activeRoadmapId: replaceCurrent ? activePlan?.roadmapId ?? null : null }); const existing = this.db.prepare('SELECT * FROM roadmap_generation_runs WHERE learner_id = ? AND (client_request_id = ? OR input_fingerprint = ?) ORDER BY created_at DESC LIMIT 1').get(learnerId, clientRequestId, inputFingerprint) as Row | undefined
     if (existing) return generationFrom(existing)!
     const running = this.db.prepare("SELECT * FROM roadmap_generation_runs WHERE learner_id = ? AND planning_session_id = ? AND status IN ('queued', 'running') ORDER BY created_at DESC LIMIT 1").get(learnerId, sessionId) as Row | undefined
     if (running) return generationFrom(running)!
@@ -644,6 +899,7 @@ export class AgentPlanningService {
       if (concurrent) return generationFrom(concurrent)!
       throw error
     }
+    if (requirePlanningReady) this.setStage(sessionId, 'generating')
     void this.buildRoadmap(learnerId, sessionId, id, inputFingerprint).catch((error) => console.error('[zhixing-planning] roadmap_worker_unhandled', { generationId: id, sessionId, error: error instanceof Error ? error.message : String(error) }))
     return generationFrom(this.db.prepare('SELECT * FROM roadmap_generation_runs WHERE id = ?').get(id) as Row)!
   }
@@ -840,7 +1096,7 @@ export class AgentPlanningService {
     tx(); return this.repository.getPlanForLearner(adjustment.planId, learnerId)
   }
 
-  markRoadmapConfirmed(learnerId: string, sessionId: string): void { this.db.prepare("UPDATE planning_sessions SET status = 'confirmed', agent_status = 'confirmed', updated_at = ? WHERE id = ? AND learner_id = ? AND mode = 'agent'").run(new Date().toISOString(), sessionId, learnerId) }
+  markRoadmapConfirmed(learnerId: string, sessionId: string): void { this.db.prepare("UPDATE planning_sessions SET status = 'confirmed', agent_status = 'confirmed', diagnostic_stage = 'confirmed', updated_at = ? WHERE id = ? AND learner_id = ? AND mode = 'agent'").run(new Date().toISOString(), sessionId, learnerId) }
 
   retryInvocation(learnerId: string, invocationId: string, send: SendEvent): Promise<void> {
     const row = this.db.prepare("SELECT i.*, m.content FROM planning_agent_invocations i INNER JOIN planning_messages m ON m.session_id = i.session_id AND m.client_request_id = i.client_request_id WHERE i.id = ? AND i.learner_id = ? AND i.kind = 'planner' AND m.role = 'user'").get(invocationId, learnerId) as Row | undefined
@@ -1022,9 +1278,9 @@ export class AgentPlanningService {
           selectedReplacementNodes.forEach((node, index) => insertReplacementUnit.run(randomUUID(), targetPlanId, ids.get(node.key), index + 1, node.title, node.summary, node.exerciseProfileKey ?? (node.caseIntent ? this.practiceEnvironments.get(node.caseIntent)?.exerciseProfileKey ?? null : null), index === 0 ? 'current' : 'upcoming', 'available', node.mode, node.minutes, '根据完整路线树自动切出的当前学习单元。'))
           this.db.prepare('INSERT INTO roadmap_events(id, learner_id, roadmap_id, node_id, type, payload_json, created_at) VALUES (?, ?, ?, NULL, \'roadmap_replaced\', ?, ?)').run(randomUUID(), learnerId, roadmapId, JSON.stringify({ previousRoadmapId: targetRoadmapId, planId: targetPlanId, generationId }), generatedAt)
           this.db.prepare('INSERT INTO plan_events(id, learner_id, plan_id, plan_unit_id, practice_run_id, type, payload_json, created_at) VALUES (?, ?, ?, NULL, NULL, \'plan_replanned\', ?, ?)').run(randomUUID(), learnerId, targetPlanId, JSON.stringify({ previousRoadmapId: targetRoadmapId, roadmapId, generationId }), generatedAt)
-          this.db.prepare("UPDATE planning_sessions SET status = 'confirmed', agent_status = 'confirmed', updated_at = ? WHERE id = ? AND learner_id = ?").run(generatedAt, sessionId, learnerId)
+          this.db.prepare("UPDATE planning_sessions SET status = 'confirmed', agent_status = 'confirmed', diagnostic_stage = 'confirmed', updated_at = ? WHERE id = ? AND learner_id = ?").run(generatedAt, sessionId, learnerId)
         } else {
-          this.db.prepare("UPDATE planning_sessions SET status = 'proposed', agent_status = 'ready', updated_at = ? WHERE id = ? AND learner_id = ?").run(generatedAt, sessionId, learnerId)
+          this.db.prepare("UPDATE planning_sessions SET status = 'proposed', agent_status = 'ready', diagnostic_stage = 'proposed', updated_at = ? WHERE id = ? AND learner_id = ?").run(generatedAt, sessionId, learnerId)
         }
         this.db.prepare("UPDATE roadmap_generation_runs SET status = 'succeeded', phase = 'completed', roadmap_id = ?, input_snapshot_json = ?, diagnostics_json = ?, updated_at = ?, completed_at = ? WHERE id = ? AND status = 'running' AND attempt_count = ?").run(roadmapId, JSON.stringify({ sessionId, unitKeys: plan.unitKeys }), JSON.stringify({ provider: this.provider.providerName, model: this.provider.modelName, phase: currentPhase, attemptCount, elapsedMs: Date.now() - startedAt, nodeCount: plan.nodes.length, unitCount: plan.unitKeys.length }), generatedAt, generatedAt, generationId, attemptCount)
       }); tx()
@@ -1037,7 +1293,7 @@ export class AgentPlanningService {
       this.db.transaction(() => {
         this.db.prepare("UPDATE roadmap_generation_steps SET status = 'failed', failure_message = ?, output_json = CASE WHEN ? = '{}' THEN output_json ELSE ? END, updated_at = ? WHERE generation_run_id = ? AND phase = ?").run(message, JSON.stringify(details), JSON.stringify(details), failedAt, generationId, currentPhase ?? 'domain')
         this.db.prepare("UPDATE roadmap_generation_runs SET status = 'failed', phase = 'failed', failure_code = ?, failure_message = ?, diagnostics_json = ?, updated_at = ?, completed_at = ? WHERE id = ? AND status = 'running' AND attempt_count = ?").run(code, message, JSON.stringify(diagnostics), failedAt, failedAt, generationId, attemptCount)
-        this.db.prepare("UPDATE planning_sessions SET agent_status = 'failed', updated_at = ? WHERE id = ? AND learner_id = ? AND agent_status = 'generating'").run(failedAt, sessionId, learnerId)
+        this.db.prepare("UPDATE planning_sessions SET agent_status = 'failed', diagnostic_stage = CASE WHEN diagnostic_stage = 'generating' THEN 'ready' ELSE diagnostic_stage END, updated_at = ? WHERE id = ? AND learner_id = ? AND agent_status = 'generating'").run(failedAt, sessionId, learnerId)
       })()
       console.warn('[zhixing-planning] roadmap_generation_failed', { generationId, sessionId, phase: currentPhase ?? 'domain', attemptCount, code, message, validationIssues: (details.validationIssues as unknown[]) ?? (details.repairIssues as unknown[]) ?? [] })
     }

@@ -157,11 +157,36 @@ function registerAgentPlanningRoutes(app: FastifyInstance, service: AgentPlannin
     const body = productBody(request)
     reply.code(201).send(service.createSession(learnerId(request), { message: stringField(body, 'message'), clientRequestId: optionalString(body, 'clientRequestId') ?? randomUUID() }))
   })
+  app.get('/api/product/planning-sessions/:sessionId/diagnostic', async (request, reply) => {
+    reply.send(service.phasedStatus(learnerId(request), String((request.params as { sessionId: string }).sessionId)))
+  })
+  app.get('/api/product/planning-sessions/:sessionId/diagnostic/events', async (request, reply) => {
+    const sessionId = String((request.params as { sessionId: string }).sessionId); const status = service.phasedStatus(learnerId(request), sessionId)
+    reply.hijack(); reply.raw.writeHead(200, { 'Content-Type': 'text/event-stream; charset=utf-8', 'Cache-Control': 'no-cache, no-transform', Connection: 'keep-alive', 'X-Accel-Buffering': 'no' }); reply.raw.write(`event: planning_stage\ndata: ${JSON.stringify({ type: 'planning_stage', sessionId, stage: status.stage, readiness: status.readiness })}\n\n`); reply.raw.write(`event: planning_status\ndata: ${JSON.stringify(status)}\n\n`); reply.raw.end()
+  })
+  app.post('/api/product/planning-sessions/:sessionId/assessments', async (request, reply) => {
+    const body = productBody(request); const sessionId = String((request.params as { sessionId: string }).sessionId); reply.code(201).send(await service.prepareAssessment(learnerId(request), sessionId, optionalString(body, 'clientRequestId') ?? randomUUID()))
+  })
+  app.post('/api/product/planning-sessions/:sessionId/assessments/:assessmentId/answers', async (request, reply) => {
+    const body = productBody(request); const answers = body.answers; if (!Array.isArray(answers)) throw new LabError('invalid_request', 'answers 必须是数组', 400); reply.send(service.submitAssessmentAnswers(learnerId(request), String((request.params as { sessionId: string }).sessionId), String((request.params as { assessmentId: string }).assessmentId), answers as Array<{ questionId: string; value: unknown }>, optionalString(body, 'clientRequestId') ?? randomUUID()))
+  })
+  app.post('/api/product/planning-sessions/:sessionId/assessments/:assessmentId/finalize', async (request, reply) => {
+    const body = productBody(request); const action = body.action === 'abandon' ? 'abandon' : body.action === 'complete' ? 'complete' : (() => { throw new LabError('invalid_request', 'action 必须是 complete 或 abandon', 400) })(); reply.send(await service.finalizeAssessment(learnerId(request), String((request.params as { sessionId: string }).sessionId), String((request.params as { assessmentId: string }).assessmentId), action, optionalString(body, 'clientRequestId') ?? randomUUID()))
+  })
+  app.post('/api/product/planning-sessions/:sessionId/requirements/messages', async (request, reply) => {
+    const body = productBody(request); reply.code(201).send(await service.addRequirementsMessage(learnerId(request), String((request.params as { sessionId: string }).sessionId), stringField(body, 'message'), optionalString(body, 'clientRequestId') ?? randomUUID()))
+  })
+  app.patch('/api/product/planning-sessions/:sessionId/requirements/:briefId', async (request, reply) => {
+    const body = productBody(request); reply.send(service.updateRequirementBrief(learnerId(request), String((request.params as { sessionId: string }).sessionId), String((request.params as { briefId: string }).briefId), body.content))
+  })
+  app.post('/api/product/planning-sessions/:sessionId/requirements/:briefId/confirm', async (request, reply) => {
+    reply.send(service.confirmRequirementBrief(learnerId(request), String((request.params as { sessionId: string }).sessionId), String((request.params as { briefId: string }).briefId)))
+  })
   app.post('/api/product/planning-sessions/stream', async (request, reply) => { const body = productBody(request); const message = stringField(body, 'message'); const requestId = optionalString(body, 'clientRequestId') ?? randomUUID(); await stream(request, reply, (send) => service.createAndStream(learnerId(request), message, requestId, send)) })
   app.get('/api/product/planning/state', async (request, reply) => reply.send(service.planningState(learnerId(request))))
   app.post('/api/product/planning-sessions/:sessionId/messages/stream', async (request, reply) => { const body = productBody(request); const sessionId = String((request.params as { sessionId: string }).sessionId); const message = stringField(body, 'message'); const requestId = optionalString(body, 'clientRequestId') ?? randomUUID(); await stream(request, reply, (send) => service.streamMessage(learnerId(request), sessionId, message, requestId, send)) })
   app.post('/api/product/planning-invocations/:invocationId/retry', async (request, reply) => { const invocationId = String((request.params as { invocationId: string }).invocationId); await stream(request, reply, (send) => service.retryInvocation(learnerId(request), invocationId, send)) })
-  app.post('/api/product/planning-sessions/:sessionId/roadmap-generations', async (request, reply) => { const body = productBody(request); const result = await service.generateRoadmap(learnerId(request), String((request.params as { sessionId: string }).sessionId), optionalString(body, 'clientRequestId') ?? randomUUID()); reply.code(202).send(result) })
+  app.post('/api/product/planning-sessions/:sessionId/roadmap-generations', async (request, reply) => { const body = productBody(request); const result = await service.generateRoadmap(learnerId(request), String((request.params as { sessionId: string }).sessionId), optionalString(body, 'clientRequestId') ?? randomUUID(), false, true); reply.code(202).send(result) })
   app.get('/api/product/roadmap-generation-runs/:id', async (request, reply) => reply.send(service.getRoadmapGeneration(learnerId(request), String((request.params as { id: string }).id))))
   app.post('/api/product/roadmap-generation-runs/:id/retry', async (request, reply) => { const id = String((request.params as { id: string }).id); reply.code(202).send(await service.retryRoadmap(learnerId(request), id)) })
   app.post('/api/product/plans/:planId/adjustments', async (request, reply) => { const body = productBody(request); const params = request.params as { planId: string }; reply.code(201).send(await service.createPlanAdjustment(learnerId(request), params.planId, stringField(body, 'request'), optionalString(body, 'clientRequestId') ?? randomUUID())) })
