@@ -29,6 +29,18 @@ read_env_value() {
   return 1
 }
 
+fetch_main() {
+  local attempt
+  for attempt in 1 2 3; do
+    if git -C "$repo_root" fetch --quiet origin main; then
+      return 0
+    fi
+    sleep "$((attempt * 2))"
+  done
+  echo "Unable to fetch main from $repo_url after 3 attempts" >&2
+  return 1
+}
+
 prepare_case_builder_image() {
   if [ ! -f "$case_builder_env_file" ]; then
     echo "Missing Case Builder environment file: $case_builder_env_file" >&2
@@ -93,7 +105,7 @@ if [ ! -f "$release_dir/backend/package.json" ]; then
         git -C "$repo_root" remote add origin "$repo_url"
       fi
     fi
-    git -C "$repo_root" fetch --quiet origin main
+    fetch_main
     git -C "$repo_root" cat-file -e "$commit^{commit}"
     mkdir -p "$release_dir"
     git -C "$repo_root" archive "$commit" | tar -x -C "$release_dir"

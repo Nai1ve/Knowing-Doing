@@ -26,7 +26,19 @@ else
   fi
 fi
 
-git -C "$repo_root" fetch --quiet origin main
+fetch_main() {
+  local attempt
+  for attempt in 1 2 3; do
+    if git -C "$repo_root" fetch --quiet origin main; then
+      return 0
+    fi
+    sleep "$((attempt * 2))"
+  done
+  echo "Unable to fetch main from $repo_url after 3 attempts" >&2
+  return 1
+}
+
+fetch_main
 if [ -z "$commit" ]; then
   commit="$(git -C "$repo_root" rev-parse origin/main)"
 fi
