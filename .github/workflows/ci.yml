@@ -70,15 +70,6 @@ jobs:
   case-builder-agent:
     name: Case Builder Agent checks
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
-    outputs:
-      image_ref: ${{ steps.publish-image.outputs.image_ref }}
-    env:
-      CASE_BUILDER_ENABLED: ${{ vars.CASE_BUILDER_ENABLED || 'true' }}
-      CASE_BUILDER_OPENHANDS_BASE_IMAGE: ${{ vars.CASE_BUILDER_OPENHANDS_BASE_IMAGE || 'ghcr.io/openhands/openhands@sha256:392743af9edb3e6b407f57a64815006859d2feb9178ff1a3404c69e17c0f749f' }}
-      CASE_BUILDER_IMAGE_NAME: ghcr.io/nai1ve/knowing-doing-case-builder-agent
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -87,39 +78,6 @@ jobs:
       - run: node --check case-builder-agent/src/server.mjs
       - run: test -f case-builder-agent/Dockerfile.openhands && bash -n deploy/run-case-builder-smoke.sh
       - run: docker build --tag zhixing-case-builder-agent:ci case-builder-agent
-      - name: Validate OpenHands base image
-        run: |
-          case "$CASE_BUILDER_OPENHANDS_BASE_IMAGE" in
-            *@sha256:*) ;;
-            *) echo 'CASE_BUILDER_OPENHANDS_BASE_IMAGE must be digest-pinned' >&2; exit 1 ;;
-          esac
-      - uses: docker/setup-buildx-action@v3
-      - name: Log in to GHCR
-        if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && env.CASE_BUILDER_ENABLED == 'true' }}
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Build and publish OpenHands task image
-        id: build-image
-        uses: docker/build-push-action@v6
-        with:
-          context: case-builder-agent
-          file: case-builder-agent/Dockerfile.openhands
-          push: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && env.CASE_BUILDER_ENABLED == 'true' }}
-          tags: ${{ env.CASE_BUILDER_IMAGE_NAME }}:${{ github.sha }}
-          build-args: |
-            OPENHANDS_BASE_IMAGE=${{ env.CASE_BUILDER_OPENHANDS_BASE_IMAGE }}
-      - name: Export immutable task image reference
-        id: publish-image
-        if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && env.CASE_BUILDER_ENABLED == 'true' }}
-        env:
-          IMAGE_NAME: ${{ env.CASE_BUILDER_IMAGE_NAME }}
-          IMAGE_DIGEST: ${{ steps.build-image.outputs.digest }}
-        run: |
-          test -n "$IMAGE_DIGEST"
-          printf 'image_ref=%s@%s\n' "$IMAGE_NAME" "$IMAGE_DIGEST" >> "$GITHUB_OUTPUT"
 
   deploy:
     name: Deploy to server
@@ -162,7 +120,6 @@ jobs:
           # Set the repository variable CASE_BUILDER_ENABLED=false to pause it.
           CASE_BUILDER_ENABLED: ${{ vars.CASE_BUILDER_ENABLED || 'true' }}
           CASE_BUILDER_TOKEN: ${{ secrets.CASE_BUILDER_TOKEN }}
-          CASE_BUILDER_OPENHANDS_IMAGE: ${{ needs.case-builder-agent.outputs.image_ref }}
           CASE_BUILDER_LLM_BASE_URL: ${{ secrets.CASE_BUILDER_LLM_BASE_URL || secrets.ZHIXING_MODEL_BASE_URL || 'https://api.deepseek.com' }}
           CASE_BUILDER_LLM_API_KEY: ${{ secrets.CASE_BUILDER_LLM_API_KEY || secrets.ZHIXING_MODEL_API_KEY }}
           CASE_BUILDER_LLM_MODEL: ${{ secrets.CASE_BUILDER_LLM_MODEL || secrets.ZHIXING_MODEL_NAME || 'deepseek-flash' }}
@@ -178,8 +135,6 @@ jobs:
             for required in CASE_BUILDER_TOKEN CASE_BUILDER_LLM_API_KEY CASE_BUILDER_MYSQL_ROOT_PASSWORD ENVIRONMENT_RUNTIME_SIGNING_KEY; do
               test -n "${!required:-}" || { echo "Missing Case Builder secret: $required" >&2; exit 1; }
             done
-            test -n "$CASE_BUILDER_OPENHANDS_IMAGE" || { echo 'Missing published Case Builder OpenHands image reference' >&2; exit 1; }
-            case "$CASE_BUILDER_OPENHANDS_IMAGE" in *@sha256:*) ;; *) echo 'CASE_BUILDER_OPENHANDS_IMAGE must be digest-pinned' >&2; exit 1 ;; esac
           fi
           umask 077
           {
@@ -214,16 +169,21 @@ jobs:
             printf 'WORKSPACE_RUNNER_REQUIRE_SIGNED_ENVIRONMENT=%s\n' "$CASE_BUILDER_ENABLED"
             printf '%s\n' 'WORKSPACE_RUNNER_MAX_ENVIRONMENT_IMAGE_BYTES=2147483648'
           } | ssh -p "$DEPLOY_PORT" "$DEPLOY_USER@$DEPLOY_HOST" "sudo -n install -d -m 0755 /home/ubuntu/knowing-doing-data && sudo -n install -o root -g root -m 0600 /dev/stdin /home/ubuntu/knowing-doing-data/workspace-runner.env"
-          {
-            printf 'CASE_BUILDER_TOKEN=%s\n' "$CASE_BUILDER_TOKEN"
-            printf 'CASE_BUILDER_OPENHANDS_IMAGE=%s\n' "$CASE_BUILDER_OPENHANDS_IMAGE"
-            printf '%s\n' 'CASE_BUILDER_OPENHANDS_COMMAND=/app/.venv/bin/python /usr/local/bin/zhixing-openhands-build.py'
-            printf 'CASE_BUILDER_LLM_BASE_URL=%s\n' "$CASE_BUILDER_LLM_BASE_URL"
-            printf 'CASE_BUILDER_LLM_API_KEY=%s\n' "$CASE_BUILDER_LLM_API_KEY"
-            printf 'CASE_BUILDER_LLM_MODEL=%s\n' "$CASE_BUILDER_LLM_MODEL"
-            printf 'CASE_BUILDER_MYSQL_ROOT_PASSWORD=%s\n' "$CASE_BUILDER_MYSQL_ROOT_PASSWORD"
-            printf '%s\n' 'CASE_BUILDER_TASK_TIMEOUT_MS=1200000' 'CASE_BUILDER_MAX_CONCURRENT=1' 'CASE_BUILDER_MAX_LOG_BYTES=65536' 'CASE_BUILDER_MAX_REQUEST_BYTES=2097152' 'CASE_BUILDER_MAX_RUNTIME_IMAGE_BYTES=4294967296' 'CASE_BUILDER_TASK_MEMORY=4g' 'CASE_BUILDER_TASK_CPUS=2' 'CASE_BUILDER_TASK_PIDS=512' 'CASE_BUILDER_MYSQL_MEMORY=1024m' 'CASE_BUILDER_MYSQL_CPUS=1' 'CASE_BUILDER_MYSQL_PIDS=256' 'CASE_BUILDER_MYSQL_RUNTIME_LEASE_MS=1200000' 'CASE_BUILDER_MYSQL_EXECUTION_TIMEOUT_MS=10000'
-          } | ssh -p "$DEPLOY_PORT" "$DEPLOY_USER@$DEPLOY_HOST" "sudo -n install -d -m 0755 /home/ubuntu/knowing-doing-data && sudo -n install -o root -g root -m 0600 /dev/stdin /home/ubuntu/knowing-doing-data/case-builder-agent.env"
+          if [ "$CASE_BUILDER_ENABLED" = true ]; then
+            server_image_ref="$(ssh -p "$DEPLOY_PORT" "$DEPLOY_USER@$DEPLOY_HOST" "sudo -n grep '^CASE_BUILDER_OPENHANDS_IMAGE=' /home/ubuntu/knowing-doing-data/case-builder-agent.env | head -n 1 | cut -d= -f2-" || true)"
+            test -n "$server_image_ref" || { echo 'Server Case Builder image is not configured; run deploy/setup-case-builder-agent.sh on the host first' >&2; exit 1; }
+            case "$server_image_ref" in *@sha256:*) ;; *) echo 'Server CASE_BUILDER_OPENHANDS_IMAGE must be digest-pinned' >&2; exit 1 ;; esac
+            {
+              printf 'CASE_BUILDER_TOKEN=%s\n' "$CASE_BUILDER_TOKEN"
+              printf 'CASE_BUILDER_OPENHANDS_IMAGE=%s\n' "$server_image_ref"
+              printf '%s\n' 'CASE_BUILDER_OPENHANDS_COMMAND=/app/.venv/bin/python /usr/local/bin/zhixing-openhands-build.py'
+              printf 'CASE_BUILDER_LLM_BASE_URL=%s\n' "$CASE_BUILDER_LLM_BASE_URL"
+              printf 'CASE_BUILDER_LLM_API_KEY=%s\n' "$CASE_BUILDER_LLM_API_KEY"
+              printf 'CASE_BUILDER_LLM_MODEL=%s\n' "$CASE_BUILDER_LLM_MODEL"
+              printf 'CASE_BUILDER_MYSQL_ROOT_PASSWORD=%s\n' "$CASE_BUILDER_MYSQL_ROOT_PASSWORD"
+              printf '%s\n' 'CASE_BUILDER_TASK_TIMEOUT_MS=1200000' 'CASE_BUILDER_MAX_CONCURRENT=1' 'CASE_BUILDER_MAX_LOG_BYTES=65536' 'CASE_BUILDER_MAX_REQUEST_BYTES=2097152' 'CASE_BUILDER_MAX_RUNTIME_IMAGE_BYTES=4294967296' 'CASE_BUILDER_TASK_MEMORY=4g' 'CASE_BUILDER_TASK_CPUS=2' 'CASE_BUILDER_TASK_PIDS=512' 'CASE_BUILDER_MYSQL_MEMORY=1024m' 'CASE_BUILDER_MYSQL_CPUS=1' 'CASE_BUILDER_MYSQL_PIDS=256' 'CASE_BUILDER_MYSQL_RUNTIME_LEASE_MS=1200000' 'CASE_BUILDER_MYSQL_EXECUTION_TIMEOUT_MS=10000'
+            } | ssh -p "$DEPLOY_PORT" "$DEPLOY_USER@$DEPLOY_HOST" "sudo -n install -d -m 0755 /home/ubuntu/knowing-doing-data && sudo -n install -o root -g root -m 0600 /dev/stdin /home/ubuntu/knowing-doing-data/case-builder-agent.env"
+          fi
       - name: Deploy immutable release
         if: env.DEPLOY_SSH_KEY != ''
         env:

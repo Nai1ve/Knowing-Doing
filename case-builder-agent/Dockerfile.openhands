@@ -1,5 +1,5 @@
-# GitHub Actions builds and publishes this extension image before deployment.
-# The production host only pulls the resulting digest-pinned image reference.
+# The deployment host builds this extension image once from a digest-pinned
+# OpenHands base. GitHub Actions deploys the product services around it.
 ARG OPENHANDS_BASE_IMAGE=ghcr.io/openhands/openhands@sha256:392743af9edb3e6b407f57a64815006859d2feb9178ff1a3404c69e17c0f749f
 FROM ${OPENHANDS_BASE_IMAGE}
 

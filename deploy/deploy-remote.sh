@@ -42,10 +42,12 @@ prepare_case_builder_image() {
     *) echo 'CASE_BUILDER_OPENHANDS_IMAGE must be a digest-pinned registry reference' >&2; exit 1 ;;
   esac
 
-  echo "Pulling prebuilt Case Builder OpenHands image: $image_ref"
-  docker pull "$image_ref" >/dev/null
-  docker image inspect "$image_ref" --format '{{.Id}}' >/dev/null
-  echo "Case Builder OpenHands image ready: $image_ref"
+  docker image inspect "$image_ref" --format '{{.Id}}' >/dev/null 2>&1 || {
+    echo "Prebuilt Case Builder OpenHands image is missing on this host: $image_ref" >&2
+    echo 'Run deploy/setup-case-builder-agent.sh on the deployment host before enabling the Builder.' >&2
+    exit 1
+  }
+  echo "Using prebuilt Case Builder OpenHands image: $image_ref"
 }
 
 mkdir -p "$release_root" "$data_root"

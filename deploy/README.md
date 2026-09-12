@@ -43,18 +43,18 @@ public, so the default HTTPS remote needs no GitHub token. If the repository is
 made private later, replace `ZHIXING_REPO_URL` in the deploy command and
 configure a read-only GitHub credential on the host.
 
-When the Builder is enabled, the `case-builder-agent` CI job builds and
-publishes [the OpenHands extension recipe](../case-builder-agent/Dockerfile.openhands)
-to GHCR from its digest-pinned OpenHands base. The deployment host only pulls
-the resulting digest-pinned image reference and starts the wrapper service;
-it never builds the OpenHands task image. Make the GHCR package
-`nai1ve/knowing-doing-case-builder-agent` public, or provide an equivalent
-read-only registry pull credential on the host, before the first enabled
-deployment. The fixed deployment-owned command reads
+When the Builder is enabled, build [the OpenHands extension recipe](../case-builder-agent/Dockerfile.openhands)
+directly on the deployment host with
+`deploy/setup-case-builder-agent.sh`. The script uses the public Git checkout,
+the digest-pinned OpenHands base, and writes a local digest-pinned image
+reference into the root-owned Agent environment. GitHub Actions does not build
+or publish this image; it only deploys the product services around the
+server-owned Docker/OpenHands environment. The fixed deployment-owned command reads
 `/workspace/request.json`, writes exactly one `/workspace/manifest.json`, and
 must never print credentials, write host paths into the manifest, or expose a
-runtime port. `CASE_BUILDER_OPENHANDS_BASE_IMAGE` is an optional repository
-variable; when omitted, the workflow uses the tracked digest-pinned default.
+runtime port. `CASE_BUILDER_OPENHANDS_BASE_IMAGE` is an optional setup-script
+environment variable; when omitted, the script uses the tracked digest-pinned
+default.
 
 The workflow writes separate mode-0600 files for the backend, Workspace Runner,
 and Case Builder. The signing key is shared only between the backend and
