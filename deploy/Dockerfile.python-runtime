@@ -2,4 +2,5 @@ FROM zhixing-openhands-local:current
 
 WORKDIR /workspace
 ENV PATH="/app/.venv/bin:/usr/local/bin:${PATH}"
+ENTRYPOINT []
 CMD ["python"]

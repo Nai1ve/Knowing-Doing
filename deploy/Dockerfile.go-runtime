@@ -16,3 +16,4 @@ ENV PATH="/usr/local/go/bin:${PATH}" \
     GOPATH=/workspace/.go \
     GOTMPDIR=/workspace/.go-tmp
 WORKDIR /workspace
+ENTRYPOINT []

@@ -130,6 +130,19 @@ ensure_server_docker_images() {
   done
 }
 
+wait_for_http_service() {
+  local name="$1" url="$2" attempt
+  for attempt in $(seq 1 30); do
+    if curl --fail --silent --show-error --max-time 5 "$url" >/dev/null; then
+      echo "$name is ready"
+      return 0
+    fi
+    sleep 2
+  done
+  echo "$name did not become ready: $url" >&2
+  return 1
+}
+
 mkdir -p "$release_root" "$data_root"
 
 if [ ! -f "$release_dir/backend/package.json" ]; then
@@ -201,6 +214,11 @@ if sudo -n grep -q '^CASE_BUILDER_ENABLED=true$' /etc/knowing-doing/backend.env;
 else
   sudo -n "${compose[@]}" stop case-builder-agent >/dev/null 2>&1 || true
   sudo -n "${compose[@]}" up -d workspace-runner
+fi
+
+wait_for_http_service 'Workspace Runner' http://127.0.0.1:3101/health
+if sudo -n grep -q '^CASE_BUILDER_ENABLED=true$' /etc/knowing-doing/backend.env; then
+  wait_for_http_service 'Case Builder Agent' http://127.0.0.1:3102/health
 fi
 
 ln -sfn "$release_dir" "$current_link"
