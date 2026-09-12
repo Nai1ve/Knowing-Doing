@@ -39,7 +39,7 @@ prepare_case_builder_image() {
   image_ref="$(read_env_value CASE_BUILDER_OPENHANDS_IMAGE "$case_builder_env_file" || true)"
   case "$image_ref" in
     *@sha256:*) ;;
-    *) echo 'CASE_BUILDER_OPENHANDS_IMAGE must be a digest-pinned registry reference' >&2; exit 1 ;;
+    *) echo 'CASE_BUILDER_OPENHANDS_IMAGE must be a digest-pinned local image reference' >&2; exit 1 ;;
   esac
 
   docker image inspect "$image_ref" --format '{{.Id}}' >/dev/null 2>&1 || {
@@ -48,6 +48,21 @@ prepare_case_builder_image() {
     exit 1
   }
   echo "Using prebuilt Case Builder OpenHands image: $image_ref"
+}
+
+ensure_server_docker_images() {
+  local image
+  local required_images=(zhixing-python-pytest-v1:local zhixing-go-test-v1:local zhixing-workspace-runner:server)
+  if grep -q '^CASE_BUILDER_ENABLED=true$' /etc/knowing-doing/backend.env; then
+    required_images+=(zhixing-case-builder-agent:server)
+  fi
+  for image in "${required_images[@]}"; do
+    docker image inspect "$image" --format '{{.Id}}' >/dev/null 2>&1 || {
+      echo "Required server-managed Docker image is missing: $image" >&2
+      echo 'Run deploy/setup-docker-environment.sh on the deployment host before deploying.' >&2
+      exit 1
+    }
+  done
 }
 
 mkdir -p "$release_root" "$data_root"
@@ -95,11 +110,6 @@ npm run build
 cd "$release_dir/frontend"
 npm ci --ignore-scripts
 npm run build
-cd "$release_dir/workspace-runner"
-npm ci --ignore-scripts
-npm run build
-WORKSPACE_PYTHON_IMAGE=zhixing-python-pytest-v1:local ./build-template.sh
-
 if [ ! -f "$data_root/zhixing-product.db" ]; then
   echo "Missing product database: $data_root/zhixing-product.db" >&2
   exit 1
@@ -111,6 +121,7 @@ NODE_ENV=production ZHIXING_PRODUCT_DB_PATH="$data_root/zhixing-product.db" npm 
 if grep -q '^CASE_BUILDER_ENABLED=true$' /etc/knowing-doing/backend.env; then
   prepare_case_builder_image
 fi
+ensure_server_docker_images
 
 cd "$release_dir/deploy"
 if docker compose version >/dev/null 2>&1; then
@@ -122,10 +133,10 @@ else
   exit 1
 fi
 if grep -q '^CASE_BUILDER_ENABLED=true$' /etc/knowing-doing/backend.env; then
-  "${compose[@]}" up -d --build workspace-runner case-builder-agent
+  "${compose[@]}" up -d workspace-runner case-builder-agent
 else
   "${compose[@]}" stop case-builder-agent >/dev/null 2>&1 || true
-  "${compose[@]}" up -d --build workspace-runner
+  "${compose[@]}" up -d workspace-runner
 fi
 
 ln -sfn "$release_dir" "$current_link"

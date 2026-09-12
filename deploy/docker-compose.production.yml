@@ -17,9 +17,7 @@ services:
       start_period: 30s
 
   workspace-runner:
-    build:
-      context: ../workspace-runner
-      dockerfile: Dockerfile
+    image: zhixing-workspace-runner:server
     container_name: zhixing-workspace-runner
     restart: unless-stopped
     env_file:
@@ -38,9 +36,7 @@ services:
       retries: 20
 
   case-builder-agent:
-    build:
-      context: ../case-builder-agent
-      dockerfile: Dockerfile
+    image: zhixing-case-builder-agent:server
     container_name: zhixing-case-builder-agent
     restart: unless-stopped
     env_file:

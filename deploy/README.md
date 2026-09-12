@@ -52,9 +52,20 @@ or publish this image; it only deploys the product services around the
 server-owned Docker/OpenHands environment. The fixed deployment-owned command reads
 `/workspace/request.json`, writes exactly one `/workspace/manifest.json`, and
 must never print credentials, write host paths into the manifest, or expose a
-runtime port. `CASE_BUILDER_OPENHANDS_BASE_IMAGE` is an optional setup-script
-environment variable; when omitted, the script uses the tracked digest-pinned
-default.
+runtime port. Run `deploy/setup-docker-environment.sh` once for the
+server-managed Python/Go workspace images and the Node wrapper images. The
+production deploy script only checks those local images and starts them; it does
+not pull or build Docker images. `CASE_BUILDER_OPENHANDS_BASE_IMAGE` is an
+optional setup-script environment variable; when omitted, the script uses the
+tracked digest-pinned default.
+
+After the runtime env files are installed, run these commands on the host (the
+commit argument may be omitted to use `origin/main`):
+
+```sh
+bash deploy/setup-docker-environment.sh <commit>
+bash deploy/setup-case-builder-agent.sh <commit>
+```
 
 The workflow writes separate mode-0600 files for the backend, Workspace Runner,
 and Case Builder. The signing key is shared only between the backend and
