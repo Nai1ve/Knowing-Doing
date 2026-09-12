@@ -10,7 +10,6 @@ current_link="${ZHIXING_APP_ROOT:-/home/ubuntu/knowing-doing-current}"
 data_root="${ZHIXING_DATA_ROOT:-/home/ubuntu/knowing-doing-data}"
 release_dir="$release_root/$commit"
 archive_path="${ZHIXING_RELEASE_ARCHIVE:-}"
-default_case_builder_base_image='ghcr.io/openhands/openhands@sha256:392743af9edb3e6b407f57a64815006859d2feb9178ff1a3404c69e17c0f749f'
 case_builder_env_file="$data_root/case-builder-agent.env"
 
 # A first-time manual clone may leave the repository one level below the
@@ -30,44 +29,23 @@ read_env_value() {
   return 1
 }
 
-build_case_builder_image() {
-  if [ ! -f "$release_dir/case-builder-agent/Dockerfile.openhands" ]; then
-    echo "Missing OpenHands build recipe in $release_dir" >&2
-    exit 1
-  fi
+prepare_case_builder_image() {
   if [ ! -f "$case_builder_env_file" ]; then
     echo "Missing Case Builder environment file: $case_builder_env_file" >&2
     exit 1
   fi
 
-  local base_image image_tag image_id image_ref temp_env
-  base_image="$(read_env_value CASE_BUILDER_OPENHANDS_BASE_IMAGE "$case_builder_env_file" || true)"
-  base_image="${base_image:-$default_case_builder_base_image}"
-  case "$base_image" in
+  local image_ref
+  image_ref="$(read_env_value CASE_BUILDER_OPENHANDS_IMAGE "$case_builder_env_file" || true)"
+  case "$image_ref" in
     *@sha256:*) ;;
-    *) echo 'CASE_BUILDER_OPENHANDS_BASE_IMAGE must be digest-pinned' >&2; exit 1 ;;
+    *) echo 'CASE_BUILDER_OPENHANDS_IMAGE must be a digest-pinned registry reference' >&2; exit 1 ;;
   esac
 
-  image_tag='zhixing-openhands-local:current'
-  echo "Building Case Builder image from digest-pinned OpenHands base on the deployment host"
-  docker build --pull \
-    --build-arg "OPENHANDS_BASE_IMAGE=$base_image" \
-    --tag "$image_tag" \
-    --file "$release_dir/case-builder-agent/Dockerfile.openhands" \
-    "$release_dir/case-builder-agent"
-  image_id="$(docker image inspect "$image_tag" --format '{{.Id}}')"
-  image_ref="${image_tag}@${image_id}"
-  temp_env="${case_builder_env_file}.tmp.${commit}"
-  awk -v image="$image_ref" '
-    BEGIN { found = 0 }
-    /^CASE_BUILDER_OPENHANDS_IMAGE=/ { print "CASE_BUILDER_OPENHANDS_IMAGE=" image; found = 1; next }
-    { print }
-    END { if (!found) print "CASE_BUILDER_OPENHANDS_IMAGE=" image }
-  ' "$case_builder_env_file" > "$temp_env"
-  chmod 0600 "$temp_env"
-  mv -f -- "$temp_env" "$case_builder_env_file"
-  docker image prune --force --filter 'label=zhixing.component=case-builder-agent' >/dev/null || true
-  echo "Case Builder image ready: $image_ref"
+  echo "Pulling prebuilt Case Builder OpenHands image: $image_ref"
+  docker pull "$image_ref" >/dev/null
+  docker image inspect "$image_ref" --format '{{.Id}}' >/dev/null
+  echo "Case Builder OpenHands image ready: $image_ref"
 }
 
 mkdir -p "$release_root" "$data_root"
@@ -129,7 +107,7 @@ cd "$release_dir/backend"
 NODE_ENV=production ZHIXING_PRODUCT_DB_PATH="$data_root/zhixing-product.db" npm run db:migrate
 
 if grep -q '^CASE_BUILDER_ENABLED=true$' /etc/knowing-doing/backend.env; then
-  build_case_builder_image
+  prepare_case_builder_image
 fi
 
 cd "$release_dir/deploy"

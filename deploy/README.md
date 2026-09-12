@@ -43,11 +43,14 @@ public, so the default HTTPS remote needs no GitHub token. If the repository is
 made private later, replace `ZHIXING_REPO_URL` in the deploy command and
 configure a read-only GitHub credential on the host.
 
-When the Builder is enabled, the host builds the task image from
-[the OpenHands extension recipe](../case-builder-agent/Dockerfile.openhands)
-using its digest-pinned GHCR base. The resulting local image ID is converted
-to a digest-pinned image reference and written to the Agent environment before
-Compose starts it. The fixed deployment-owned command reads
+When the Builder is enabled, the `case-builder-agent` CI job builds and
+publishes [the OpenHands extension recipe](../case-builder-agent/Dockerfile.openhands)
+to GHCR from its digest-pinned OpenHands base. The deployment host only pulls
+the resulting digest-pinned image reference and starts the wrapper service;
+it never builds the OpenHands task image. Make the GHCR package
+`nai1ve/knowing-doing-case-builder-agent` public, or provide an equivalent
+read-only registry pull credential on the host, before the first enabled
+deployment. The fixed deployment-owned command reads
 `/workspace/request.json`, writes exactly one `/workspace/manifest.json`, and
 must never print credentials, write host paths into the manifest, or expose a
 runtime port. `CASE_BUILDER_OPENHANDS_BASE_IMAGE` is an optional repository
