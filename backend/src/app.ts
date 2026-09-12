@@ -162,10 +162,10 @@ function registerAgentPlanningRoutes(app: FastifyInstance, service: AgentPlannin
   })
   app.get('/api/product/planning-sessions/:sessionId/diagnostic/events', async (request, reply) => {
     const sessionId = String((request.params as { sessionId: string }).sessionId); const status = service.phasedStatus(learnerId(request), sessionId)
-    reply.hijack(); reply.raw.writeHead(200, { 'Content-Type': 'text/event-stream; charset=utf-8', 'Cache-Control': 'no-cache, no-transform', Connection: 'keep-alive', 'X-Accel-Buffering': 'no' }); reply.raw.write(`event: planning_stage\ndata: ${JSON.stringify({ type: 'planning_stage', sessionId, stage: status.stage, readiness: status.readiness })}\n\n`); reply.raw.write(`event: planning_status\ndata: ${JSON.stringify(status)}\n\n`); reply.raw.end()
+    reply.hijack(); reply.raw.writeHead(200, { 'Content-Type': 'text/event-stream; charset=utf-8', 'Cache-Control': 'no-cache, no-transform', Connection: 'keep-alive', 'X-Accel-Buffering': 'no' }); reply.raw.write(`event: stage_changed\ndata: ${JSON.stringify({ type: 'stage_changed', invocationId: 'snapshot', sessionId, stage: status.stage, readiness: status.readiness })}\n\n`); if (status.assessment) reply.raw.write(`event: assessment_status\ndata: ${JSON.stringify({ type: 'assessment_status', invocationId: 'snapshot', assessment: status.assessment, status: status.assessment.status, progress: status.assessment.progress, summary: status.assessment.summary })}\n\n`); reply.raw.write(`event: requirements_brief_updated\ndata: ${JSON.stringify({ type: 'requirements_brief_updated', invocationId: 'snapshot', requirementBrief: status.requirementBrief })}\n\n`); reply.raw.write(`event: readiness_changed\ndata: ${JSON.stringify({ type: 'readiness_changed', invocationId: 'snapshot', readiness: status.readiness })}\n\n`); reply.raw.end()
   })
   app.post('/api/product/planning-sessions/:sessionId/assessments', async (request, reply) => {
-    const body = productBody(request); const sessionId = String((request.params as { sessionId: string }).sessionId); reply.code(201).send(await service.prepareAssessment(learnerId(request), sessionId, optionalString(body, 'clientRequestId') ?? randomUUID()))
+    const body = productBody(request); const sessionId = String((request.params as { sessionId: string }).sessionId); reply.code(202).send(await service.prepareAssessment(learnerId(request), sessionId, optionalString(body, 'clientRequestId') ?? randomUUID()))
   })
   app.post('/api/product/planning-sessions/:sessionId/assessments/:assessmentId/answers', async (request, reply) => {
     const body = productBody(request); const answers = body.answers; if (!Array.isArray(answers)) throw new LabError('invalid_request', 'answers 必须是数组', 400); reply.send(service.submitAssessmentAnswers(learnerId(request), String((request.params as { sessionId: string }).sessionId), String((request.params as { assessmentId: string }).assessmentId), answers as Array<{ questionId: string; value: unknown }>, optionalString(body, 'clientRequestId') ?? randomUUID()))
@@ -181,6 +181,29 @@ function registerAgentPlanningRoutes(app: FastifyInstance, service: AgentPlannin
   })
   app.post('/api/product/planning-sessions/:sessionId/requirements/:briefId/confirm', async (request, reply) => {
     reply.send(service.confirmRequirementBrief(learnerId(request), String((request.params as { sessionId: string }).sessionId), String((request.params as { briefId: string }).briefId)))
+  })
+  app.get('/api/product/planning-assessments/:assessmentId', async (request, reply) => {
+    reply.send(service.getAssessment(learnerId(request), String((request.params as { assessmentId: string }).assessmentId)))
+  })
+  app.put('/api/product/planning-assessments/:assessmentId/answers', async (request, reply) => {
+    const body = productBody(request); const assessmentId = String((request.params as { assessmentId: string }).assessmentId); const assessment = service.getAssessment(learnerId(request), assessmentId)
+    const values = body.answers && typeof body.answers === 'object' && !Array.isArray(body.answers) ? body.answers as Record<string, unknown> : {}; const skipped = Array.isArray(body.skipped) ? body.skipped.filter((item): item is string => typeof item === 'string') : []
+    const skippedSet = new Set(skipped); const questionIds = new Set([...Object.keys(values), ...skipped]); const answers = [...questionIds].map((questionId) => ({ questionId, value: values[questionId], skipped: skippedSet.has(questionId) }))
+    reply.send(service.submitAssessmentAnswers(learnerId(request), assessment.planningSessionId, assessmentId, answers, optionalString(body, 'clientRequestId') ?? randomUUID()))
+  })
+  app.post('/api/product/planning-assessments/:assessmentId/finalize', async (request, reply) => {
+    const body = productBody(request); const assessmentId = String((request.params as { assessmentId: string }).assessmentId); const assessment = service.getAssessment(learnerId(request), assessmentId); const mode = body.mode === 'abandon' ? 'abandon' : body.mode === 'complete' ? 'complete' : (() => { throw new LabError('invalid_request', 'mode 必须是 complete 或 abandon', 400) })()
+    reply.send(await service.finalizeAssessment(learnerId(request), assessment.planningSessionId, assessmentId, mode, optionalString(body, 'clientRequestId') ?? randomUUID()))
+  })
+  app.get('/api/product/planning-assessments/:assessmentId/review', async (request, reply) => {
+    reply.send(service.getAssessmentReview(learnerId(request), String((request.params as { assessmentId: string }).assessmentId)))
+  })
+  app.post('/api/product/planning-sessions/:sessionId/requirement-brief/confirm', async (request, reply) => {
+    const body = productBody(request); const sessionId = String((request.params as { sessionId: string }).sessionId); const requirementBrief = body.requirementBrief && typeof body.requirementBrief === 'object' ? body.requirementBrief as Record<string, unknown> : {}; const briefId = typeof requirementBrief.id === 'string' ? requirementBrief.id : optionalString(body, 'briefId')
+    if (!briefId) throw new LabError('invalid_request', '缺少待确认的需求摘要', 400)
+    const currentBriefId = requirementBrief.content ? service.updateRequirementBrief(learnerId(request), sessionId, briefId, requirementBrief.content).id : briefId
+    service.confirmRequirementBrief(learnerId(request), sessionId, currentBriefId)
+    reply.send(service.getSession(learnerId(request), sessionId))
   })
   app.post('/api/product/planning-sessions/stream', async (request, reply) => { const body = productBody(request); const message = stringField(body, 'message'); const requestId = optionalString(body, 'clientRequestId') ?? randomUUID(); await stream(request, reply, (send) => service.createAndStream(learnerId(request), message, requestId, send)) })
   app.get('/api/product/planning/state', async (request, reply) => reply.send(service.planningState(learnerId(request))))

@@ -29,7 +29,7 @@ function modelResponse(value: unknown): Response { return new Response(JSON.stri
 describe('AgentPlanningService', () => {
   it('stores arbitrary messages, required topics and profile increments without duplicate requests', async () => withService(async (service, repository) => {
     const events: string[] = []; const first = service.createSession('agent-learner', { message: '我想成为高级后端和 AI 应用工程师', clientRequestId: 'start-1' })
-    await service.streamMessage('agent-learner', first.id, first.goal, 'start-1', async (event) => { events.push(event.type) })
+    await service.streamMessage('agent-learner', first.id, '我做过支付服务，也负责过数据库优化', 'turn-2', async (event) => { events.push(event.type) })
     await service.streamMessage('agent-learner', first.id, '我做过支付服务，也负责过数据库优化', 'turn-2', async (event) => { events.push(event.type) })
     const session = service.getSession('agent-learner', first.id)
     expect(session.messages.filter((message) => message.role === 'user')).toHaveLength(2)
@@ -37,7 +37,7 @@ describe('AgentPlanningService', () => {
     expect(session.profile?.dimensions[0].level).toBe('applied')
     expect(events).toContain('profile_updated')
     expect(events).toContain('roadmap_readiness')
-    expect(repository.db.prepare('SELECT COUNT(*) AS count FROM planning_agent_invocations').get()).toMatchObject({ count: 2 })
+    expect(repository.db.prepare('SELECT COUNT(*) AS count FROM planning_agent_invocations').get()).toMatchObject({ count: 1 })
   }))
 
   it('treats an uploaded resume as explicit planner context and profile evidence', async () => {

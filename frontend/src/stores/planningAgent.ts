@@ -1,7 +1,7 @@
 import { defineStore } from 'pinia'
 import { onBeforeUnmount } from 'vue'
 import { ref } from 'vue'
-import { confirmPlanningRequirementBrief, createAgentPlanningSession, createAgentPlanningSessionDraft, createAgentRoadmap, createPlanningAssessment, finalizePlanningAssessment, getAgentPlanningSession, getAgentPlanningState, getAgentRoadmapGeneration, getPlanningAssessment, getPlanningAssessmentReview, retryAgentInvocation, retryAgentRoadmap, savePlanningAssessmentAnswers, sendAgentPlanningMessage, uploadPlanningResume } from '@/api/planningService'
+import { confirmPlanningRequirementBrief, createAgentPlanningSession, createAgentPlanningSessionDraft, createAgentRoadmap, createPlanningAssessment, finalizePlanningAssessment, getAgentPlanningSession, getAgentPlanningState, getAgentRoadmapGeneration, getPlanningAssessment, getPlanningAssessmentReview, retryAgentInvocation, retryAgentRoadmap, savePlanningAssessmentAnswers, sendAgentPlanningMessage, sendPlanningRequirementsMessage, uploadPlanningResume } from '@/api/planningService'
 import type { AgentPlanningSession, AgentPlanningState, AgentRoadmapGeneration, PlanningAssessment, PlanningAssessmentAnswer, PlanningAssessmentReview, PlanningReadiness, PlanningRequirementBrief, PlanningStreamEvent } from '@/types/product'
 import { createClientId } from '@/utils/client-id'
 import { hasApiErrorCode } from '@/api/client'
@@ -15,8 +15,8 @@ export const usePlanningAgentStore = defineStore('planningAgent', () => {
   const sleep = (milliseconds: number) => new Promise<void>((resolve) => window.setTimeout(resolve, milliseconds))
   function stopPolling() { pollingToken += 1; pollingPromise = null; generating.value = false }
   function applyReadiness(value: PlanningReadiness | null | undefined) { if (!value) return; canGenerateRoadmap.value = value.canGenerateRoadmap }
-  function applySession(value: AgentPlanningSession) { session.value = value; applyReadiness(value.readiness); question.value = value.readiness?.nextAction ?? question.value }
-  function applyAssessment(value: PlanningAssessment | null | undefined) { if (!value) return; assessment.value = value; assessmentError.value = value.error ?? null; if (session.value) { session.value.assessment = value.summary; if (value.progress) session.value.progress = value.progress } }
+  function applySession(value: AgentPlanningSession) { session.value = value; applyReadiness(value.readiness); question.value = value.readiness?.nextAction ?? question.value; if (value.assessment) assessment.value = value.assessment }
+  function applyAssessment(value: PlanningAssessment | null | undefined) { if (!value) return; assessment.value = value; assessmentError.value = value.error ?? null; if (session.value) { session.value.assessment = value; if (value.progress) session.value.progress = value.progress } }
   function hydrateGeneration(value: AgentRoadmapGeneration | null) {
     generation.value = value
     if (value?.status === 'succeeded') canGenerateRoadmap.value = false
@@ -68,7 +68,7 @@ export const usePlanningAgentStore = defineStore('planningAgent', () => {
       else if (session.value) { session.value.stage = event.stage; if (event.progress) session.value.progress = event.progress; if (event.readiness) { session.value.readiness = event.readiness; applyReadiness(event.readiness) } }
       if (event.stage === 'assessment_preparing') void ensureAssessment()
     }
-    if (event.type === 'assessment_status') { applyAssessment(event.assessment); if (session.value) { if (event.progress) session.value.progress = event.progress; if (event.summary !== undefined) session.value.assessment = event.summary }; if (event.message) assessmentError.value = event.message }
+    if (event.type === 'assessment_status') { applyAssessment(event.assessment); if (session.value && event.progress) session.value.progress = event.progress; if (event.message) assessmentError.value = event.message }
     if (event.type === 'requirements_brief_updated' && session.value) session.value.requirementBrief = event.requirementBrief
     if (event.type === 'readiness_changed' && session.value) { session.value.readiness = event.readiness; applyReadiness(event.readiness) }
     if (event.type === 'completed') { applySession(event.session); streamingAssistant.value = '' }
@@ -109,7 +109,18 @@ export const usePlanningAgentStore = defineStore('planningAgent', () => {
     } catch (cause) { loadError.value = cause instanceof Error ? cause.message : '规划会话加载失败'; throw cause } finally { streaming.value = false }
   }
   async function loadState(force = false) { if (state.value && !force) return state.value; stateLoading.value = true; loadError.value = null; try { state.value = await getAgentPlanningState(); hydrateGeneration(state.value.generation); if (state.value.generation && !terminalStatuses.has(state.value.generation.status)) { generating.value = true; void pollGeneration(state.value.generation.id) } return state.value } catch (cause) { loadError.value = cause instanceof Error ? cause.message : '规划状态加载失败'; throw cause } finally { stateLoading.value = false } }
-  async function send(message: string) { if (!session.value) throw new Error('规划会话尚未加载'); if (session.value.stage === 'assessment_answering' || session.value.stage === 'assessment_preparing' || session.value.stage === 'assessment_evaluating') throw new Error('评估进行中，请先完成当前评估'); const requestId = createClientId(); await run((onEvent) => sendAgentPlanningMessage(session.value!.id, message, requestId, onEvent)); return session.value }
+  async function send(message: string) {
+    if (!session.value) throw new Error('规划会话尚未加载')
+    const currentSession = session.value
+    if (currentSession.stage === 'assessment_answering' || currentSession.stage === 'assessment_preparing' || currentSession.stage === 'assessment_evaluating') throw new Error('评估进行中，请先完成当前评估')
+    if (currentSession.stage === 'requirements' || currentSession.stage === 'requirements_review' || currentSession.stage === 'ready') {
+      streaming.value = true; error.value = null
+      try { currentSession.requirementBrief = await sendPlanningRequirementsMessage(currentSession.id, message); applySession(await getAgentPlanningSession(currentSession.id)); return session.value }
+      catch (cause) { error.value = cause instanceof Error ? cause.message : '需求摘要更新失败'; throw cause }
+      finally { streaming.value = false }
+    }
+    const requestId = createClientId(); await run((onEvent) => sendAgentPlanningMessage(currentSession.id, message, requestId, onEvent)); return session.value
+  }
   async function ensureAssessment() {
     if (!session.value || assessmentLoading.value || (assessment.value?.planningSessionId === session.value.id && assessment.value.status !== 'failed')) return assessment.value
     assessmentLoading.value = true; assessmentError.value = null
