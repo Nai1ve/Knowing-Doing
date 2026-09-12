@@ -1,5 +1,5 @@
 import { apiClient } from './client'
-import type { AgentPlanningSession, AgentPlanningState, AgentRoadmapGeneration, CurrentRoadmapResponse, KnowledgeRoute, PlanningStreamEvent, ProductPlanAdjustment, ProductResumeAttachment, RoadmapDraft, RoadmapNode, RoadmapNodePage, RoadmapTree } from '@/types/product'
+import type { AgentPlanningSession, AgentPlanningState, AgentRoadmapGeneration, CurrentRoadmapResponse, KnowledgeRoute, PlanningAssessment, PlanningAssessmentReview, PlanningAssessmentAnswer, PlanningRequirementBrief, PlanningStreamEvent, ProductPlanAdjustment, ProductResumeAttachment, RoadmapDraft, RoadmapNode, RoadmapNodePage, RoadmapTree } from '@/types/product'
 import { createClientId } from '@/utils/client-id'
 
 const learnerKey = 'zhixing.learner.id'
@@ -37,6 +37,12 @@ export function createAgentRoadmap(sessionId: string, clientRequestId: string): 
 export function getAgentRoadmapGeneration(id: string): Promise<AgentRoadmapGeneration> { return request<AgentRoadmapGeneration>(`/product/roadmap-generation-runs/${id}`) }
 export function retryAgentRoadmap(id: string): Promise<AgentRoadmapGeneration> { return request<AgentRoadmapGeneration>(`/product/roadmap-generation-runs/${id}/retry`, { method: 'POST' }) }
 export function retryAgentInvocation(id: string, onEvent: (event: PlanningStreamEvent) => void): Promise<void> { return streamRequest(`/product/planning-invocations/${id}/retry`, {}, onEvent) }
+export function createPlanningAssessment(sessionId: string, clientRequestId = createClientId()): Promise<PlanningAssessment> { return request<PlanningAssessment>(`/product/planning-sessions/${sessionId}/assessments`, { method: 'POST', headers: { 'X-Client-Request-Id': clientRequestId }, body: JSON.stringify({ clientRequestId }) }) }
+export function getPlanningAssessment(id: string): Promise<PlanningAssessment> { return request<PlanningAssessment>(`/product/planning-assessments/${id}`) }
+export function savePlanningAssessmentAnswers(id: string, answers: Record<string, PlanningAssessmentAnswer>, skipped: string[], clientRequestId = createClientId()): Promise<PlanningAssessment> { return request<PlanningAssessment>(`/product/planning-assessments/${id}/answers`, { method: 'PUT', headers: { 'X-Client-Request-Id': clientRequestId }, body: JSON.stringify({ answers, skipped, clientRequestId }) }) }
+export function finalizePlanningAssessment(id: string, mode: 'complete' | 'abandon', clientRequestId = createClientId()): Promise<PlanningAssessment> { return request<PlanningAssessment>(`/product/planning-assessments/${id}/finalize`, { method: 'POST', headers: { 'X-Client-Request-Id': clientRequestId }, body: JSON.stringify({ mode, clientRequestId }) }) }
+export function getPlanningAssessmentReview(id: string): Promise<PlanningAssessmentReview> { return request<PlanningAssessmentReview>(`/product/planning-assessments/${id}/review`) }
+export function confirmPlanningRequirementBrief(sessionId: string, requirementBrief: PlanningRequirementBrief, clientRequestId = createClientId()): Promise<AgentPlanningSession> { return request<AgentPlanningSession>(`/product/planning-sessions/${sessionId}/requirement-brief/confirm`, { method: 'POST', headers: { 'X-Client-Request-Id': clientRequestId }, body: JSON.stringify({ requirementBrief, clientRequestId }) }) }
 export function getKnowledgeRoute(roadmapId: string, nodeId: string, refresh = false): Promise<KnowledgeRoute> {
   const path = `/product/roadmaps/${roadmapId}/nodes/${nodeId}/knowledge-route`
   return request<KnowledgeRoute>(path, refresh ? { method: 'POST', body: JSON.stringify({ refresh: true }) } : {})

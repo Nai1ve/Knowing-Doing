@@ -107,7 +107,20 @@ export interface AgentPlanningTopic { key: string; label: string; priority: numb
 export interface AgentProfileDimension { key: string; level: 'unknown' | 'exposed' | 'applied' | 'independent' | 'advanced'; confidence: number; summary: string; nextValidation: string }
 export interface AgentProfile { id: string; version: number; summary: Record<string, unknown>; dimensions: AgentProfileDimension[]; evidence: Array<{ id: string; topicKey: string | null; sourceType: string; sourceId: string; excerpt: string; createdAt: string }> }
 export interface AgentRoadmapGeneration { id: string; status: 'queued' | 'running' | 'succeeded' | 'failed' | 'interrupted'; phase: 'domain' | 'module' | 'unit' | 'critic' | 'completed' | 'failed'; attemptCount: number; roadmapId: string | null; failureCode: string | null; failureMessage: string | null; updatedAt: string }
-export interface AgentPlanningSession { id: string; learnerId: string; goal: string; status: string; mode: 'agent'; agentStatus: string; revision: number; messages: AgentPlanningMessage[]; requiredTopics: AgentPlanningTopic[]; profile: AgentProfile | null; resume: ProductResumeAttachment | null; roadmapId: string | null; roadmapGeneration: AgentRoadmapGeneration | null; createdAt: string; updatedAt: string }
+export type PlanningStage = 'baseline' | 'assessment_preparing' | 'assessment_answering' | 'assessment_evaluating' | 'requirements' | 'requirements_review' | 'ready' | 'generating' | 'proposed' | 'confirmed'
+export type PlanningAssessmentStatus = 'preparing' | 'ready' | 'in_progress' | 'evaluating' | 'completed' | 'abandoned' | 'failed'
+export type PlanningAssessmentQuestionType = 'single_choice' | 'multi_choice' | 'scale' | 'text'
+export type PlanningAssessmentAnswer = string | number | string[] | null
+export interface PlanningReadiness { canGenerateRoadmap: boolean; blockers: string[]; nextAction: string | null }
+export interface PlanningProgress { completed: number; total: number; current: number; label?: string }
+export interface PlanningAssessmentQuestion { id: string; key: string; type: PlanningAssessmentQuestionType; prompt: string; description?: string | null; options?: Array<{ value: string; label: string; description?: string | null }>; required?: boolean; min?: number; max?: number; minLabel?: string; maxLabel?: string }
+export interface PlanningAssessmentDimension { key: string; label: string; level: string; confidence: number; evidence: string[]; nextValidation: string }
+export interface PlanningAssessmentSummary { id?: string; dimensions: PlanningAssessmentDimension[]; completedAt?: string | null; status?: PlanningAssessmentStatus }
+export interface PlanningAssessment { id: string; planningSessionId: string; status: PlanningAssessmentStatus; questions: PlanningAssessmentQuestion[]; answers: Record<string, PlanningAssessmentAnswer>; skipped: string[]; currentQuestionIndex: number; progress: PlanningProgress; summary: PlanningAssessmentSummary | null; error?: string | null; updatedAt: string }
+export interface PlanningAssessmentReviewItem { questionId: string; question: string; type: PlanningAssessmentQuestionType; answer: PlanningAssessmentAnswer; skipped: boolean }
+export interface PlanningAssessmentReview { assessmentId: string; items: PlanningAssessmentReviewItem[] }
+export interface PlanningRequirementBrief { id?: string; summary: string; mustHave: string[]; niceToHave: string[]; constraints: string[]; successCriteria: string[]; revision?: number; status?: 'draft' | 'confirmed' }
+export interface AgentPlanningSession { id: string; learnerId: string; goal: string; status: string; mode: 'agent'; agentStatus: string; stage: PlanningStage; progress: PlanningProgress; readiness: PlanningReadiness; assessment: PlanningAssessmentSummary | null; requirementBrief: PlanningRequirementBrief | null; revision: number; messages: AgentPlanningMessage[]; requiredTopics: AgentPlanningTopic[]; profile: AgentProfile | null; resume: ProductResumeAttachment | null; roadmapId: string | null; roadmapGeneration: AgentRoadmapGeneration | null; createdAt: string; updatedAt: string }
 export interface AgentPlanningState { session: { id: string; goal: string; status: string; agentStatus: string; revision: number; roadmapId: string | null; updatedAt: string } | null; generation: AgentRoadmapGeneration | null; currentPlan: { id: string; title: string; goal: string; status: string; planState: string; roadmapId: string | null } | null }
 export type PlanningStreamEvent =
   | { type: 'accepted'; invocationId: string; sessionId: string }
@@ -115,6 +128,10 @@ export type PlanningStreamEvent =
   | { type: 'profile_updated'; invocationId: string; profileSnapshotId: string; coveredTopics: string[]; pendingTopics: string[]; dimensions: AgentProfileDimension[] }
   | { type: 'roadmap_readiness'; invocationId: string; readiness: 'ready'; coveredTopicCount: number; pendingTopicCount: number }
   | { type: 'next_question'; invocationId: string; question: string; topicKey: string | null; canGenerateRoadmap: boolean }
+  | { type: 'stage_changed'; invocationId: string; stage: PlanningStage; progress?: PlanningProgress; readiness?: PlanningReadiness; session?: AgentPlanningSession }
+  | { type: 'assessment_status'; invocationId: string; assessment?: PlanningAssessment; status: PlanningAssessmentStatus; progress?: PlanningProgress; summary?: PlanningAssessmentSummary | null; message?: string }
+  | { type: 'requirements_brief_updated'; invocationId: string; requirementBrief: PlanningRequirementBrief | null }
+  | { type: 'readiness_changed'; invocationId: string; readiness: PlanningReadiness }
   | { type: 'completed'; invocationId: string; session: AgentPlanningSession }
   | { type: 'failed'; invocationId: string; code: string; message: string; retryable: boolean }
 export interface KnowledgeRoute { id: string; roadmapNodeId: string; status: 'ready' | 'queued' | 'running' | 'failed'; research: Record<string, unknown>; items: Array<{ id: string; sourceItemId: string; position: number; role: 'foundation' | 'case' | 'extension'; reason: string; learningQuestion: string; source: { title: string; author: string | null; url: string; excerpt: string; retrievedAt: string } }> }
