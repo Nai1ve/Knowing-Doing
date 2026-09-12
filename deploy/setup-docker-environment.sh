@@ -63,6 +63,10 @@ if ! docker image inspect zhixing-openhands-local:current --format '{{.Id}}' >/d
   echo 'Missing zhixing-openhands-local:current; run deploy/setup-case-builder-agent.sh first.' >&2
   exit 1
 fi
+if [ "$(docker image inspect zhixing-openhands-local:current --format '{{.Architecture}}')" != amd64 ]; then
+  echo 'zhixing-openhands-local:current must be an amd64 image on this host.' >&2
+  exit 1
+fi
 
 echo 'Building server-managed Python runtime image'
 docker build --tag zhixing-python-pytest-v1:local \

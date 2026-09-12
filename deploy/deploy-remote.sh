@@ -59,6 +59,10 @@ prepare_case_builder_image() {
     echo 'Run deploy/setup-case-builder-agent.sh on the deployment host before enabling the Builder.' >&2
     exit 1
   }
+  if [ "$(docker image inspect "$image_ref" --format '{{.Architecture}}')" != amd64 ]; then
+    echo 'Prebuilt Case Builder OpenHands image must be amd64 on this host.' >&2
+    exit 1
+  fi
   echo "Using prebuilt Case Builder OpenHands image: $image_ref"
 }
 

@@ -64,13 +64,26 @@ mkdir -p "$build_root"
 git -C "$repo_root" archive "$commit" case-builder-agent | tar -x -C "$build_root"
 
 echo "Building the OpenHands task image on the deployment host from $commit"
-docker build --pull \
+# Pull the digest-pinned base explicitly before this script. Avoid --pull here so
+# a one-time server bootstrap does not re-enter a slow registry request during
+# the image build, and normal product deployments never contact the registry.
+if ! docker image inspect "$base_image" >/dev/null 2>&1; then
+  echo "Missing local OpenHands base image: $base_image" >&2
+  echo 'Pull the digest-pinned base on the deployment host, then rerun this setup script.' >&2
+  exit 1
+fi
+docker build \
   --build-arg "OPENHANDS_BASE_IMAGE=$base_image" \
   --tag "$image_tag" \
   --file "$build_root/case-builder-agent/Dockerfile.openhands" \
   "$build_root/case-builder-agent"
 
 image_id="$(docker image inspect "$image_tag" --format '{{.Id}}')"
+architecture="$(docker image inspect "$image_tag" --format '{{.Architecture}}')"
+if [ "$architecture" != "amd64" ]; then
+  echo "Case Builder OpenHands image architecture is $architecture; this host requires amd64" >&2
+  exit 1
+fi
 image_ref="${image_tag}@${image_id}"
 temp_env="$data_root/.case-builder-agent.env.$commit"
 sudo -n awk -v image="$image_ref" '
