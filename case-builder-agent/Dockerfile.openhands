@@ -1,12 +1,11 @@
-# Build this extension from a digest-pinned OpenHands base, then publish the
-# resulting image to a private registry and put its resulting digest in
-# CASE_BUILDER_OPENHANDS_IMAGE. The Agent invokes this image with an explicit
-# sh entrypoint, so an upstream OpenHands entrypoint cannot bypass the
-# deployment-owned wrapper command.
-ARG OPENHANDS_BASE_IMAGE
+# The production deploy script pulls this digest-pinned base on the server and
+# builds the extension locally. The resulting local image digest is injected
+# into CASE_BUILDER_OPENHANDS_IMAGE before the Agent is started.
+ARG OPENHANDS_BASE_IMAGE=ghcr.io/openhands/openhands@sha256:392743af9edb3e6b407f57a64815006859d2feb9178ff1a3404c69e17c0f749f
 FROM ${OPENHANDS_BASE_IMAGE}
 
 USER root
+LABEL zhixing.component="case-builder-agent"
 RUN apt-get update \
   && apt-get install -y --no-install-recommends docker.io docker-compose default-mysql-client python3 python3-pip ca-certificates \
   && /app/.venv/bin/pip install --no-cache-dir pytest==8.4.1 \

@@ -25,36 +25,33 @@ with mode `0600`. The required runtime secrets are `LAB_TOKEN_SECRET`,
 defaults are `ZHIXING_MODEL_BASE_URL=https://api.deepseek.com` and
 `ZHIXING_MODEL_NAME=deepseek-flash`.
 
-## Enable the OpenHands Builder after smoke verification
+## Enable the OpenHands Builder
 
-Keep the repository variable `CASE_BUILDER_ENABLED=false` until the image and
-manual smoke gate have passed. First add these Actions secrets and deploy once
-with the flag still disabled:
+The current workflow enables the Builder by default. Set the repository
+variable `CASE_BUILDER_ENABLED=false` only when it needs to be paused. Add
+these Actions secrets before deploying:
 
-`CASE_BUILDER_TOKEN`, `ENVIRONMENT_RUNTIME_SIGNING_KEY`,
-`CASE_BUILDER_OPENHANDS_IMAGE`, `CASE_BUILDER_OPENHANDS_COMMAND`, and
-`CASE_BUILDER_MYSQL_ROOT_PASSWORD`. The image value must be pinned with
-`@sha256:` and the image must include OpenHands, Docker CLI/Compose, a MySQL
-client, and Python tooling. `CASE_BUILDER_LLM_BASE_URL`,
+`CASE_BUILDER_TOKEN`, `ENVIRONMENT_RUNTIME_SIGNING_KEY`, and
+`CASE_BUILDER_MYSQL_ROOT_PASSWORD`. `CASE_BUILDER_LLM_BASE_URL`,
 `CASE_BUILDER_LLM_API_KEY`, and `CASE_BUILDER_LLM_MODEL` are optional overrides;
 when omitted, the deployment reuses the configured DeepSeek endpoint/key/model.
 
-`CASE_BUILDER_OPENHANDS_COMMAND` is deployment-owned code, not a browser or API
-input. It reads `/workspace/request.json`, writes exactly one
-`/workspace/manifest.json`, and must build its runtime image with all supplied
-`zhixing.*` labels. For a MySQL request it must use the supplied
-`mysqlContract` unchanged: the case-specific database, schema, deterministic
-seed profile, fault SQL, starter EXPLAIN, reference index, and
-`zhixing.mysql-contract-fingerprint` label are all checked again by the
-service. The Agent must never print credentials, write host paths into the
-manifest, or expose a runtime port.
+The deployment host keeps a Git checkout at `/home/ubuntu/knowing-doing-repo`,
+fetches `main`, verifies the exact commit SHA received from Actions, and
+archives that commit into the immutable release directory. The repository is
+public, so the default HTTPS remote needs no GitHub token. If the repository is
+made private later, replace `ZHIXING_REPO_URL` in the deploy command and
+configure a read-only GitHub credential on the host.
 
-Use [the OpenHands extension recipe](../case-builder-agent/Dockerfile.openhands)
-to create the task image from a digest-pinned OpenHands base. Publish it to a
-private registry and use the resulting @sha256: reference for
-CASE_BUILDER_OPENHANDS_IMAGE; the Agent explicitly sets its task entrypoint
-to sh so an upstream OpenHands entrypoint cannot bypass the deployment-owned
-wrapper.
+When the Builder is enabled, the host builds the task image from
+[the OpenHands extension recipe](../case-builder-agent/Dockerfile.openhands)
+using its digest-pinned GHCR base. The resulting local image ID is converted
+to a digest-pinned image reference and written to the Agent environment before
+Compose starts it. The fixed deployment-owned command reads
+`/workspace/request.json`, writes exactly one `/workspace/manifest.json`, and
+must never print credentials, write host paths into the manifest, or expose a
+runtime port. `CASE_BUILDER_OPENHANDS_BASE_IMAGE` is an optional repository
+variable; when omitted, the workflow uses the tracked digest-pinned default.
 
 The workflow writes separate mode-0600 files for the backend, Workspace Runner,
 and Case Builder. The signing key is shared only between the backend and
@@ -64,8 +61,7 @@ reference repairs, or raw Docker inspection output.
 Run the protected `OpenHands Builder smoke` workflow with confirmation `RUN`
 after that deployment. It temporarily starts the loopback-only Builder,
 submits one bounded Python build, and stops the service again; it fails unless
-the Agent returns a server-checked digest-pinned runtime artifact. Only after
-it passes should you set `CASE_BUILDER_ENABLED=true` and deploy again. This is
+the Agent returns a server-checked digest-pinned runtime artifact. This is
 intentionally manual so pull requests never create model cost.
 
 The production host remains a deliberately accepted high-privilege Builder
@@ -79,11 +75,10 @@ commands and access to the Docker socket. The workflow does not print or commit
 runtime values. Model and Zhihu keys are never written to the repository.
 
 The workflow tests the frontend, backend, and workspace-runner packages on every
-pull request and push. A push to `main`
-then uploads that exact commit, builds a new immutable release on the server,
-runs the explicit SQLite migration command, switches the release symlink, and
-restarts the service. The server no longer needs to fetch the repository from
-GitHub.
+pull request and push. A push to `main` then connects to the server, clones or
+fetches the public repository, verifies that exact commit, builds a new
+immutable release on the server, runs the explicit SQLite migration command,
+switches the release symlink, and restarts the service.
 
 ## One-time data setup
 

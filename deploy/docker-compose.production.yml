@@ -51,6 +51,7 @@ services:
       CASE_BUILDER_STATE_DIR: /var/lib/case-builder-agent
       CASE_BUILDER_DOCKER_SOCKET_ENABLED: "true"
       CASE_BUILDER_SIMULATED: "false"
+      CASE_BUILDER_OPENHANDS_COMMAND: "/app/.venv/bin/python /usr/local/bin/zhixing-openhands-build.py"
       CASE_BUILDER_MAX_REPAIR_ROUNDS: 3
       CASE_BUILDER_MAX_CONCURRENT: 1
       CASE_BUILDER_FAILURE_RETENTION_HOURS: 24

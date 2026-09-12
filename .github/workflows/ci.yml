@@ -120,8 +120,7 @@ jobs:
           # Set the repository variable CASE_BUILDER_ENABLED=false to pause it.
           CASE_BUILDER_ENABLED: ${{ vars.CASE_BUILDER_ENABLED || 'true' }}
           CASE_BUILDER_TOKEN: ${{ secrets.CASE_BUILDER_TOKEN }}
-          CASE_BUILDER_OPENHANDS_IMAGE: ${{ secrets.CASE_BUILDER_OPENHANDS_IMAGE }}
-          CASE_BUILDER_OPENHANDS_COMMAND: ${{ secrets.CASE_BUILDER_OPENHANDS_COMMAND }}
+          CASE_BUILDER_OPENHANDS_BASE_IMAGE: ${{ vars.CASE_BUILDER_OPENHANDS_BASE_IMAGE || 'ghcr.io/openhands/openhands@sha256:392743af9edb3e6b407f57a64815006859d2feb9178ff1a3404c69e17c0f749f' }}
           CASE_BUILDER_LLM_BASE_URL: ${{ secrets.CASE_BUILDER_LLM_BASE_URL || secrets.ZHIXING_MODEL_BASE_URL || 'https://api.deepseek.com' }}
           CASE_BUILDER_LLM_API_KEY: ${{ secrets.CASE_BUILDER_LLM_API_KEY || secrets.ZHIXING_MODEL_API_KEY }}
           CASE_BUILDER_LLM_MODEL: ${{ secrets.CASE_BUILDER_LLM_MODEL || secrets.ZHIXING_MODEL_NAME || 'deepseek-flash' }}
@@ -134,10 +133,10 @@ jobs:
           done
           case "$CASE_BUILDER_ENABLED" in true|false) ;; *) echo 'CASE_BUILDER_ENABLED must be the repository variable true or false' >&2; exit 1 ;; esac
           if [ "$CASE_BUILDER_ENABLED" = true ]; then
-            for required in CASE_BUILDER_TOKEN CASE_BUILDER_OPENHANDS_IMAGE CASE_BUILDER_OPENHANDS_COMMAND CASE_BUILDER_LLM_API_KEY CASE_BUILDER_MYSQL_ROOT_PASSWORD ENVIRONMENT_RUNTIME_SIGNING_KEY; do
+            for required in CASE_BUILDER_TOKEN CASE_BUILDER_LLM_API_KEY CASE_BUILDER_MYSQL_ROOT_PASSWORD ENVIRONMENT_RUNTIME_SIGNING_KEY; do
               test -n "${!required:-}" || { echo "Missing Case Builder secret: $required" >&2; exit 1; }
             done
-            case "$CASE_BUILDER_OPENHANDS_IMAGE" in *@sha256:*) ;; *) echo 'CASE_BUILDER_OPENHANDS_IMAGE must be digest-pinned' >&2; exit 1 ;; esac
+            case "$CASE_BUILDER_OPENHANDS_BASE_IMAGE" in *@sha256:*) ;; *) echo 'CASE_BUILDER_OPENHANDS_BASE_IMAGE must be digest-pinned' >&2; exit 1 ;; esac
           fi
           umask 077
           {
@@ -174,30 +173,19 @@ jobs:
           } | ssh -p "$DEPLOY_PORT" "$DEPLOY_USER@$DEPLOY_HOST" "sudo -n install -d -m 0755 /home/ubuntu/knowing-doing-data && sudo -n install -o root -g root -m 0600 /dev/stdin /home/ubuntu/knowing-doing-data/workspace-runner.env"
           {
             printf 'CASE_BUILDER_TOKEN=%s\n' "$CASE_BUILDER_TOKEN"
-            printf 'CASE_BUILDER_OPENHANDS_IMAGE=%s\n' "$CASE_BUILDER_OPENHANDS_IMAGE"
-            printf 'CASE_BUILDER_OPENHANDS_COMMAND=%s\n' "$CASE_BUILDER_OPENHANDS_COMMAND"
+            printf '%s\n' 'CASE_BUILDER_OPENHANDS_IMAGE='
+            printf 'CASE_BUILDER_OPENHANDS_BASE_IMAGE=%s\n' "$CASE_BUILDER_OPENHANDS_BASE_IMAGE"
+            printf '%s\n' 'CASE_BUILDER_OPENHANDS_COMMAND=/app/.venv/bin/python /usr/local/bin/zhixing-openhands-build.py'
             printf 'CASE_BUILDER_LLM_BASE_URL=%s\n' "$CASE_BUILDER_LLM_BASE_URL"
             printf 'CASE_BUILDER_LLM_API_KEY=%s\n' "$CASE_BUILDER_LLM_API_KEY"
             printf 'CASE_BUILDER_LLM_MODEL=%s\n' "$CASE_BUILDER_LLM_MODEL"
             printf 'CASE_BUILDER_MYSQL_ROOT_PASSWORD=%s\n' "$CASE_BUILDER_MYSQL_ROOT_PASSWORD"
             printf '%s\n' 'CASE_BUILDER_TASK_TIMEOUT_MS=1200000' 'CASE_BUILDER_MAX_CONCURRENT=1' 'CASE_BUILDER_MAX_LOG_BYTES=65536' 'CASE_BUILDER_MAX_REQUEST_BYTES=2097152' 'CASE_BUILDER_MAX_RUNTIME_IMAGE_BYTES=4294967296' 'CASE_BUILDER_TASK_MEMORY=4g' 'CASE_BUILDER_TASK_CPUS=2' 'CASE_BUILDER_TASK_PIDS=512' 'CASE_BUILDER_MYSQL_MEMORY=1024m' 'CASE_BUILDER_MYSQL_CPUS=1' 'CASE_BUILDER_MYSQL_PIDS=256' 'CASE_BUILDER_MYSQL_RUNTIME_LEASE_MS=1200000' 'CASE_BUILDER_MYSQL_EXECUTION_TIMEOUT_MS=10000'
           } | ssh -p "$DEPLOY_PORT" "$DEPLOY_USER@$DEPLOY_HOST" "sudo -n install -d -m 0755 /home/ubuntu/knowing-doing-data && sudo -n install -o root -g root -m 0600 /dev/stdin /home/ubuntu/knowing-doing-data/case-builder-agent.env"
-      - name: Upload release source
-        if: env.DEPLOY_SSH_KEY != ''
-        env:
-          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
-          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
-          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT || '22' }}
-        run: |
-          set -Eeuo pipefail
-          archive="$(mktemp)"
-          trap 'rm -f "$archive"' EXIT
-          tar -czf "$archive" --exclude='.git' .
-          scp -P "$DEPLOY_PORT" "$archive" "$DEPLOY_USER@$DEPLOY_HOST:/tmp/knowing-doing-$GITHUB_SHA.tar.gz"
       - name: Deploy immutable release
         if: env.DEPLOY_SSH_KEY != ''
         env:
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
           DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
           DEPLOY_PORT: ${{ secrets.DEPLOY_PORT || '22' }}
-        run: ssh -p "$DEPLOY_PORT" "$DEPLOY_USER@$DEPLOY_HOST" "ZHIXING_RELEASE_ARCHIVE=/tmp/knowing-doing-$GITHUB_SHA.tar.gz bash -s -- '$GITHUB_SHA'" < deploy/deploy-remote.sh
+        run: ssh -p "$DEPLOY_PORT" "$DEPLOY_USER@$DEPLOY_HOST" "ZHIXING_REPO_ROOT=/home/ubuntu/knowing-doing-repo ZHIXING_REPO_URL=https://github.com/Nai1ve/Knowing-Doing.git bash -s -- '$GITHUB_SHA'" < deploy/deploy-remote.sh
