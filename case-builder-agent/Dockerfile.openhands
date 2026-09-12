@@ -1,0 +1,24 @@
+# Build this extension from a digest-pinned OpenHands base, then publish the
+# resulting image to a private registry and put its resulting digest in
+# CASE_BUILDER_OPENHANDS_IMAGE. The Agent invokes this image with an explicit
+# sh entrypoint, so an upstream OpenHands entrypoint cannot bypass the
+# deployment-owned wrapper command.
+ARG OPENHANDS_BASE_IMAGE
+FROM ${OPENHANDS_BASE_IMAGE}
+
+USER root
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends docker.io docker-compose default-mysql-client python3 python3-pip ca-certificates \
+  && /app/.venv/bin/pip install --no-cache-dir pytest==8.4.1 \
+  && rm -rf /var/lib/apt/lists/*
+
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends docker-cli \
+  && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /workspace
+
+COPY openhands-build.py /usr/local/bin/zhixing-openhands-build.py
+RUN chmod 0755 /usr/local/bin/zhixing-openhands-build.py
+
+ENV OPENHANDS_SUPPRESS_BANNER=true

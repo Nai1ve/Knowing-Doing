@@ -6,7 +6,7 @@ export interface RunnerCreateResult { runnerRunId: string; leaseExpiresAt: strin
 export interface RunnerExecutionResult { runnerExecutionId: string; status: 'succeeded' | 'failed' | 'timed_out' | 'rejected'; stdout: string; stderr: string; exitCode: number | null; durationMs: number }
 
 export interface WorkspaceRunnerClient {
-  create(input: { templateKey: string; files: RunnerFileInput[]; commands: string[] }): Promise<RunnerCreateResult>
+  create(input: { templateKey: string; files: RunnerFileInput[]; commands: string[]; environmentRef?: string }): Promise<RunnerCreateResult>
   status(runnerRunId: string): Promise<{ status: 'active' | 'ended' | 'missing'; leaseExpiresAt: string | null }>
   writeFile(runnerRunId: string, file: RunnerFileInput, expectedRevision: number): Promise<{ revision: number }>
   execute(runnerRunId: string, command: string, clientRequestId: string): Promise<RunnerExecutionResult>
@@ -35,7 +35,7 @@ export class HttpWorkspaceRunnerClient implements WorkspaceRunnerClient {
     } finally { clearTimeout(timer) }
   }
 
-  create(input: { templateKey: string; files: RunnerFileInput[]; commands: string[] }): Promise<RunnerCreateResult> { return this.request('/internal/v1/workspace-runs', { method: 'POST', body: JSON.stringify(input) }) }
+  create(input: { templateKey: string; files: RunnerFileInput[]; commands: string[]; environmentRef?: string }): Promise<RunnerCreateResult> { return this.request('/internal/v1/workspace-runs', { method: 'POST', body: JSON.stringify(input) }) }
   status(runnerRunId: string): Promise<{ status: 'active' | 'ended' | 'missing'; leaseExpiresAt: string | null }> { return this.request(`/internal/v1/workspace-runs/${encodeURIComponent(runnerRunId)}`) }
   writeFile(runnerRunId: string, file: RunnerFileInput, expectedRevision: number): Promise<{ revision: number }> { return this.request(`/internal/v1/workspace-runs/${encodeURIComponent(runnerRunId)}/files/${encodeURIComponent(file.path)}`, { method: 'PUT', body: JSON.stringify({ ...file, expectedRevision }) }) }
   execute(runnerRunId: string, command: string, clientRequestId: string): Promise<RunnerExecutionResult> { return this.request(`/internal/v1/workspace-runs/${encodeURIComponent(runnerRunId)}/executions`, { method: 'POST', body: JSON.stringify({ command, clientRequestId }) }) }
@@ -45,7 +45,7 @@ export class HttpWorkspaceRunnerClient implements WorkspaceRunnerClient {
 
 export class FakeWorkspaceRunnerClient implements WorkspaceRunnerClient {
   private readonly runs = new Map<string, { files: Map<string, { content: string; revision: number }>; commands: string[]; ended: boolean; fixtureKind: 'list' | 'order' | 'generic' }>()
-  create(input: { templateKey: string; files: RunnerFileInput[]; commands: string[] }): Promise<RunnerCreateResult> {
+  create(input: { templateKey: string; files: RunnerFileInput[]; commands: string[]; environmentRef?: string }): Promise<RunnerCreateResult> {
     const fixtureKind = input.files.some((file) => file.content.includes('zhixing-fixture: python-list-starter')) ? 'list' : input.files.some((file) => file.content.includes('zhixing-fixture: order-starter')) ? 'order' : 'generic'
     const runnerRunId = `fake-${this.runs.size + 1}`; this.runs.set(runnerRunId, { files: new Map(input.files.map((file) => [file.path, { content: file.content, revision: 1 }])), commands: input.commands, ended: false, fixtureKind })
     return Promise.resolve({ runnerRunId, leaseExpiresAt: new Date(Date.now() + 30 * 60_000).toISOString() })

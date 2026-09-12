@@ -5,7 +5,7 @@ import { WorkspaceRunnerError } from './workspace-runner-client.js'
 
 export interface RuntimeAdapter {
   readonly runtimeKind: RuntimeKind
-  provision(input: { environmentKey: string; environmentVersion: string; files: RunnerFileInput[]; commands: string[] }): Promise<RunnerCreateResult>
+  provision(input: { environmentKey: string; environmentVersion: string; files: RunnerFileInput[]; commands: string[]; environmentRef?: string }): Promise<RunnerCreateResult>
   status(runId: string): ReturnType<WorkspaceRunnerClient['status']>
   writeFile(runId: string, file: RunnerFileInput, expectedRevision: number): ReturnType<WorkspaceRunnerClient['writeFile']>
   execute(runId: string, command: string, clientRequestId: string): Promise<RunnerExecutionResult>
@@ -30,9 +30,9 @@ export class DockerWorkspaceRuntimeAdapter implements RuntimeAdapter {
     return template
   }
 
-  async provision(input: { environmentKey: string; environmentVersion: string; files: RunnerFileInput[]; commands: string[] }): Promise<RunnerCreateResult> {
+  async provision(input: { environmentKey: string; environmentVersion: string; files: RunnerFileInput[]; commands: string[]; environmentRef?: string }): Promise<RunnerCreateResult> {
     const template = this.template(input.environmentKey, input.environmentVersion)
-    return this.runner.create({ templateKey: template.key, files: input.files, commands: input.commands })
+    return this.runner.create({ templateKey: template.key, files: input.files, commands: input.commands, environmentRef: input.environmentRef })
   }
 
   status(runId: string) { return this.runner.status(runId) }

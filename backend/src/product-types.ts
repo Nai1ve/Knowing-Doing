@@ -84,7 +84,7 @@ export type LearningMode = 'lab' | 'workspace' | 'knowledge' | 'unavailable'
 
 export type CaseInputKind = 'brief' | 'zhihu_article'
 export type CaseDifficulty = 'introductory' | 'applied' | 'advanced'
-export type CaseGenerationStatus = 'generating' | 'ready' | 'failed' | 'archived'
+export type CaseGenerationStatus = 'generating' | 'ready' | 'failed' | 'archived' | 'superseded'
 export type CaseGenerationJobStatus = 'preparing_source' | 'queued' | 'running' | 'preflighting' | 'succeeded' | 'failed' | 'interrupted'
 export type WorkspaceRunStatus = 'provisioning' | 'active' | 'executing' | 'failed' | 'ended' | 'expired'
 export type WorkspaceExecutionStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'timed_out' | 'rejected'

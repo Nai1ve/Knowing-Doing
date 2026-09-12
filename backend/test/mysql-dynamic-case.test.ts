@@ -114,15 +114,15 @@ describe('MySqlDynamicCaseService', () => {
       const practiceId = first.practice.id
       expect((await service.runtime(learnerId, practiceId)).status).toBe('active')
       expect((await service.startPractice(learnerId, created.case.id)).practice.id).toBe(practiceId)
-      expect(createRunCalls).toBe(2) // one preflight run and one real runtime
+      expect(createRunCalls).toBe(3) // two isolated preflight runs and one real runtime
 
       active = false
       expect((await service.runtime(learnerId, practiceId)).status).toBe('expired')
       active = true
       const restarted = await service.startPractice(learnerId, created.case.id)
       expect(restarted.practice.id).toBe(practiceId)
-      expect(restarted.lab?.run.runId).toBe('dynamic-practice-run-3')
-      expect(createRunCalls).toBe(3)
+      expect(restarted.lab?.run.runId).toBe('dynamic-practice-run-4')
+      expect(createRunCalls).toBe(4)
       expect(repository.db.prepare("SELECT status FROM practice_lab_segments WHERE practice_run_id = ? ORDER BY started_at ASC").all(practiceId)).toHaveLength(2)
     } finally { repository.close(); rmSync(directory, { recursive: true, force: true }) }
   })
@@ -133,7 +133,7 @@ describe('MySqlDynamicCaseService', () => {
     const run = { runId: 'queued-dynamic-run', revision: 1, fixtureVersion: 'dynamic-fixture' }
     const scheduler = {
       registerDynamicCase: async () => undefined,
-      createRun: async () => { createRunCalls += 1; return createRunCalls === 1 ? { kind: 'started' as const, run, accessToken: 'token' } : { kind: 'queued' as const, ticket } },
+      createRun: async () => { createRunCalls += 1; return createRunCalls <= 2 ? { kind: 'started' as const, run: { ...run, runId: `preflight-${createRunCalls}` }, accessToken: 'token' } : { kind: 'queued' as const, ticket } },
       getTicket: () => ticket,
       getAccess: () => null,
       isRunActive: () => false,
@@ -161,7 +161,7 @@ describe('MySqlDynamicCaseService', () => {
     let createRunCalls = 0
     const scheduler = {
       registerDynamicCase: async () => undefined,
-      createRun: async () => { createRunCalls += 1; return createRunCalls === 1 ? { kind: 'started' as const, run: { runId: 'preflight-run', revision: 1 }, accessToken: 'token' } : { kind: 'queued' as const, ticket } },
+      createRun: async () => { createRunCalls += 1; return createRunCalls <= 2 ? { kind: 'started' as const, run: { runId: `preflight-run-${createRunCalls}`, revision: 1 }, accessToken: 'token' } : { kind: 'queued' as const, ticket } },
       getTicket: () => ticket,
       getAccess: () => null,
       isRunActive: () => false,

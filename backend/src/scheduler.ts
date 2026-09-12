@@ -1,15 +1,14 @@
 import { randomUUID } from 'node:crypto'
-import type { PoolConnection as Connection } from 'mysql2/promise'
 import { AsyncGate, AsyncMutex } from './async-gate.js'
 import type { CaseId, CaseManifest, LabExecutionResult, QueueTicketView, RunView, SessionName } from './domain.js'
 import { LabError } from './errors.js'
-import type { LabStore } from './mysql-store.js'
+import type { LabConnection, LabStore } from './mysql-store.js'
 import { signLabToken, verifyLabToken } from './token.js'
 
 interface ManagedSession {
   id: string
   name: SessionName
-  connection: Connection
+  connection: LabConnection
   status: 'open' | 'closed'
   mutex: AsyncMutex
 }
@@ -65,9 +64,9 @@ export class LabScheduler {
   }
 
   async registerDynamicCase(manifest: CaseManifest, material: import('./mysql-store.js').DynamicMySqlMaterial): Promise<void> {
-    if (this.slots.has(manifest.id)) return
     if (!this.store.registerDynamicCase) throw new LabError('dynamic_case_unavailable', '当前 MySQL 存储不支持动态案例', 409)
     await this.store.registerDynamicCase(manifest, material)
+    if (this.slots.has(manifest.id)) return
     this.manifests.set(manifest.id, manifest)
     this.slots.set(manifest.id, { caseId: manifest.id, queue: [], control: new AsyncMutex(), gate: new AsyncGate() })
   }
@@ -282,7 +281,8 @@ export class LabScheduler {
     const run = slot.active
     await slot.gate.write(async () => {
       await this.closeSessions(run)
-      await this.store.reset(run.caseId)
+      if (this.store.releaseCase) await this.store.releaseCase(run.caseId)
+      else await this.store.reset(run.caseId)
     })
     slot.active = undefined
   }

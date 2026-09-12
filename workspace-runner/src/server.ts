@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto'
+import { createHmac, randomUUID, timingSafeEqual } from 'node:crypto'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import { spawn } from 'node:child_process'
 import { URL } from 'node:url'
@@ -6,6 +6,9 @@ import { getTemplatePolicy, isValidTemplateCommand, isValidWorkspacePath, MAX_FI
 
 const port = Number(process.env.WORKSPACE_RUNNER_PORT ?? 3101)
 const token = process.env.WORKSPACE_RUNNER_TOKEN ?? 'development-workspace-runner-token'
+const environmentSigningKey = process.env.WORKSPACE_ENVIRONMENT_SIGNING_KEY ?? ''
+const requireSignedEnvironment = process.env.WORKSPACE_RUNNER_REQUIRE_SIGNED_ENVIRONMENT === 'true'
+const maxEnvironmentImageBytes = Number(process.env.WORKSPACE_RUNNER_MAX_ENVIRONMENT_IMAGE_BYTES ?? 2 * 1024 * 1024 * 1024)
 const images: Record<string, string> = {
   'python-pytest-v1': process.env.WORKSPACE_PYTHON_IMAGE ?? 'zhixing-python-pytest-v1:local',
   'go-test-v1': process.env.WORKSPACE_GO_IMAGE ?? 'zhixing-go-test-v1:local',
@@ -18,6 +21,21 @@ const workspaceSize = (templateKey: string) => templateKey === 'go-test-v1' ? '1
 
 type Run = { id: string; templateKey: string; containerId: string; files: Map<string, number>; fileBytes: Map<string, number>; commands: Set<string>; leaseExpiresAt: number; lastUsedAt: number; ended: boolean }
 const runs = new Map<string, Run>()
+
+type EnvironmentReference = {
+  version: 1
+  buildId: string
+  learningCaseId: string
+  runtimeKind: 'docker_workspace' | 'mysql_lab'
+  environmentKey: string
+  environmentVersion: string
+  runtimeImageDigest: string
+  runtimeImageReference: string
+  manifestFingerprint: string
+  requiredLabels: Record<string, string>
+  issuedAt: number
+  expiresAt: number
+}
 
 class RunnerError extends Error {
   constructor(public readonly code: string, message: string, public readonly statusCode = 400) { super(message); this.name = 'RunnerError' }
@@ -37,6 +55,29 @@ function stringField(value: Record<string, unknown>, key: string): string {
   const item = value[key]; if (typeof item !== 'string' || !item.trim()) throw new RunnerError('invalid_request', `${key} 不能为空`); return item.trim()
 }
 
+function signedReferenceSignature(body: string): string { return createHmac('sha256', environmentSigningKey).update(body).digest('base64url') }
+
+function parseEnvironmentReference(value: unknown, templateKey: string): EnvironmentReference | null {
+  if (value == null || value === '') {
+    if (requireSignedEnvironment) throw new RunnerError('environment_reference_required', '当前 Runner 只接受服务端签发的环境引用', 403)
+    return null
+  }
+  if (typeof value !== 'string' || !environmentSigningKey) throw new RunnerError('environment_reference_invalid', '环境引用不可用', 403)
+  const [body, supplied, ...extra] = value.split('.')
+  if (!body || !supplied || extra.length > 0) throw new RunnerError('environment_reference_invalid', '环境引用格式无效', 403)
+  const expected = Buffer.from(signedReferenceSignature(body)); const actual = Buffer.from(supplied)
+  if (actual.length !== expected.length || !timingSafeEqual(actual, expected)) throw new RunnerError('environment_reference_invalid', '环境引用签名无效', 403)
+  let claims: unknown
+  try { claims = JSON.parse(Buffer.from(body, 'base64url').toString('utf8')) } catch { throw new RunnerError('environment_reference_invalid', '环境引用内容无效', 403) }
+  if (!claims || typeof claims !== 'object' || Array.isArray(claims)) throw new RunnerError('environment_reference_invalid', '环境引用内容无效', 403)
+  const item = claims as Partial<EnvironmentReference>
+  const expiresAt = item.expiresAt
+  if (item.version !== 1 || item.runtimeKind !== 'docker_workspace' || item.environmentKey !== templateKey || typeof item.environmentVersion !== 'string' || !item.environmentVersion || typeof item.buildId !== 'string' || !item.buildId || typeof item.learningCaseId !== 'string' || !item.learningCaseId || typeof item.runtimeImageDigest !== 'string' || !/^sha256:[a-f0-9]{64}$/i.test(item.runtimeImageDigest) || typeof item.runtimeImageReference !== 'string' || !item.runtimeImageReference || typeof item.manifestFingerprint !== 'string' || !/^[a-f0-9]{64}$/i.test(item.manifestFingerprint) || !item.requiredLabels || typeof item.requiredLabels !== 'object' || Array.isArray(item.requiredLabels) || typeof expiresAt !== 'number' || !Number.isSafeInteger(expiresAt) || expiresAt <= Date.now()) throw new RunnerError('environment_reference_invalid', '环境引用与当前模板不匹配或已经过期', 403)
+  if (item.runtimeImageReference !== item.runtimeImageDigest && !item.runtimeImageReference.endsWith(`@${item.runtimeImageDigest}`)) throw new RunnerError('environment_reference_invalid', '环境镜像没有固定到声明的 digest', 403)
+  if (Object.entries(item.requiredLabels).some(([key, label]) => !key || typeof label !== 'string' || !label)) throw new RunnerError('environment_reference_invalid', '环境引用标签无效', 403)
+  return item as EnvironmentReference
+}
+
 async function docker(args: string[], options: { input?: string; timeout?: number; allowNonZero?: boolean } = {}): Promise<{ stdout: string; stderr: string; exitCode: number }> {
   return await new Promise((resolve, reject) => {
     const child = spawn('docker', args, { stdio: ['pipe', 'pipe', 'pipe'] }); const stdout: Buffer[] = []; const stderr: Buffer[] = []; let total = 0; let stderrTotal = 0; let timedOut = false
@@ -47,6 +88,25 @@ async function docker(args: string[], options: { input?: string; timeout?: numbe
     child.once('close', (code) => { clearTimeout(timer); if (timedOut) return reject(new RunnerError('execution_timeout', '容器命令超时', 408)); const out = Buffer.concat(stdout).toString('utf8'); const err = Buffer.concat(stderr).toString('utf8'); const exitCode = code ?? 1; if (exitCode !== 0 && !options.allowNonZero) return reject(new RunnerError('docker_error', err.slice(0, 1000) || `docker exit ${String(code)}`, 503)); resolve({ stdout: out, stderr: err, exitCode }) })
     if (options.input) child.stdin.write(options.input); child.stdin.end()
   })
+}
+
+async function resolveEnvironmentImage(input: Record<string, unknown>, templateKey: string): Promise<string> {
+  const reference = parseEnvironmentReference(input.environmentRef, templateKey)
+  if (!reference) return images[templateKey]
+  let inspect: unknown
+  try {
+    const result = await docker(['image', 'inspect', reference.runtimeImageReference], { timeout: 10_000 })
+    inspect = JSON.parse(result.stdout)
+  } catch {
+    throw new RunnerError('environment_image_unavailable', '服务端签发的环境镜像不可用', 503)
+  }
+  const image = Array.isArray(inspect) ? inspect[0] as { Id?: unknown; Size?: unknown; RepoDigests?: unknown; Config?: { Labels?: unknown } } : null
+  if (!image || typeof image.Id !== 'string' || (typeof image.Size === 'number' && image.Size > maxEnvironmentImageBytes)) throw new RunnerError('environment_image_invalid', '环境镜像元数据无效或超过大小限制', 409)
+  const repoDigests = Array.isArray(image.RepoDigests) ? image.RepoDigests.filter((item): item is string => typeof item === 'string') : []
+  if (image.Id !== reference.runtimeImageDigest && !repoDigests.some((item) => item.endsWith(`@${reference.runtimeImageDigest}`))) throw new RunnerError('environment_image_digest_mismatch', '环境镜像 digest 与服务端签发引用不一致', 409)
+  const labels = image.Config?.Labels && typeof image.Config.Labels === 'object' && !Array.isArray(image.Config.Labels) ? image.Config.Labels as Record<string, unknown> : {}
+  if (Object.entries(reference.requiredLabels).some(([key, value]) => labels[key] !== value)) throw new RunnerError('environment_image_label_mismatch', '环境镜像缺少平台验证标签', 409)
+  return reference.runtimeImageReference
 }
 
 const writeScript = "set -eu; p=\"$1\"; mkdir -p \"$(dirname \"$p\")\"; cat > \"$p\""
@@ -74,7 +134,7 @@ async function ensureTemplateDirectories(run: Run): Promise<void> {
 
 async function createRun(input: Record<string, unknown>): Promise<{ runnerRunId: string; leaseExpiresAt: string }> {
   const templateKey = stringField(input, 'templateKey'); const policy = getTemplatePolicy(templateKey); if (!policy) throw new RunnerError('template_not_available', '当前环境模板尚未开放', 409)
-  const image = images[templateKey]
+  const image = await resolveEnvironmentImage(input, templateKey)
   const files = input.files; const commands = input.commands; if (!Array.isArray(files) || !Array.isArray(commands)) throw new RunnerError('invalid_request', 'files 和 commands 必须是数组')
   if (files.length < 1 || files.length > 10 || commands.length < 1) throw new RunnerError('invalid_request', '工作区文件或命令数量无效')
   const paths = new Set<string>(); let totalBytes = 0

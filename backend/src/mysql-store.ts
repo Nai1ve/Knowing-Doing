@@ -5,20 +5,30 @@ import { LabError } from './errors.js'
 type Connection = PoolConnection
 type QueryRows = RowDataPacket[] | ResultSetHeader
 
+export interface ControlledMySqlConnection {
+  kind: 'controlled_mysql'
+  runtimeId: string
+  sessionId: string
+}
+
+export type LabConnection = Connection | ControlledMySqlConnection
+export function isControlledMySqlConnection(connection: LabConnection): connection is ControlledMySqlConnection { return 'kind' in connection && connection.kind === 'controlled_mysql' }
+
 export interface SessionConnection {
   id: string
   name: 'default' | 'tx-a' | 'tx-b'
-  connection: Connection
+  connection: LabConnection
 }
 
 export interface LabStore {
   reset(caseId: CaseId): Promise<void>
-  createSession(caseId: CaseId, sessionId: string): Promise<Connection>
-  execute(connection: Connection, statement: string, timeoutMs: number, maxRows: number, maxOutputBytes: number): Promise<{
+  createSession(caseId: CaseId, sessionId: string): Promise<LabConnection>
+  execute(connection: LabConnection, statement: string, timeoutMs: number, maxRows: number, maxOutputBytes: number): Promise<{
     result: NonNullable<import('./domain.js').LabExecutionResult['result']>
     elapsed: number
   }>
-  closeConnection(connection: Connection, options?: { destroy?: boolean }): Promise<void>
+  closeConnection(connection: LabConnection, options?: { destroy?: boolean }): Promise<void>
+  releaseCase?(caseId: CaseId): Promise<void>
   close?(): Promise<void>
   registerDynamicCase?(manifest: CaseManifest, plan: DynamicMySqlMaterial): Promise<void>
 }
@@ -122,7 +132,7 @@ export class MySqlLabStore implements LabStore {
       if (!dynamic) throw new LabError('dynamic_case_not_registered', '动态案例物料不存在', 409)
       for (const table of manifest.tables) await connection.query(`DROP TABLE IF EXISTS ${quoteIdentifier(manifest.schema)}.${quoteIdentifier(table)}`)
       await connection.query(dynamic.schemaSql)
-      await this.seedDynamicOrders(connection, manifest.schema, dynamic.rowCount, dynamic.distribution)
+      await this.seedDynamicOrders(connection, manifest.schema, dynamic.rowCount, dynamic.distribution, /\bstatus\b/i.test(dynamic.schemaSql))
       if (!/^\s*\/\*/.test(dynamic.faultSql)) await connection.query(dynamic.faultSql)
       await connection.commit()
     } catch (error) {
@@ -143,7 +153,8 @@ export class MySqlLabStore implements LabStore {
     }
   }
 
-  async execute(connection: Connection, statement: string, timeoutMs: number, maxRows: number, maxOutputBytes: number) {
+  async execute(connection: LabConnection, statement: string, timeoutMs: number, maxRows: number, maxOutputBytes: number) {
+    if (isControlledMySqlConnection(connection)) throw new LabError('execution_failed', '受控 MySQL 会话必须通过环境适配器执行', 503, true)
     const startedAt = Date.now()
     let timer: NodeJS.Timeout | undefined
     const query = connection.query(statement) as Promise<[QueryRows, FieldPacket[]]>
@@ -184,7 +195,8 @@ export class MySqlLabStore implements LabStore {
     }
   }
 
-  async closeConnection(connection: Connection, options?: { destroy?: boolean }): Promise<void> {
+  async closeConnection(connection: LabConnection, options?: { destroy?: boolean }): Promise<void> {
+    if (isControlledMySqlConnection(connection)) throw new LabError('lab_unavailable', '受控 MySQL 会话必须通过环境适配器关闭', 503, true)
     if (options?.destroy) {
       connection.destroy()
       return
@@ -200,18 +212,29 @@ export class MySqlLabStore implements LabStore {
     ])
   }
 
-  private async seedDynamicOrders(connection: Connection, schema: string, rowCount: number, distribution: 'uniform' | 'skewed'): Promise<void> {
+  private async seedDynamicOrders(connection: Connection, schema: string, rowCount: number, distribution: 'uniform' | 'skewed', includeStatus: boolean): Promise<void> {
     const batchSize = 2_000
+    // Explain-plan-v1 queries a single day in August 2026. Keep every
+    // deterministic seed inside that window and vary status across batches so
+    // any representative user id has paid rows to inspect.
+    const explainWindowStart = Math.floor(Date.UTC(2026, 7, 1) / 1_000)
     for (let start = 1; start <= rowCount; start += batchSize) {
       const end = Math.min(start + batchSize, rowCount + 1)
       const values: Array<number | string> = []
       const placeholders: string[] = []
       for (let id = start; id < end; id += 1) {
         const userId = distribution === 'skewed' ? (id % 20) + 1 : (id % 10_000) + 1
-        placeholders.push('(?, ?, FROM_UNIXTIME(?), ?)')
-        values.push(id, userId, 1_700_000_000 + id, (id % 10_000) + 100)
+        const createdAt = explainWindowStart + ((id - 1) % 86_400)
+        if (includeStatus) {
+          placeholders.push('(?, ?, ?, FROM_UNIXTIME(?), ?)')
+          values.push(id, userId, Math.floor((id - 1) / 10_000) % 5 === 0 ? 'PAID' : 'PENDING', createdAt, (id % 10_000) + 100)
+        } else {
+          placeholders.push('(?, ?, FROM_UNIXTIME(?), ?)')
+          values.push(id, userId, createdAt, (id % 10_000) + 100)
+        }
       }
-      await connection.query(`INSERT INTO ${quoteIdentifier(schema)}.${quoteIdentifier('orders')} (id, user_id, created_at, total_cents) VALUES ${placeholders.join(',')}`, values)
+      const columns = includeStatus ? '(id, user_id, status, created_at, total_cents)' : '(id, user_id, created_at, total_cents)'
+      await connection.query(`INSERT INTO ${quoteIdentifier(schema)}.${quoteIdentifier('orders')} ${columns} VALUES ${placeholders.join(',')}`, values)
     }
   }
 

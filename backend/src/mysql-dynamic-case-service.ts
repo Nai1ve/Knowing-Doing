@@ -11,8 +11,10 @@ import { PracticeEnvironmentCatalog } from './practice-environment-catalog.js'
 import type { DynamicRuntimeStatus } from './planning-types.js'
 import type { LabConfig, } from './config.js'
 import { CaseDesignAgent, type CaseDesignAttempt, type CaseDesignCard, type CaseDesignProvider, type CaseEnvironmentCandidate } from './case-design-agent.js'
+import { safeBuildText, type OpenHandsMySqlBuildContract } from './environment-build.js'
 
 type Row = Record<string, unknown>
+type GymBuildLink = { gymBuildJobId: string; planId: string; planUnitId: string }
 const text = (row: Row, key: string) => String(row[key])
 const stable = (value: unknown): string => {
   if (Array.isArray(value)) return `[${value.map(stable).join(',')}]`
@@ -60,7 +62,7 @@ export class MySqlDynamicCaseService {
     try { return await action() } finally { release(); if (this.locks.get(key) === queued) this.locks.delete(key) }
   }
 
-  async createCase(learnerId: string, input: { roadmapNodeId: string; request?: unknown; card?: CaseDesignCard; clientRequestId: string }): Promise<{ case: LearningCase; materialization: ReturnType<MySqlCaseMaterializationService['materialize']> }> {
+  async createCase(learnerId: string, input: { roadmapNodeId: string; request?: unknown; card?: CaseDesignCard; clientRequestId: string; onCaseCreated?: (learningCaseId: string) => Promise<void> | void; deferPreflight?: boolean; gymBuildLink?: GymBuildLink }): Promise<{ case: LearningCase; materialization: ReturnType<MySqlCaseMaterializationService['materialize']> }> {
     this.repository.ensureLearner(learnerId)
     const request = input.request == null ? null : parseMySqlExerciseRequest(input.request)
     const fingerprint = createHash('sha256').update(stable({ protocol: input.card ? 'case-design-v1' : 'mysql-direct-v1', roadmapNodeId: input.roadmapNodeId, card: input.card ?? null, request })).digest('hex')
@@ -68,7 +70,7 @@ export class MySqlDynamicCaseService {
     return this.withLock(`${learnerId}:mysql-case:${fingerprint}`, async () => this.createCaseLocked(learnerId, input, request, fingerprint))
   }
 
-  private async createCaseLocked(learnerId: string, input: { roadmapNodeId: string; request?: unknown; card?: CaseDesignCard; clientRequestId: string }, initialRequest: MySqlExerciseRequest | null, fingerprint: string): Promise<{ case: LearningCase; materialization: ReturnType<MySqlCaseMaterializationService['materialize']> }> {
+  private async createCaseLocked(learnerId: string, input: { roadmapNodeId: string; request?: unknown; card?: CaseDesignCard; clientRequestId: string; onCaseCreated?: (learningCaseId: string) => Promise<void> | void; deferPreflight?: boolean; gymBuildLink?: GymBuildLink }, initialRequest: MySqlExerciseRequest | null, fingerprint: string): Promise<{ case: LearningCase; materialization: ReturnType<MySqlCaseMaterializationService['materialize']> }> {
     const node = this.repository.db.prepare(`SELECT n.id, n.node_key, n.capability_key, n.exercise_profile_key, n.learning_mode, n.roadmap_id, r.learner_id, r.status
       FROM roadmap_nodes n INNER JOIN learning_roadmaps r ON r.id = n.roadmap_id
       WHERE n.id = ? AND r.learner_id = ? AND r.status IN ('draft', 'active')`).get(input.roadmapNodeId, learnerId) as Row | undefined
@@ -86,6 +88,16 @@ export class MySqlDynamicCaseService {
     const now = new Date().toISOString()
     this.log('persist_started', { learnerId, roadmapNodeId: input.roadmapNodeId, fingerprint })
     const persisted = this.repository.db.transaction(() => {
+      const linkGymBuild = (learningCaseId: string): void => {
+        const link = input.gymBuildLink
+        if (!link) return
+        const caseJob = this.repository.db.prepare('SELECT id FROM case_generation_jobs WHERE learner_id = ? AND learning_case_id = ? ORDER BY created_at DESC LIMIT 1').get(learnerId, learningCaseId) as Row | undefined
+        if (!caseJob) throw new LabError('gym_case_generation_link_missing', 'Gym 案例缺少生成任务', 409)
+        const linkedUnit = this.repository.db.prepare("UPDATE plan_units SET learning_case_id = ? WHERE id = ? AND plan_id = ? AND status = 'current' AND (learning_case_id IS NULL OR learning_case_id = ?)").run(learningCaseId, link.planUnitId, link.planId, learningCaseId)
+        if (linkedUnit.changes === 0) throw new LabError('current_plan_unit_changed', '当前学习单元已切换，不能关联新的 Gym 案例', 409)
+        const linkedBuild = this.repository.db.prepare("UPDATE gym_build_jobs SET learning_case_id = ?, case_generation_job_id = ?, updated_at = ? WHERE id = ? AND learner_id = ? AND status IN ('queued', 'running', 'failed') AND (learning_case_id IS NULL OR learning_case_id = ?)").run(learningCaseId, text(caseJob, 'id'), now, link.gymBuildJobId, learnerId, learningCaseId)
+        if (linkedBuild.changes === 0) throw new LabError('gym_build_link_unavailable', 'Gym 构建任务已不允许关联案例', 409)
+      }
       const existingJob = this.repository.db.prepare('SELECT learning_case_id, input_fingerprint FROM case_generation_jobs WHERE learner_id = ? AND client_request_id = ?').get(learnerId, input.clientRequestId) as Row | undefined
       if (existingJob) {
         if (text(existingJob, 'input_fingerprint') !== fingerprint) throw new LabError('case_request_idempotency_conflict', 'clientRequestId 已用于其他 MySQL 案例输入', 409)
@@ -95,7 +107,9 @@ export class MySqlDynamicCaseService {
           this.repository.db.prepare("UPDATE learning_cases SET status = 'generating', failure_code = NULL, failure_message = NULL, updated_at = ? WHERE id = ? AND learner_id = ? AND status = 'failed'").run(now, existingCaseId, learnerId)
           this.repository.db.prepare("UPDATE case_generation_jobs SET status = 'running', attempt_count = attempt_count + 1, failure_code = NULL, failure_message = NULL, started_at = ?, completed_at = NULL, updated_at = ? WHERE learner_id = ? AND client_request_id = ? AND status = 'failed'").run(now, now, learnerId, input.clientRequestId)
         }
-        return text(existingJob, 'learning_case_id')
+        const learningCaseId = text(existingJob, 'learning_case_id')
+        linkGymBuild(learningCaseId)
+        return learningCaseId
       }
       const existing = this.repository.db.prepare('SELECT id FROM learning_cases WHERE learner_id = ? AND input_fingerprint = ?').get(learnerId, fingerprint) as Row | undefined
       const id = existing ? text(existing, 'id') : randomUUID()
@@ -105,9 +119,11 @@ export class MySqlDynamicCaseService {
         this.repository.db.prepare(`INSERT INTO case_generation_jobs(id, learner_id, learning_case_id, client_request_id, input_fingerprint, provider, status, attempt_count, completed_at, created_at, updated_at)
           VALUES (?, ?, ?, ?, ?, ?, 'running', 1, NULL, ?, ?)`).run(randomUUID(), learnerId, id, input.clientRequestId, fingerprint, input.card ? 'model' : 'fixture', now, now)
       }
+      linkGymBuild(id)
       return id
     })()
     this.log('persist_finished', { learnerId, learningCaseId: persisted, fingerprint })
+    await input.onCaseCreated?.(persisted)
     let learningCase = this.repository.getLearningCaseForLearner(persisted, learnerId)
     const existingStatus = this.repository.db.prepare('SELECT status, preflight_status FROM learning_cases WHERE id = ? AND learner_id = ?').get(persisted, learnerId) as Row
     const existingMaterialization = this.materializations.get(learnerId, persisted)
@@ -140,6 +156,9 @@ export class MySqlDynamicCaseService {
       throw new LabError('mysql_case_materialization_failed', materialization.failureMessage ?? '动态 MySQL 案例物料化失败', 503, true)
     }
     const refreshedStatus = this.repository.db.prepare('SELECT status, preflight_status FROM learning_cases WHERE id = ? AND learner_id = ?').get(persisted, learnerId) as Row
+    if (input.deferPreflight) {
+      return { case: this.repository.getLearningCaseForLearner(persisted, learnerId), materialization: this.materializations.get(learnerId, persisted)! }
+    }
     if (String(refreshedStatus.status) !== 'ready' || String(refreshedStatus.preflight_status) !== 'passed') {
       this.log('preflight_started', { learnerId, learningCaseId: persisted })
       await this.preflight(learnerId, learningCase, materialization)
@@ -154,6 +173,9 @@ export class MySqlDynamicCaseService {
     return this.withLock(`${learnerId}:${learningCaseId}`, async () => {
       const item = this.repository.getLearningCaseForLearner(learningCaseId, learnerId)
       if (!['mysql.slow-query', 'mysql.explain-plan'].includes(item.capabilityKey) || item.runtimeKind !== 'mysql_lab') throw new LabError('mysql_case_capability_mismatch', '该案例不能进入 MySQL Gym', 409)
+      if (item.status !== 'ready' || item.preflightStatus !== 'passed') {
+        throw new LabError(item.failureCode ?? 'mysql_case_preflight_failed', item.failureMessage ?? '动态 MySQL 案例预检未通过，案例不可进入 Lab', 409, true)
+      }
       const materialization = this.materializations.get(learnerId, learningCaseId)
       if (!materialization?.plan || materialization.status !== 'materialized') throw new LabError('mysql_case_not_materialized', 'MySQL 案例物料尚未完成', 409, true)
       const plan = materialization.plan
@@ -274,6 +296,51 @@ export class MySqlDynamicCaseService {
 
   materializationFor(learnerId: string, learningCaseId: string) { return this.materializations.get(learnerId, learningCaseId) }
 
+  /**
+   * The case id and materialization are frozen before an OpenHands MySQL build
+   * starts, so the Builder cannot accidentally produce a generic image for a
+   * different schema or seed profile.
+   */
+  runtimeBuildContractFor(learnerId: string, learningCaseId: string): OpenHandsMySqlBuildContract {
+    const item = this.repository.getLearningCaseForLearner(learningCaseId, learnerId)
+    if (item.runtimeKind !== 'mysql_lab') throw new LabError('runtime_dispatch_mismatch', '非 MySQL 案例不能生成 MySQL 构建契约', 409)
+    const materialization = this.materializations.get(learnerId, learningCaseId)
+    if (!materialization?.plan || materialization.status !== 'materialized') throw new LabError('mysql_case_not_materialized', 'MySQL 案例物料尚未完成', 409, true)
+    const plan = materialization.plan
+    const database = this.manifestFor(item, materialization).schema
+    const distribution = plan.seedProfile.distribution
+    if (distribution !== 'uniform' && distribution !== 'skewed') throw new LabError('mysql_seed_distribution_invalid', 'MySQL 种子分布无效', 409)
+    return {
+      learningCaseId,
+      database,
+      materializationFingerprint: materialization.materializationFingerprint,
+      schemaSql: plan.schemaSql,
+      seed: { rowCount: plan.seedProfile.rowCount, distribution },
+      faultSql: plan.faultSeed.sql,
+      starterExplain: plan.query.sql,
+      referenceSql: plan.referenceSolution.sql,
+    }
+  }
+
+  /** Preserve a failed Builder's case/job evidence without exposing internals. */
+  markDeferredBuildFailure(learnerId: string, learningCaseId: string, failureCode: string, failureMessage: string): void {
+    const now = new Date().toISOString()
+    const message = failureMessage.slice(0, 500)
+    this.repository.db.transaction(() => {
+      this.repository.db.prepare("UPDATE learning_cases SET status = 'failed', preflight_status = 'failed', failure_code = ?, failure_message = ?, updated_at = ? WHERE id = ? AND learner_id = ? AND status = 'generating'").run(failureCode, message, now, learningCaseId, learnerId)
+      this.repository.db.prepare("UPDATE case_generation_jobs SET status = 'failed', failure_code = ?, failure_message = ?, completed_at = ?, updated_at = ? WHERE learning_case_id = ? AND learner_id = ? AND status = 'running'").run(failureCode, message, now, now, learningCaseId, learnerId)
+    })()
+  }
+
+  /** Replays EXPLAIN and the private reference index against a bound image. */
+  async verifyBoundRuntime(learnerId: string, learningCaseId: string): Promise<void> {
+    const item = this.repository.getLearningCaseForLearner(learningCaseId, learnerId)
+    if (item.runtimeKind !== 'mysql_lab') throw new LabError('runtime_dispatch_mismatch', '非 MySQL 案例不能进入 MySQL 预检', 409)
+    const materialization = this.materializations.get(learnerId, learningCaseId)
+    if (!materialization?.plan || materialization.status !== 'materialized') throw new LabError('mysql_case_not_materialized', 'MySQL 案例物料尚未完成', 409, true)
+    await this.preflight(learnerId, item, materialization)
+  }
+
   private manifestFor(item: LearningCase, materialization: NonNullable<ReturnType<MySqlCaseMaterializationService['get']>>): CaseManifest {
     const plan = materialization.plan!
     return {
@@ -291,38 +358,56 @@ export class MySqlDynamicCaseService {
     const plan = materialization.plan!
     const manifest = this.manifestFor(item, materialization)
     const now = new Date().toISOString()
-    let started: Awaited<ReturnType<LabScheduler['createRun']>> | null = null
     try {
       this.log('preflight_registering', { learnerId, learningCaseId: item.id })
       await this.scheduler.registerDynamicCase(manifest, { schemaSql: plan.schemaSql, rowCount: plan.seedProfile.rowCount, distribution: plan.seedProfile.distribution as 'uniform' | 'skewed', faultSql: plan.faultSeed.sql })
       this.log('preflight_registered', { learnerId, learningCaseId: item.id })
-      started = await this.scheduler.createRun(item.id)
-      this.log('preflight_run_created', { learnerId, learningCaseId: item.id, kind: started.kind })
-      if (started.kind !== 'started') throw new Error('dynamic_case_preflight_queued')
-      const session = await this.scheduler.createSession(started.run.runId, started.accessToken, 'default')
-      this.log('preflight_session_created', { learnerId, learningCaseId: item.id })
       const query = plan.query.sql.replaceAll('?', '1')
-      const initial = await this.scheduler.execute(started.run.runId, started.accessToken, started.run.revision, session.id, `EXPLAIN ${query}`, `mysql-preflight-explain:${item.id}`)
-      this.log('preflight_explain_finished', { learnerId, learningCaseId: item.id, status: initial.status })
-      if (initial.status !== 'succeeded' || initial.result?.kind !== 'result_set' || (initial.result.rows?.length ?? 0) === 0) throw new Error('mysql_preflight_initial_explain_failed')
-      const repaired = await this.scheduler.execute(started.run.runId, started.accessToken, started.run.revision, session.id, plan.referenceSolution.sql, `mysql-preflight-repair:${item.id}`)
-      this.log('preflight_reference_finished', { learnerId, learningCaseId: item.id, status: repaired.status })
-      if (repaired.status !== 'succeeded') throw new Error('mysql_preflight_reference_failed')
-      const verified = await this.scheduler.execute(started.run.runId, started.accessToken, started.run.revision, session.id, `EXPLAIN ${query}`, `mysql-preflight-verify:${item.id}`)
-      this.log('preflight_verify_finished', { learnerId, learningCaseId: item.id, status: verified.status })
-      if (verified.status !== 'succeeded' || verified.result?.kind !== 'result_set' || (verified.result.rows?.length ?? 0) === 0) throw new Error('mysql_preflight_reference_explain_failed')
+      // These must be distinct runs. The first observes the starter image;
+      // the second proves that a fresh image accepts the private reference
+      // index, rather than inheriting mutations from the first check.
+      let initialRun: Awaited<ReturnType<LabScheduler['createRun']>> | null = null
+      try {
+        initialRun = await this.scheduler.createRun(item.id)
+        this.log('preflight_initial_run_created', { learnerId, learningCaseId: item.id, kind: initialRun.kind })
+        if (initialRun.kind !== 'started') throw new Error('dynamic_case_preflight_queued')
+        const session = await this.scheduler.createSession(initialRun.run.runId, initialRun.accessToken, 'default')
+        this.log('preflight_initial_session_created', { learnerId, learningCaseId: item.id })
+        const initial = await this.scheduler.execute(initialRun.run.runId, initialRun.accessToken, initialRun.run.revision, session.id, `EXPLAIN ${query}`, `mysql-preflight-explain:${item.id}`)
+        this.log('preflight_explain_finished', { learnerId, learningCaseId: item.id, status: initial.status })
+        if (initial.status !== 'succeeded' || initial.result?.kind !== 'result_set' || (initial.result.rows?.length ?? 0) === 0) throw new Error('mysql_preflight_initial_explain_failed')
+      } finally {
+        if (initialRun?.kind === 'started') await this.scheduler.release(initialRun.run.runId, initialRun.accessToken).catch(() => undefined)
+      }
+
+      let referenceRun: Awaited<ReturnType<LabScheduler['createRun']>> | null = null
+      try {
+        referenceRun = await this.scheduler.createRun(item.id)
+        this.log('preflight_reference_run_created', { learnerId, learningCaseId: item.id, kind: referenceRun.kind })
+        if (referenceRun.kind !== 'started') throw new Error('dynamic_case_preflight_queued')
+        const session = await this.scheduler.createSession(referenceRun.run.runId, referenceRun.accessToken, 'default')
+        this.log('preflight_reference_session_created', { learnerId, learningCaseId: item.id })
+        const repaired = await this.scheduler.execute(referenceRun.run.runId, referenceRun.accessToken, referenceRun.run.revision, session.id, plan.referenceSolution.sql, `mysql-preflight-repair:${item.id}`)
+        this.log('preflight_reference_finished', { learnerId, learningCaseId: item.id, status: repaired.status })
+        if (repaired.status !== 'succeeded') throw new Error('mysql_preflight_reference_failed')
+        const verified = await this.scheduler.execute(referenceRun.run.runId, referenceRun.accessToken, referenceRun.run.revision, session.id, `EXPLAIN ${query}`, `mysql-preflight-verify:${item.id}`)
+        this.log('preflight_verify_finished', { learnerId, learningCaseId: item.id, status: verified.status })
+        if (verified.status !== 'succeeded' || verified.result?.kind !== 'result_set' || (verified.result.rows?.length ?? 0) === 0) throw new Error('mysql_preflight_reference_explain_failed')
+      } finally {
+        if (referenceRun?.kind === 'started') await this.scheduler.release(referenceRun.run.runId, referenceRun.accessToken).catch(() => undefined)
+      }
       this.repository.db.prepare("UPDATE learning_cases SET status = 'ready', preflight_status = 'passed', failure_code = NULL, failure_message = NULL, updated_at = ? WHERE id = ? AND learner_id = ?").run(now, item.id, learnerId)
       this.repository.db.prepare("UPDATE case_materializations SET status = 'materialized', failure_code = NULL, failure_message = NULL, updated_at = ? WHERE id = ? AND learner_id = ?").run(now, materialization.id, learnerId)
+      this.repository.db.prepare("UPDATE case_generation_jobs SET status = 'succeeded', failure_code = NULL, failure_message = NULL, completed_at = ?, updated_at = ? WHERE learning_case_id = ? AND learner_id = ? AND status = 'running'").run(now, now, item.id, learnerId)
       this.repository.db.prepare('INSERT INTO case_materialization_events(id, learner_id, learning_case_id, materialization_id, type, payload_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)').run(randomUUID(), learnerId, item.id, materialization.id, 'preflight_passed', JSON.stringify({ queryTemplateKey: plan.request.queryTemplateKey }), now)
     } catch (error) {
       this.log('preflight_failed', { learnerId, learningCaseId: item.id, errorCode: error instanceof LabError ? error.code : 'mysql_preflight_failed' })
-      const message = error instanceof Error ? error.message.slice(0, 500) : 'MySQL 动态案例预检失败'
+      const message = safeBuildText(error instanceof Error ? error.message : 'MySQL 动态案例预检失败', 500)
       this.repository.db.prepare("UPDATE learning_cases SET status = 'failed', preflight_status = 'failed', failure_code = 'mysql_preflight_failed', failure_message = ?, updated_at = ? WHERE id = ? AND learner_id = ?").run(message, now, item.id, learnerId)
       this.repository.db.prepare("UPDATE case_materializations SET status = 'failed', failure_code = 'mysql_preflight_failed', failure_message = ?, updated_at = ? WHERE id = ? AND learner_id = ?").run(message, now, materialization.id, learnerId)
+      this.repository.db.prepare("UPDATE case_generation_jobs SET status = 'failed', failure_code = 'mysql_preflight_failed', failure_message = ?, completed_at = ?, updated_at = ? WHERE learning_case_id = ? AND learner_id = ? AND status = 'running'").run(message, now, now, item.id, learnerId)
       this.repository.db.prepare('INSERT INTO case_materialization_events(id, learner_id, learning_case_id, materialization_id, type, payload_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)').run(randomUUID(), learnerId, item.id, materialization.id, 'preflight_failed', JSON.stringify({ message }), now)
       throw new LabError('mysql_case_preflight_failed', '动态 MySQL 案例预检失败，案例不可进入 Lab', 503, true)
-    } finally {
-      if (started?.kind === 'started') await this.scheduler.release(started.run.runId, started.accessToken).catch(() => undefined)
     }
   }
 }

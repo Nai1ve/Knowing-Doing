@@ -45,7 +45,23 @@ export interface LabConfig {
   workspaceRunnerToken: string
   workspaceRunnerTimeoutMs: number
   workspaceRunnerFake: boolean
+  environmentRuntimeSigningKey: string
+  environmentRuntimeReferenceTtlMs: number
   caseBuilderProvider: 'fixture' | 'model'
+  caseBuilderEnabled: boolean
+  caseBuilderUrl: string
+  caseBuilderToken: string
+  caseBuilderRequestTimeoutMs: number
+  caseBuilderTaskTimeoutMs: number
+  caseBuilderMaxRepairRounds: number
+  caseBuilderMaxConcurrent: number
+  caseBuilderMaxLogBytes: number
+  caseBuilderFailureRetentionHours: number
+  caseBuilderDockerSocketEnabled: boolean
+  caseBuilderOpenHandsImage: string
+  caseBuilderLlmBaseUrl: string
+  caseBuilderLlmApiKey: string
+  caseBuilderLlmModel: string
 }
 
 export function loadConfig(): LabConfig {
@@ -63,6 +79,12 @@ export function loadConfig(): LabConfig {
       : process.env.NODE_ENV === 'production'
         ? 'shared_demo'
         : 'client'
+  const caseBuilderEnabled = process.env.CASE_BUILDER_ENABLED === 'true'
+  const caseBuilderUrl = process.env.CASE_BUILDER_URL ?? 'http://127.0.0.1:3102'
+  const caseBuilderToken = process.env.CASE_BUILDER_TOKEN ?? ''
+  if (caseBuilderEnabled && !caseBuilderToken) throw new Error('CASE_BUILDER_TOKEN is required when CASE_BUILDER_ENABLED=true')
+  const environmentRuntimeSigningKey = process.env.ENVIRONMENT_RUNTIME_SIGNING_KEY ?? (caseBuilderEnabled ? '' : tokenSecret)
+  if (caseBuilderEnabled && !environmentRuntimeSigningKey) throw new Error('ENVIRONMENT_RUNTIME_SIGNING_KEY is required when CASE_BUILDER_ENABLED=true')
 
   return {
     host: process.env.LAB_MYSQL_HOST ?? '127.0.0.1',
@@ -101,6 +123,22 @@ export function loadConfig(): LabConfig {
     workspaceRunnerToken: process.env.WORKSPACE_RUNNER_TOKEN ?? 'development-workspace-runner-token',
     workspaceRunnerTimeoutMs: numberEnv('WORKSPACE_RUNNER_TIMEOUT_MS', 35_000),
     workspaceRunnerFake: process.env.WORKSPACE_RUNNER_FAKE === 'true',
+    environmentRuntimeSigningKey,
+    environmentRuntimeReferenceTtlMs: numberEnv('ENVIRONMENT_RUNTIME_REFERENCE_TTL_MS', 10 * 60_000),
     caseBuilderProvider: process.env.ZHIXING_CASE_BUILDER_PROVIDER === 'model' ? 'model' : 'fixture',
+    caseBuilderEnabled,
+    caseBuilderUrl,
+    caseBuilderToken,
+    caseBuilderRequestTimeoutMs: numberEnv('CASE_BUILDER_REQUEST_TIMEOUT_MS', 30_000),
+    caseBuilderTaskTimeoutMs: numberEnv('CASE_BUILDER_TASK_TIMEOUT_MS', 20 * 60 * 1000),
+    caseBuilderMaxRepairRounds: Math.min(3, numberEnv('CASE_BUILDER_MAX_REPAIR_ROUNDS', 3)),
+    caseBuilderMaxConcurrent: Math.min(1, numberEnv('CASE_BUILDER_MAX_CONCURRENT', 1)),
+    caseBuilderMaxLogBytes: numberEnv('CASE_BUILDER_MAX_LOG_BYTES', 64 * 1024),
+    caseBuilderFailureRetentionHours: numberEnv('CASE_BUILDER_FAILURE_RETENTION_HOURS', 24),
+    caseBuilderDockerSocketEnabled: process.env.CASE_BUILDER_DOCKER_SOCKET_ENABLED === 'true',
+    caseBuilderOpenHandsImage: process.env.CASE_BUILDER_OPENHANDS_IMAGE ?? '',
+    caseBuilderLlmBaseUrl: process.env.CASE_BUILDER_LLM_BASE_URL ?? process.env.ZHIXING_MODEL_BASE_URL ?? '',
+    caseBuilderLlmApiKey: process.env.CASE_BUILDER_LLM_API_KEY ?? process.env.ZHIXING_MODEL_API_KEY ?? '',
+    caseBuilderLlmModel: process.env.CASE_BUILDER_LLM_MODEL ?? process.env.ZHIXING_MODEL_NAME ?? 'default',
   }
 }

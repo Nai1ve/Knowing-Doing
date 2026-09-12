@@ -67,9 +67,21 @@ jobs:
       - run: npm run build
       - run: npm test
 
+  case-builder-agent:
+    name: Case Builder Agent checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.x
+      - run: node --check case-builder-agent/src/server.mjs
+      - run: test -f case-builder-agent/Dockerfile.openhands && bash -n deploy/run-case-builder-smoke.sh
+      - run: docker build --tag zhixing-case-builder-agent:ci case-builder-agent
+
   deploy:
     name: Deploy to server
-    needs: [frontend, backend, workspace-runner]
+    needs: [frontend, backend, workspace-runner, case-builder-agent]
     if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
     runs-on: ubuntu-latest
     env:
@@ -104,11 +116,29 @@ jobs:
           ZHIXING_MODEL_NAME: ${{ secrets.ZHIXING_MODEL_NAME || 'deepseek-flash' }}
           ZHIXING_ZHIHU_ACCESS_SECRET: ${{ secrets.ZHIXING_ZHIHU_ACCESS_SECRET }}
           WORKSPACE_RUNNER_TOKEN: ${{ secrets.WORKSPACE_RUNNER_TOKEN }}
+          # OpenHands Builder is enabled by default after the local smoke gate.
+          # Set the repository variable CASE_BUILDER_ENABLED=false to pause it.
+          CASE_BUILDER_ENABLED: ${{ vars.CASE_BUILDER_ENABLED || 'true' }}
+          CASE_BUILDER_TOKEN: ${{ secrets.CASE_BUILDER_TOKEN }}
+          CASE_BUILDER_OPENHANDS_IMAGE: ${{ secrets.CASE_BUILDER_OPENHANDS_IMAGE }}
+          CASE_BUILDER_OPENHANDS_COMMAND: ${{ secrets.CASE_BUILDER_OPENHANDS_COMMAND }}
+          CASE_BUILDER_LLM_BASE_URL: ${{ secrets.CASE_BUILDER_LLM_BASE_URL || secrets.ZHIXING_MODEL_BASE_URL || 'https://api.deepseek.com' }}
+          CASE_BUILDER_LLM_API_KEY: ${{ secrets.CASE_BUILDER_LLM_API_KEY || secrets.ZHIXING_MODEL_API_KEY }}
+          CASE_BUILDER_LLM_MODEL: ${{ secrets.CASE_BUILDER_LLM_MODEL || secrets.ZHIXING_MODEL_NAME || 'deepseek-flash' }}
+          CASE_BUILDER_MYSQL_ROOT_PASSWORD: ${{ secrets.CASE_BUILDER_MYSQL_ROOT_PASSWORD }}
+          ENVIRONMENT_RUNTIME_SIGNING_KEY: ${{ secrets.ENVIRONMENT_RUNTIME_SIGNING_KEY }}
         run: |
           set -Eeuo pipefail
           for required in DEPLOY_HOST DEPLOY_USER LAB_TOKEN_SECRET LAB_MYSQL_RUNNER_PASSWORD LAB_MYSQL_ADMIN_PASSWORD ZHIXING_MODEL_API_KEY WORKSPACE_RUNNER_TOKEN; do
             test -n "${!required:-}" || { echo "Missing required secret: $required" >&2; exit 1; }
           done
+          case "$CASE_BUILDER_ENABLED" in true|false) ;; *) echo 'CASE_BUILDER_ENABLED must be the repository variable true or false' >&2; exit 1 ;; esac
+          if [ "$CASE_BUILDER_ENABLED" = true ]; then
+            for required in CASE_BUILDER_TOKEN CASE_BUILDER_OPENHANDS_IMAGE CASE_BUILDER_OPENHANDS_COMMAND CASE_BUILDER_LLM_API_KEY CASE_BUILDER_MYSQL_ROOT_PASSWORD ENVIRONMENT_RUNTIME_SIGNING_KEY; do
+              test -n "${!required:-}" || { echo "Missing Case Builder secret: $required" >&2; exit 1; }
+            done
+            case "$CASE_BUILDER_OPENHANDS_IMAGE" in *@sha256:*) ;; *) echo 'CASE_BUILDER_OPENHANDS_IMAGE must be digest-pinned' >&2; exit 1 ;; esac
+          fi
           umask 077
           {
             printf '%s\n' 'NODE_ENV=production'
@@ -129,9 +159,29 @@ jobs:
             printf '%s\n' 'ZHIXING_ZHIHU_API_BASE_URL=https://developer.zhihu.com' 'ZHIXING_RETRIEVAL_TIMEOUT_MS=15000' 'ZHIXING_RETRIEVAL_CACHE_TTL_MS=86400000'
             printf '%s\n' 'WORKSPACE_RUNNER_URL=http://127.0.0.1:3101'
             printf 'WORKSPACE_RUNNER_TOKEN=%s\n' "$WORKSPACE_RUNNER_TOKEN"
+            printf 'CASE_BUILDER_ENABLED=%s\n' "$CASE_BUILDER_ENABLED"
+            printf '%s\n' 'CASE_BUILDER_URL=http://127.0.0.1:3102'
+            printf 'CASE_BUILDER_TOKEN=%s\n' "$CASE_BUILDER_TOKEN"
+            printf 'ENVIRONMENT_RUNTIME_SIGNING_KEY=%s\n' "$ENVIRONMENT_RUNTIME_SIGNING_KEY"
+            printf '%s\n' 'CASE_BUILDER_TASK_TIMEOUT_MS=1200000' 'CASE_BUILDER_MAX_REPAIR_ROUNDS=3' 'CASE_BUILDER_MAX_CONCURRENT=1' 'CASE_BUILDER_MAX_LOG_BYTES=65536' 'CASE_BUILDER_FAILURE_RETENTION_HOURS=24'
             printf '%s\n' 'ZHIXING_IDENTITY_MODE=shared_demo' 'ZHIXING_DEMO_LEARNER_ID=demo-learner'
           } | ssh -p "$DEPLOY_PORT" "$DEPLOY_USER@$DEPLOY_HOST" "sudo -n install -d -m 0755 /etc/knowing-doing && sudo -n install -o root -g root -m 0600 /dev/stdin /etc/knowing-doing/backend.env"
-          printf 'WORKSPACE_RUNNER_TOKEN=%s\n' "$WORKSPACE_RUNNER_TOKEN" | ssh -p "$DEPLOY_PORT" "$DEPLOY_USER@$DEPLOY_HOST" "sudo -n install -d -m 0755 /home/ubuntu/knowing-doing-data && sudo -n install -o root -g root -m 0600 /dev/stdin /home/ubuntu/knowing-doing-data/workspace-runner.env"
+          {
+            printf 'WORKSPACE_RUNNER_TOKEN=%s\n' "$WORKSPACE_RUNNER_TOKEN"
+            printf 'WORKSPACE_ENVIRONMENT_SIGNING_KEY=%s\n' "$ENVIRONMENT_RUNTIME_SIGNING_KEY"
+            printf 'WORKSPACE_RUNNER_REQUIRE_SIGNED_ENVIRONMENT=%s\n' "$CASE_BUILDER_ENABLED"
+            printf '%s\n' 'WORKSPACE_RUNNER_MAX_ENVIRONMENT_IMAGE_BYTES=2147483648'
+          } | ssh -p "$DEPLOY_PORT" "$DEPLOY_USER@$DEPLOY_HOST" "sudo -n install -d -m 0755 /home/ubuntu/knowing-doing-data && sudo -n install -o root -g root -m 0600 /dev/stdin /home/ubuntu/knowing-doing-data/workspace-runner.env"
+          {
+            printf 'CASE_BUILDER_TOKEN=%s\n' "$CASE_BUILDER_TOKEN"
+            printf 'CASE_BUILDER_OPENHANDS_IMAGE=%s\n' "$CASE_BUILDER_OPENHANDS_IMAGE"
+            printf 'CASE_BUILDER_OPENHANDS_COMMAND=%s\n' "$CASE_BUILDER_OPENHANDS_COMMAND"
+            printf 'CASE_BUILDER_LLM_BASE_URL=%s\n' "$CASE_BUILDER_LLM_BASE_URL"
+            printf 'CASE_BUILDER_LLM_API_KEY=%s\n' "$CASE_BUILDER_LLM_API_KEY"
+            printf 'CASE_BUILDER_LLM_MODEL=%s\n' "$CASE_BUILDER_LLM_MODEL"
+            printf 'CASE_BUILDER_MYSQL_ROOT_PASSWORD=%s\n' "$CASE_BUILDER_MYSQL_ROOT_PASSWORD"
+            printf '%s\n' 'CASE_BUILDER_TASK_TIMEOUT_MS=1200000' 'CASE_BUILDER_MAX_CONCURRENT=1' 'CASE_BUILDER_MAX_LOG_BYTES=65536' 'CASE_BUILDER_MAX_REQUEST_BYTES=2097152' 'CASE_BUILDER_MAX_RUNTIME_IMAGE_BYTES=4294967296' 'CASE_BUILDER_TASK_MEMORY=4g' 'CASE_BUILDER_TASK_CPUS=2' 'CASE_BUILDER_TASK_PIDS=512' 'CASE_BUILDER_MYSQL_MEMORY=1024m' 'CASE_BUILDER_MYSQL_CPUS=1' 'CASE_BUILDER_MYSQL_PIDS=256' 'CASE_BUILDER_MYSQL_RUNTIME_LEASE_MS=1200000' 'CASE_BUILDER_MYSQL_EXECUTION_TIMEOUT_MS=10000'
+          } | ssh -p "$DEPLOY_PORT" "$DEPLOY_USER@$DEPLOY_HOST" "sudo -n install -d -m 0755 /home/ubuntu/knowing-doing-data && sudo -n install -o root -g root -m 0600 /dev/stdin /home/ubuntu/knowing-doing-data/case-builder-agent.env"
       - name: Upload release source
         if: env.DEPLOY_SSH_KEY != ''
         env:

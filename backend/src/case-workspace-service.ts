@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto'
 import type Database from 'better-sqlite3'
 import { getWorkspaceCapability } from './capability-registry.js'
-import { getEnvironmentTemplate } from './environment-registry.js'
+import { getEnvironmentTemplate, resolveEnvironmentCommand } from './environment-registry.js'
 import { MAX_WORKSPACE_FILE_BYTES, MAX_WORKSPACE_TOTAL_BYTES, parseCaseRequest, parseCaseSpec } from './case-schemas.js'
 import { CaseBuilderError, type CaseBuilderAttemptEvent, type CaseBuilderAttemptPhase, type CaseBuilderContext, type CaseBuilderProvider } from './case-builder.js'
 import { CasePreflightError, CasePreflightService } from './case-preflight-service.js'
@@ -13,8 +13,11 @@ import { DockerWorkspaceRuntimeAdapter, type RuntimeAdapter } from './runtime-ad
 import { WorkspaceRunnerError } from './workspace-runner-client.js'
 import { getEnvironmentInterpreter } from './environment-interpreters.js'
 import { MAX_SOURCE_INJECT_CHARS, SourceSnapshotService } from './case-source-snapshot.js'
+import type { EnvironmentRuntimeReferenceProvider } from './environment-runtime-reference.js'
+import type { EnvironmentBuildManifest } from './environment-build.js'
 
 type Row = Record<string, unknown>
+type GymBuildLink = { gymBuildJobId: string; planId: string; planUnitId: string }
 
 function text(row: Row, key: string): string { return String(row[key]) }
 function nullable(row: Row, key: string): string | null { return row[key] == null ? null : String(row[key]) }
@@ -79,7 +82,7 @@ export class CaseWorkspaceService {
   private readonly runner: RuntimeAdapter
   private readonly preflight: CasePreflightService
 
-  constructor(private readonly repository: ProductRepository, private readonly builder: CaseBuilderProvider, runner: RuntimeAdapter | WorkspaceRunnerClient, private readonly completionService?: { completionForWorkspace(learnerId: string, workspaceRunId: string): WorkspaceCompletion | null; evaluateExecution(learnerId: string, workspaceRunId: string, executionId: string): WorkspaceCompletion | null; recheck(learnerId: string, workspaceRunId: string): WorkspaceCompletion | null }, preflight?: CasePreflightService, private readonly sourceSnapshots?: SourceSnapshotService) {
+  constructor(private readonly repository: ProductRepository, private readonly builder: CaseBuilderProvider, runner: RuntimeAdapter | WorkspaceRunnerClient, private readonly completionService?: { completionForWorkspace(learnerId: string, workspaceRunId: string): WorkspaceCompletion | null; evaluateExecution(learnerId: string, workspaceRunId: string, executionId: string): WorkspaceCompletion | null; recheck(learnerId: string, workspaceRunId: string): WorkspaceCompletion | null }, preflight?: CasePreflightService, private readonly sourceSnapshots?: SourceSnapshotService, private readonly environmentReferences?: EnvironmentRuntimeReferenceProvider) {
     this.runner = 'provision' in runner ? runner : new DockerWorkspaceRuntimeAdapter(runner)
     this.preflight = preflight ?? new CasePreflightService(repository, this.runner)
   }
@@ -137,7 +140,7 @@ export class CaseWorkspaceService {
       return { workspace, practice, case: learningCase, environment: { key: environment.key, version: environment.version, runtimeKind: environment.runtimeKind, displayName: environment.displayName, services: environment.services, resourceProfile: environment.resourceProfile }, files, executions, completion: this.completionService?.completionForWorkspace(text(row, 'learner_id'), workspace.id) ?? null }
   }
 
-  createCaseRequest(learnerId: string, input: unknown): { case: LearningCase; job: CaseGenerationJob } {
+  createCaseRequest(learnerId: string, input: unknown, options: { gymBuildLink?: GymBuildLink } = {}): { case: LearningCase; job: CaseGenerationJob } {
     this.repository.ensureLearner(learnerId)
     let request: CaseRequest
     try { request = parseCaseRequest(input) } catch (error) { throw new LabError('invalid_case_request', error instanceof Error ? error.message : '案例请求无效', 400) }
@@ -160,21 +163,37 @@ export class CaseWorkspaceService {
     const fingerprint = checksum(stableJson({ roadmapNodeId: request.roadmapNodeId, input: inputSnapshot, capabilityKey: capability.capabilityKey, environmentKey: environment.key, environmentVersion: environment.version }))
     const now = new Date().toISOString()
     const persist = this.db.transaction(() => {
+      const linkGymBuild = (caseId: string, jobId: string): void => {
+        const link = options.gymBuildLink
+        if (!link) return
+        const linkedUnit = this.db.prepare("UPDATE plan_units SET learning_case_id = ? WHERE id = ? AND plan_id = ? AND status = 'current' AND (learning_case_id IS NULL OR learning_case_id = ?)").run(caseId, link.planUnitId, link.planId, caseId)
+        if (linkedUnit.changes === 0) throw new LabError('current_plan_unit_changed', '当前学习单元已切换，不能关联新的 Gym 案例', 409)
+        const linkedBuild = this.db.prepare("UPDATE gym_build_jobs SET learning_case_id = ?, case_generation_job_id = ?, updated_at = ? WHERE id = ? AND learner_id = ? AND status IN ('queued', 'running', 'failed') AND (learning_case_id IS NULL OR learning_case_id = ?)").run(caseId, jobId, now, link.gymBuildJobId, learnerId, caseId)
+        if (linkedBuild.changes === 0) throw new LabError('gym_build_link_unavailable', 'Gym 构建任务已不允许关联案例', 409)
+      }
       const requestJob = this.db.prepare('SELECT * FROM case_generation_jobs WHERE learner_id = ? AND client_request_id = ?').get(learnerId, request.clientRequestId) as Row | undefined
       if (requestJob) {
         if (text(requestJob, 'input_fingerprint') !== fingerprint) throw new LabError('idempotency_conflict', 'clientRequestId 已对应另一份案例请求', 409)
-        return { caseId: text(requestJob, 'learning_case_id'), jobId: text(requestJob, 'id'), created: false }
+        const result = { caseId: text(requestJob, 'learning_case_id'), jobId: text(requestJob, 'id'), created: false }
+        linkGymBuild(result.caseId, result.jobId)
+        return result
       }
       const existingCase = this.db.prepare('SELECT id FROM learning_cases WHERE learner_id = ? AND input_fingerprint = ?').get(learnerId, fingerprint) as Row | undefined
       const caseId = existingCase ? text(existingCase, 'id') : randomUUID()
       if (!existingCase) this.db.prepare(`INSERT INTO learning_cases(id, learner_id, roadmap_node_id, capability_key, template_key, environment_key, environment_version, runtime_kind, input_kind, input_snapshot_json, input_fingerprint, provider, version, status, case_spec_json, created_at, updated_at)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 'generating', '{}', ?, ?)`).run(caseId, learnerId, request.roadmapNodeId, capability.capabilityKey, capability.templateKey, environment.key, environment.version, environment.runtimeKind, request.input.kind, JSON.stringify(frozenSnapshot), fingerprint, this.builder.providerName, now, now)
       const existingCaseJob = this.db.prepare('SELECT id FROM case_generation_jobs WHERE learner_id = ? AND learning_case_id = ? AND input_fingerprint = ? ORDER BY created_at ASC LIMIT 1').get(learnerId, caseId, fingerprint) as Row | undefined
-      if (existingCaseJob) return { caseId, jobId: text(existingCaseJob, 'id'), created: false }
+      if (existingCaseJob) {
+        const result = { caseId, jobId: text(existingCaseJob, 'id'), created: false }
+        linkGymBuild(result.caseId, result.jobId)
+        return result
+      }
       const jobId = randomUUID(); const jobStatus = request.input.kind === 'zhihu_article' ? 'preparing_source' : 'queued'
       this.db.prepare(`INSERT INTO case_generation_jobs(id, learner_id, learning_case_id, client_request_id, input_fingerprint, provider, status, attempt_count, created_at, updated_at)
         VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?)`).run(jobId, learnerId, caseId, request.clientRequestId, fingerprint, this.builder.providerName, jobStatus, now, now)
-      return { caseId, jobId, created: true }
+      const result = { caseId, jobId, created: true }
+      linkGymBuild(result.caseId, result.jobId)
+      return result
     })
     let persisted: { caseId: string; jobId: string; created: boolean }
     try {
@@ -185,6 +204,19 @@ export class CaseWorkspaceService {
         FROM case_generation_jobs j WHERE j.learner_id = ? AND j.input_fingerprint = ? ORDER BY j.created_at ASC LIMIT 1`).get(learnerId, fingerprint) as Row | undefined
       if (!existing) throw error
       persisted = { caseId: text(existing, 'case_id'), jobId: text(existing, 'job_id'), created: false }
+    }
+    // A unique-key race can discover a case created by another worker after
+    // our transaction rolled back. Reattach the current Gym job atomically so
+    // it never loses the durable case/job trace.
+    if (options.gymBuildLink) {
+      const link = options.gymBuildLink
+      const linked = this.db.transaction(() => {
+        const unit = this.db.prepare("UPDATE plan_units SET learning_case_id = ? WHERE id = ? AND plan_id = ? AND status = 'current' AND (learning_case_id IS NULL OR learning_case_id = ?)").run(persisted.caseId, link.planUnitId, link.planId, persisted.caseId)
+        if (unit.changes === 0) throw new LabError('current_plan_unit_changed', '当前学习单元已切换，不能关联新的 Gym 案例', 409)
+        const build = this.db.prepare("UPDATE gym_build_jobs SET learning_case_id = ?, case_generation_job_id = ?, updated_at = ? WHERE id = ? AND learner_id = ? AND status IN ('queued', 'running', 'failed') AND (learning_case_id IS NULL OR learning_case_id = ?)").run(persisted.caseId, persisted.jobId, new Date().toISOString(), link.gymBuildJobId, learnerId, persisted.caseId)
+        if (build.changes === 0) throw new LabError('gym_build_link_unavailable', 'Gym 构建任务已不允许关联案例', 409)
+      })
+      linked()
     }
     const job = this.jobForLearner(learnerId, persisted.jobId); const savedCase = this.caseForLearner(learnerId, persisted.caseId)
     if (persisted.created && request.input.kind === 'zhihu_article') void this.prepareArticleSource(learnerId, persisted.jobId, request.input.sourceItemId!).catch((error) => { console.error('[zhixing-case] source_prepare_unhandled', { jobId: persisted.jobId, error: error instanceof Error ? error.message : String(error) }) })
@@ -377,7 +409,10 @@ export class CaseWorkspaceService {
           VALUES (?, ?, ?, ?, ?, 'provisioning', 1, ?, ?)`).run(workspaceId, learnerId, practiceId, caseId, item.templateKey, now, now)
       })()
       try {
-        const runner = await this.runner.provision({ environmentKey: item.environmentKey ?? item.templateKey, environmentVersion: item.environmentVersion ?? '1', files: item.spec.starterFiles, commands: [...item.spec.verification.commands, ...item.spec.tasks.flatMap((task) => task.recommendedCommands)] })
+        const environmentKey = item.environmentKey ?? item.templateKey
+        const environmentVersion = item.environmentVersion ?? '1'
+        const environmentRef = this.environmentReferences?.referenceForCase({ learnerId, learningCaseId: caseId, runtimeKind: 'docker_workspace', environmentKey, environmentVersion }) ?? undefined
+        const runner = await this.runner.provision({ environmentKey, environmentVersion, files: item.spec.starterFiles, commands: [...item.spec.verification.commands, ...item.spec.tasks.flatMap((task) => task.recommendedCommands)], environmentRef })
         const activatedAt = new Date().toISOString(); this.db.transaction(() => {
           this.db.prepare("UPDATE workspace_runs SET runner_run_id = ?, status = 'active', lease_expires_at = ?, last_heartbeat_at = ?, updated_at = ? WHERE id = ? AND status = 'provisioning'").run(runner.runnerRunId, runner.leaseExpiresAt, activatedAt, activatedAt, workspaceId)
           const insertFile = this.db.prepare(`INSERT INTO workspace_files(id, workspace_run_id, path, content, checksum, revision, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 1, ?, ?)`)
@@ -392,6 +427,53 @@ export class CaseWorkspaceService {
       }
       return this.getWorkspace(learnerId, workspaceId)
     })
+  }
+
+  /**
+   * Replays a Builder-produced Python environment without exposing its image,
+   * manifest, reference solution, or Runner credentials to the product API.
+   * A starter workspace must fail and the private reference workspace must
+   * pass; this prevents an Agent success event from making a Gym ready.
+   */
+  async verifyBoundEnvironment(learnerId: string, learningCaseId: string, manifest: EnvironmentBuildManifest): Promise<void> {
+    if (manifest.runtimeKind !== 'docker_workspace') throw new LabError('runtime_dispatch_mismatch', '非 Python 环境不能进入 Workspace 预检', 409)
+    const item = this.caseForLearner(learnerId, learningCaseId)
+    if (!item.spec || item.status !== 'ready' || (item.environmentKey ?? item.templateKey) !== manifest.environment.key || (item.environmentVersion ?? '1') !== manifest.environment.version) throw new WorkspaceRunnerError('environment_case_manifest_mismatch', '学习案例与已构建 Python 环境不匹配', false)
+    const referenceRow = this.db.prepare('SELECT reference_solution_json FROM learning_cases WHERE id = ? AND learner_id = ?').get(learningCaseId, learnerId) as Row | undefined
+    const referenceSolution = referenceRow ? json<{ files?: RunnerFileInput[]; verificationCommands?: string[] }>(referenceRow.reference_solution_json, {}) : {}
+    if (!Array.isArray(referenceSolution.files) || referenceSolution.files.length === 0) throw new WorkspaceRunnerError('environment_reference_assets_missing', '已构建 Python 环境缺少私有参考修复', false)
+    const environmentRef = this.environmentReferences?.referenceForCase({
+      learnerId,
+      learningCaseId,
+      runtimeKind: 'docker_workspace',
+      environmentKey: manifest.environment.key,
+      environmentVersion: manifest.environment.version,
+    })
+    if (!environmentRef) throw new WorkspaceRunnerError('environment_reference_unavailable', '已构建环境缺少服务端签名引用', false)
+    const commands = [...new Set(manifest.verification.commandKeys.map((key) => resolveEnvironmentCommand(manifest.environment.key, manifest.environment.version, key)))]
+    if (commands.length === 0 || commands.some((command): command is null => command === null) || JSON.stringify(commands) !== JSON.stringify(item.spec.verification.commands)) throw new WorkspaceRunnerError('environment_verification_command_invalid', '环境清单与学习案例的验证命令不一致', false)
+    const verifiedCommands = commands as string[]
+    let runnerRunId: string | null = null
+    try {
+      const runner = await this.runner.provision({
+        environmentKey: manifest.environment.key,
+        environmentVersion: manifest.environment.version,
+        files: item.spec.starterFiles,
+        commands: verifiedCommands,
+        environmentRef,
+      })
+      runnerRunId = runner.runnerRunId
+      const starter = await Promise.all(verifiedCommands.map((command, index) => this.runner.execute(runnerRunId!, command, `environment-preflight:starter:${learningCaseId}:${index}:${randomUUID()}`)))
+      if (starter.every((result) => result.status === 'succeeded' && result.exitCode === 0)) throw new WorkspaceRunnerError('environment_starter_did_not_fail', '构建环境的 starter 版本没有产生预期失败', false)
+      const referenceByPath = new Map(item.spec.starterFiles.map((file) => [file.path, file]))
+      for (const file of referenceSolution.files) referenceByPath.set(file.path, file)
+      await this.runner.reset(runnerRunId, [...referenceByPath.values()])
+      const reference = await Promise.all(verifiedCommands.map((command, index) => this.runner.execute(runnerRunId!, command, `environment-preflight:reference:${learningCaseId}:${index}:${randomUUID()}`)))
+      const output = reference.map((result) => `${result.stdout}\n${result.stderr}`).join('\n')
+      if (reference.some((result) => result.status !== 'succeeded' || result.exitCode !== 0) || item.spec.verification.successSignals.some((signal) => !output.includes(signal))) throw new WorkspaceRunnerError('environment_reference_preflight_failed', '构建环境的私有参考解没有通过独立预检', false)
+    } finally {
+      if (runnerRunId) await this.runner.end(runnerRunId).catch(() => undefined)
+    }
   }
 
   getWorkspace(learnerId: string, workspaceId: string): WorkspaceSummary { return this.summaryFrom(this.workspaceRow(learnerId, workspaceId)) }

@@ -2,7 +2,7 @@ import { ApiError, apiClient } from './client'
 import type { LabExecutionResult, LabRun } from '@/types/lab'
 import type { ProductArtifact, ProductLabAccess, ProductLabExecution, ProductMemory, ProductPlan, ProductPracticeCompletion, ProductPracticeHistoryPage, ProductPracticePin, ProductPracticeRun, ProductPracticeStart, ProductSnapshot, ProductTutorResponse, ProductTutorStreamEvent, ProductWritingBlockEvidence, ProductWritingCluster, ProductWritingClusterDetail, ProductWritingClusterOverview, ProductWritingDraftRun, ProductWritingGenerationJob, ProductWritingProject, ProductWritingDocument, ProductWritingWorkspace } from '@/types/product'
 import { createClientId } from '@/utils/client-id'
-import type { ProductDynamicPracticeRuntime, ProductGymBuildView, ProductWorkspaceSummary } from '@/types/product'
+import type { ProductDynamicPracticeRuntime, ProductGymBuildEventsPage, ProductGymBuildView, ProductWorkspaceSummary } from '@/types/product'
 
 const learnerStorageKey = 'zhixing.learner.id'
 function learnerId(): string {
@@ -22,6 +22,7 @@ export function startPlannedProductPractice(planId: string, planUnitId: string):
 export function getDynamicPracticeRuntime(practiceRunId: string): Promise<ProductDynamicPracticeRuntime> { return product(`/practice-runs/${encodeURIComponent(practiceRunId)}/runtime`) }
 export function createGymBuild(planId: string, planUnitId: string, clientRequestId = createClientId()): Promise<ProductGymBuildView> { return product(`/plans/${encodeURIComponent(planId)}/units/${encodeURIComponent(planUnitId)}/gym-builds`, { method: 'POST', body: JSON.stringify({ clientRequestId }) }) }
 export function getGymBuild(id: string): Promise<ProductGymBuildView> { return product(`/gym-builds/${encodeURIComponent(id)}`) }
+export function getGymBuildEvents(id: string, afterSequence = 0): Promise<ProductGymBuildEventsPage> { return product(`/gym-builds/${encodeURIComponent(id)}/events?afterSequence=${afterSequence}`) }
 export function retryGymBuild(id: string): Promise<ProductGymBuildView> { return product(`/gym-builds/${encodeURIComponent(id)}/retry`, { method: 'POST' }) }
 export function startGymBuild(id: string): Promise<({ kind: 'mysql_lab' } & ProductPracticeStart) | { kind: 'docker_workspace'; workspace: ProductWorkspaceSummary }> { return product(`/gym-builds/${encodeURIComponent(id)}/start`, { method: 'POST' }) }
 export function getProductSnapshot(runId: string): Promise<ProductSnapshot> { return product(`/practice-runs/${runId}`) }

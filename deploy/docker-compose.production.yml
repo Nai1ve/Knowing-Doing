@@ -37,6 +37,36 @@ services:
       timeout: 3s
       retries: 20
 
+  case-builder-agent:
+    build:
+      context: ../case-builder-agent
+      dockerfile: Dockerfile
+    container_name: zhixing-case-builder-agent
+    restart: unless-stopped
+    env_file:
+      - /home/ubuntu/knowing-doing-data/case-builder-agent.env
+    environment:
+      CASE_BUILDER_PORT: 3102
+      CASE_BUILDER_BIND_HOST: 0.0.0.0
+      CASE_BUILDER_STATE_DIR: /var/lib/case-builder-agent
+      CASE_BUILDER_DOCKER_SOCKET_ENABLED: "true"
+      CASE_BUILDER_SIMULATED: "false"
+      CASE_BUILDER_MAX_REPAIR_ROUNDS: 3
+      CASE_BUILDER_MAX_CONCURRENT: 1
+      CASE_BUILDER_FAILURE_RETENTION_HOURS: 24
+    ports:
+      - "127.0.0.1:3102:3102"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - zhixing-case-builder-state:/var/lib/case-builder-agent
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3102/health').then((r) => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
 volumes:
   zhixing-lab-mysql-data:
     name: zhixing-lab-mysql-data
+  zhixing-case-builder-state:
+    name: zhixing-case-builder-state

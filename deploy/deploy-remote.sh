@@ -64,7 +64,12 @@ else
   echo "Docker Compose is not installed" >&2
   exit 1
 fi
-"${compose[@]}" up -d --build workspace-runner
+if grep -q '^CASE_BUILDER_ENABLED=true$' /etc/knowing-doing/backend.env; then
+  "${compose[@]}" up -d --build workspace-runner case-builder-agent
+else
+  "${compose[@]}" stop case-builder-agent >/dev/null 2>&1 || true
+  "${compose[@]}" up -d --build workspace-runner
+fi
 
 ln -sfn "$release_dir" "$current_link"
 

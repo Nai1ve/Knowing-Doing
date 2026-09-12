@@ -14,7 +14,7 @@ import { PlanningService } from './planning.js'
 import { AgentPlanningService, PlanningAgentError, type PlanningStreamEvent } from './agent-planning.js'
 import { CaseWorkspaceService } from './case-workspace-service.js'
 import { MySqlDynamicCaseService } from './mysql-dynamic-case-service.js'
-import { GymBuildService } from './gym-build-service.js'
+import { EnvironmentBuildOrchestrator } from './gym-build-service.js'
 
 type Body = Record<string, unknown>
 
@@ -50,7 +50,7 @@ export interface AppDependencies {
   agentPlanningServiceFactory?: () => AgentPlanningService
   caseWorkspaceServiceFactory?: () => CaseWorkspaceService
   mysqlDynamicCaseServiceFactory?: (scheduler: LabScheduler) => MySqlDynamicCaseService
-  gymBuildServiceFactory?: (workspace: CaseWorkspaceService, mysql: MySqlDynamicCaseService) => GymBuildService
+  gymBuildServiceFactory?: (workspace: CaseWorkspaceService, mysql: MySqlDynamicCaseService) => EnvironmentBuildOrchestrator
   runtimeStatus?: () => Promise<Record<string, unknown>>
 }
 
@@ -218,13 +218,19 @@ function registerCaseWorkspaceRoutes(app: FastifyInstance, service: CaseWorkspac
   app.post('/api/product/workspace-runs/:workspaceRunId/end', async (request, reply) => reply.send(await service.end(learnerId(request), workspaceId(request))))
 }
 
-function registerGymBuildRoutes(app: FastifyInstance, service: GymBuildService): void {
+function registerGymBuildRoutes(app: FastifyInstance, service: EnvironmentBuildOrchestrator): void {
   app.post('/api/product/plans/:planId/units/:planUnitId/gym-builds', async (request, reply) => {
     const params = request.params as { planId: string; planUnitId: string }
     const body = productBody(request)
     reply.code(202).send(service.create(learnerId(request), params.planId, params.planUnitId, optionalString(body, 'clientRequestId') ?? randomUUID()))
   })
   app.get('/api/product/gym-builds/:id', async (request, reply) => reply.send(service.get(learnerId(request), String((request.params as { id: string }).id))))
+  app.get('/api/product/gym-builds/:id/events', async (request, reply) => {
+    const query = request.query as { afterSequence?: string }
+    const afterSequence = query.afterSequence == null ? 0 : Number(query.afterSequence)
+    if (!Number.isInteger(afterSequence) || afterSequence < 0) throw new LabError('invalid_request', 'afterSequence 必须是非负整数', 400)
+    reply.send(service.events(learnerId(request), String((request.params as { id: string }).id), afterSequence))
+  })
   app.post('/api/product/gym-builds/:id/retry', async (request, reply) => reply.code(202).send(service.retry(learnerId(request), String((request.params as { id: string }).id))))
   app.post('/api/product/gym-builds/:id/start', async (request, reply) => {
     const result = await service.start(learnerId(request), String((request.params as { id: string }).id))
