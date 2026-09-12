@@ -17,6 +17,9 @@ if [ ! -f "$release_dir/backend/package.json" ]; then
     rm -rf -- "$staging_dir"
     mkdir -p "$staging_dir"
     tar -xzf "$archive_path" -C "$staging_dir"
+    if [ -e "$release_dir" ] || [ -L "$release_dir" ]; then
+      rm -rf -- "$release_dir"
+    fi
     mv "$staging_dir" "$release_dir"
   elif [ -d "$repo_root/.git" ]; then
     git -C "$repo_root" fetch --quiet origin main
