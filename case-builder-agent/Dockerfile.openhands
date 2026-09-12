@@ -10,10 +10,6 @@ RUN apt-get update \
   && /app/.venv/bin/pip install --no-cache-dir pytest==8.4.1 \
   && rm -rf /var/lib/apt/lists/*
 
-RUN apt-get update \
-  && apt-get install -y --no-install-recommends docker-cli \
-  && rm -rf /var/lib/apt/lists/*
-
 WORKDIR /workspace
 
 COPY openhands-build.py /usr/local/bin/zhixing-openhands-build.py
