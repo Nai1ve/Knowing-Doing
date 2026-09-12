@@ -1,6 +1,6 @@
 # The deployment host builds this extension image once from a digest-pinned
 # OpenHands base. GitHub Actions deploys the product services around it.
-ARG OPENHANDS_BASE_IMAGE=ghcr.io/openhands/openhands@sha256:392743af9edb3e6b407f57a64815006859d2feb9178ff1a3404c69e17c0f749f
+ARG OPENHANDS_BASE_IMAGE=docker.openhands.dev/openhands/openhands@sha256:03b8978743d4597d99d85385b5fa258e8dba8d360b30a7416182d7fa82c1e89c
 FROM ${OPENHANDS_BASE_IMAGE}
 
 USER root

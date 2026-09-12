@@ -6,7 +6,7 @@ repo_root="${ZHIXING_REPO_ROOT:-/home/ubuntu/knowing-doing-repo}"
 repo_url="${ZHIXING_REPO_URL:-https://github.com/Nai1ve/Knowing-Doing.git}"
 data_root="${ZHIXING_DATA_ROOT:-/home/ubuntu/knowing-doing-data}"
 commit="${1:-}"
-base_image="${CASE_BUILDER_OPENHANDS_BASE_IMAGE:-ghcr.io/openhands/openhands@sha256:392743af9edb3e6b407f57a64815006859d2feb9178ff1a3404c69e17c0f749f}"
+base_image="${CASE_BUILDER_OPENHANDS_BASE_IMAGE:-docker.openhands.dev/openhands/openhands@sha256:03b8978743d4597d99d85385b5fa258e8dba8d360b30a7416182d7fa82c1e89c}"
 image_tag="${CASE_BUILDER_OPENHANDS_LOCAL_TAG:-zhixing-openhands-local:current}"
 case_builder_env_file="$data_root/case-builder-agent.env"
 
