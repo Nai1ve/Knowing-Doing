@@ -77,7 +77,6 @@ jobs:
           node-version: 22.x
       - run: node --check case-builder-agent/src/server.mjs
       - run: test -f case-builder-agent/Dockerfile.openhands && bash -n deploy/run-case-builder-smoke.sh
-      - run: docker build --tag zhixing-case-builder-agent:ci case-builder-agent
 
   deploy:
     name: Deploy to server

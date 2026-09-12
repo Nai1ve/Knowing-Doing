@@ -1,4 +1,5 @@
-FROM node:22-bookworm-slim
+ARG NODE_BASE_IMAGE=node:22-bookworm-slim
+FROM ${NODE_BASE_IMAGE}
 
 RUN apt-get update \
   && apt-get install -y --no-install-recommends docker.io docker-compose default-mysql-client python3 python3-pip ca-certificates \

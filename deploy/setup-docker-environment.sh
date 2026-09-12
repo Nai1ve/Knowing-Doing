@@ -38,21 +38,49 @@ mkdir -p "$build_root"
 git -C "$repo_root" archive "$commit" | tar -x -C "$build_root"
 trap 'rm -rf -- "$build_root"' EXIT
 
+go_version="${WORKSPACE_GO_VERSION:-1.24.6}"
+go_tarball="go${go_version}.linux-amd64.tar.gz"
+go_tarball_path="$build_root/deploy/$go_tarball"
+if [ ! -f "$go_tarball_path" ]; then
+  echo "Downloading Go $go_version for the server-managed Go runtime"
+  curl --fail --location --retry 3 --connect-timeout 10 --max-time 300 \
+    "https://go.dev/dl/$go_tarball" --output "$go_tarball_path"
+fi
+
+if ! docker image inspect zhixing-openhands-local:current --format '{{.Id}}' >/dev/null 2>&1; then
+  echo 'Missing zhixing-openhands-local:current; run deploy/setup-case-builder-agent.sh first.' >&2
+  exit 1
+fi
+
+echo 'Building server-managed Python runtime image'
+docker build --tag zhixing-python-pytest-v1:local \
+  --file "$build_root/deploy/Dockerfile.python-runtime" "$build_root/deploy"
+
+echo 'Building server-managed Go runtime image'
+docker build --tag zhixing-go-test-v1:local \
+  --build-arg "GO_TARBALL=$go_tarball" \
+  --file "$build_root/deploy/Dockerfile.go-runtime" "$build_root/deploy"
+
+echo 'Building server-managed Node runtime image'
+docker build --tag zhixing-node-runtime:server \
+  --file "$build_root/deploy/Dockerfile.node-runtime" "$build_root/deploy"
+
 echo "Building server-managed Workspace Runner assets from $commit"
 (
   cd "$build_root/workspace-runner"
   npm ci --ignore-scripts
   npm run build
-  WORKSPACE_PYTHON_IMAGE=zhixing-python-pytest-v1:local \
-    WORKSPACE_GO_IMAGE=zhixing-go-test-v1:local \
-    ./build-template.sh
 )
 
 echo 'Building server-managed Workspace Runner service image'
-docker build --tag zhixing-workspace-runner:server "$build_root/workspace-runner"
+docker build --tag zhixing-workspace-runner:server \
+  --build-arg NODE_BASE_IMAGE=zhixing-node-runtime:server \
+  "$build_root/workspace-runner"
 
 echo 'Building server-managed Case Builder wrapper image'
-docker build --tag zhixing-case-builder-agent:server "$build_root/case-builder-agent"
+docker build --tag zhixing-case-builder-agent:server \
+  --build-arg NODE_BASE_IMAGE=zhixing-node-runtime:server \
+  "$build_root/case-builder-agent"
 
 for image in zhixing-python-pytest-v1:local zhixing-go-test-v1:local zhixing-workspace-runner:server zhixing-case-builder-agent:server; do
   docker image inspect "$image" --format '{{.Id}}' >/dev/null

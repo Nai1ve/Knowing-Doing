@@ -1,0 +1,18 @@
+ARG GO_TARBALL
+FROM zhixing-openhands-local:current
+
+USER root
+ARG GO_TARBALL
+COPY ${GO_TARBALL} /tmp/go.tar.gz
+RUN tar -C /usr/local -xzf /tmp/go.tar.gz \
+  && rm -f /tmp/go.tar.gz
+
+ENV PATH="/usr/local/go/bin:${PATH}" \
+    GOPROXY=off \
+    GOSUMDB=off \
+    CGO_ENABLED=0 \
+    GOCACHE=/workspace/.go-cache \
+    GOMODCACHE=/workspace/.go-mod \
+    GOPATH=/workspace/.go \
+    GOTMPDIR=/workspace/.go-tmp
+WORKDIR /workspace
