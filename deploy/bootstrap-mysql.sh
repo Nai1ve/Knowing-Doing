@@ -42,7 +42,12 @@ for attempt in $(seq 1 60); do
 done
 
 # Migration and import are explicit deployment operations; the API never runs DDL.
-docker exec -i -e MYSQL_PWD="$MYSQL_ROOT_PASSWORD" zhixing-lab-mysql mysql -uroot < "$app_root/backend/migrations/001_zhixing_lab_schema.sql"
+# Older releases carried a fixed Lab schema migration. Current releases create
+# learner-owned schemas through the dynamic case flow, so only apply that file
+# when it is present in the selected release.
+if [ -f "$app_root/backend/migrations/001_zhixing_lab_schema.sql" ]; then
+  docker exec -i -e MYSQL_PWD="$MYSQL_ROOT_PASSWORD" zhixing-lab-mysql mysql -uroot < "$app_root/backend/migrations/001_zhixing_lab_schema.sql"
+fi
 docker exec -i -e MYSQL_PWD="$MYSQL_ROOT_PASSWORD" zhixing-lab-mysql mysql -uroot < "$dump_file"
 
 docker exec -e MYSQL_PWD="$MYSQL_ROOT_PASSWORD" zhixing-lab-mysql mysql -uroot -e "

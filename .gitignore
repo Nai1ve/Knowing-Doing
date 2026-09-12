@@ -2,3 +2,6 @@
 /dist/
 .codegraph/
 .idea/
+.env
+.env.*
+!.env.example

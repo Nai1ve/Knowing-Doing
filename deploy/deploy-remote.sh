@@ -7,14 +7,30 @@ release_root="${ZHIXING_RELEASE_ROOT:-/home/ubuntu/knowing-doing-releases}"
 current_link="${ZHIXING_APP_ROOT:-/home/ubuntu/knowing-doing-current}"
 data_root="${ZHIXING_DATA_ROOT:-/home/ubuntu/knowing-doing-data}"
 release_dir="$release_root/$commit"
+archive_path="${ZHIXING_RELEASE_ARCHIVE:-}"
 
 mkdir -p "$release_root" "$data_root"
-git -C "$repo_root" fetch --quiet origin main
-git -C "$repo_root" cat-file -e "$commit^{commit}"
 
-if [ ! -d "$release_dir" ]; then
-  mkdir -p "$release_dir"
-  git -C "$repo_root" archive "$commit" | tar -x -C "$release_dir"
+if [ ! -f "$release_dir/backend/package.json" ]; then
+  if [ -n "$archive_path" ]; then
+    staging_dir="$release_root/.incoming-$commit"
+    rm -rf -- "$staging_dir"
+    mkdir -p "$staging_dir"
+    tar -xzf "$archive_path" -C "$staging_dir"
+    mv "$staging_dir" "$release_dir"
+  elif [ -d "$repo_root/.git" ]; then
+    git -C "$repo_root" fetch --quiet origin main
+    git -C "$repo_root" cat-file -e "$commit^{commit}"
+    mkdir -p "$release_dir"
+    git -C "$repo_root" archive "$commit" | tar -x -C "$release_dir"
+  else
+    echo "No release archive and no Git repository available at $repo_root" >&2
+    exit 1
+  fi
+fi
+
+if [ -n "$archive_path" ]; then
+  rm -f -- "$archive_path"
 fi
 
 cd "$release_dir/backend"
@@ -37,7 +53,15 @@ cd "$release_dir/backend"
 NODE_ENV=production ZHIXING_PRODUCT_DB_PATH="$data_root/zhixing-product.db" npm run db:migrate
 
 cd "$release_dir/deploy"
-docker compose -f docker-compose.production.yml up -d --build workspace-runner
+if docker compose version >/dev/null 2>&1; then
+  compose=(docker compose -f docker-compose.production.yml)
+elif command -v docker-compose >/dev/null 2>&1; then
+  compose=(docker-compose -f docker-compose.production.yml)
+else
+  echo "Docker Compose is not installed" >&2
+  exit 1
+fi
+"${compose[@]}" up -d --build workspace-runner
 
 ln -sfn "$release_dir" "$current_link"
 

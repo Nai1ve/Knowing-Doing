@@ -16,14 +16,22 @@ Configure these repository secrets before expecting a push to restart the server
 server user's `~/.ssh/authorized_keys`.
 
 Runtime secrets are installed by the workflow into `/etc/knowing-doing/backend.env`
-with mode `0600`. Configure the names listed in
-`deploy/github-actions-secrets.example`, especially `LAB_TOKEN_SECRET`,
-`ZHIXING_MODEL_API_KEY`, and `ZHIXING_MODEL_NAME`. The workflow does not print or
-commit these values. The model and Zhihu keys are never written to the repository.
+with mode `0600`. The required runtime secrets are `LAB_TOKEN_SECRET`,
+`WORKSPACE_RUNNER_TOKEN`, `LAB_MYSQL_RUNNER_PASSWORD`,
+`LAB_MYSQL_ADMIN_PASSWORD`, and `ZHIXING_MODEL_API_KEY`. The optional model
+defaults are `ZHIXING_MODEL_BASE_URL=https://api.deepseek.com` and
+`ZHIXING_MODEL_NAME=deepseek-flash`.
 
-The workflow tests both packages on every pull request and push. A push to `main`
-then fetches that commit on the server, builds a new release, runs the explicit
-SQLite migration command, switches the release symlink, and restarts the service.
+The server-side `ubuntu` account must have passwordless `sudo` for the deployment
+commands and access to the Docker socket. The workflow does not print or commit
+runtime values. Model and Zhihu keys are never written to the repository.
+
+The workflow tests the frontend, backend, and workspace-runner packages on every
+pull request and push. A push to `main`
+then uploads that exact commit, builds a new immutable release on the server,
+runs the explicit SQLite migration command, switches the release symlink, and
+restarts the service. The server no longer needs to fetch the repository from
+GitHub.
 
 ## One-time data setup
 
