@@ -11,6 +11,7 @@ data_root="${ZHIXING_DATA_ROOT:-/home/ubuntu/knowing-doing-data}"
 release_dir="$release_root/$commit"
 archive_path="${ZHIXING_RELEASE_ARCHIVE:-}"
 case_builder_env_file="$data_root/case-builder-agent.env"
+commit_archive_path="$release_root/.incoming-$commit.tar.gz"
 
 # A first-time manual clone may leave the repository one level below the
 # configured root when that root already exists. Reuse that checkout instead
@@ -31,14 +32,65 @@ read_env_value() {
 
 fetch_main() {
   local attempt
+  local fetch_timeout="${ZHIXING_GIT_FETCH_TIMEOUT_SECONDS:-20}"
   for attempt in 1 2 3; do
-    if git -C "$repo_root" fetch --quiet origin main; then
+    if timeout "$fetch_timeout" git -C "$repo_root" \
+      -c http.lowSpeedLimit=1 \
+      -c http.lowSpeedTime=10 \
+      fetch --quiet origin main; then
       return 0
     fi
     sleep "$((attempt * 2))"
   done
   echo "Unable to fetch main from $repo_url after 3 attempts" >&2
   return 1
+}
+
+fetch_commit_archive() {
+  local attempt
+  local fetch_timeout="${ZHIXING_CODELOAD_TIMEOUT_SECONDS:-120}"
+  local codeload_base="${ZHIXING_CODELOAD_URL:-$repo_url}"
+  codeload_base="${codeload_base%.git}"
+  codeload_base="${codeload_base/github.com/codeload.github.com}"
+
+  rm -f -- "$commit_archive_path"
+  for attempt in 1 2 3; do
+    if curl --fail --location --silent --show-error \
+      --connect-timeout 10 --max-time "$fetch_timeout" \
+      "$codeload_base/tar.gz/$commit" -o "$commit_archive_path" \
+      && tar -tzf "$commit_archive_path" >/dev/null 2>&1; then
+      echo "Fetched immutable source archive for $commit from $codeload_base"
+      return 0
+    fi
+    rm -f -- "$commit_archive_path"
+    sleep "$((attempt * 2))"
+  done
+
+  echo "Unable to fetch source archive for $commit from $codeload_base" >&2
+  return 1
+}
+
+install_release_archive() {
+  local archive="$1"
+  local strip_components="${2:-0}"
+  local staging_dir="$release_root/.incoming-$commit"
+
+  rm -rf -- "$staging_dir"
+  mkdir -p "$staging_dir"
+  if [ "$strip_components" -eq 1 ]; then
+    tar -xzf "$archive" --strip-components=1 -C "$staging_dir"
+  else
+    tar -xzf "$archive" -C "$staging_dir"
+  fi
+  if [ ! -f "$staging_dir/backend/package.json" ]; then
+    echo "Source archive does not contain backend/package.json: $archive" >&2
+    rm -rf -- "$staging_dir"
+    return 1
+  fi
+  if [ -e "$release_dir" ] || [ -L "$release_dir" ]; then
+    rm -rf -- "$release_dir"
+  fi
+  mv "$staging_dir" "$release_dir"
 }
 
 prepare_case_builder_image() {
@@ -85,14 +137,7 @@ mkdir -p "$release_root" "$data_root"
 
 if [ ! -f "$release_dir/backend/package.json" ]; then
   if [ -n "$archive_path" ]; then
-    staging_dir="$release_root/.incoming-$commit"
-    rm -rf -- "$staging_dir"
-    mkdir -p "$staging_dir"
-    tar -xzf "$archive_path" -C "$staging_dir"
-    if [ -e "$release_dir" ] || [ -L "$release_dir" ]; then
-      rm -rf -- "$release_dir"
-    fi
-    mv "$staging_dir" "$release_dir"
+    install_release_archive "$archive_path"
   else
     if [ ! -d "$repo_root/.git" ]; then
       if [ -e "$repo_root" ]; then
@@ -109,16 +154,22 @@ if [ ! -f "$release_dir/backend/package.json" ]; then
         git -C "$repo_root" remote add origin "$repo_url"
       fi
     fi
-    fetch_main
-    git -C "$repo_root" cat-file -e "$commit^{commit}"
-    mkdir -p "$release_dir"
-    git -C "$repo_root" archive "$commit" | tar -x -C "$release_dir"
+    if fetch_main; then
+      git -C "$repo_root" cat-file -e "$commit^{commit}"
+      mkdir -p "$release_dir"
+      git -C "$repo_root" archive "$commit" | tar -x -C "$release_dir"
+    else
+      echo "Git fetch unavailable; falling back to the exact commit archive." >&2
+      fetch_commit_archive
+      install_release_archive "$commit_archive_path" 1
+    fi
   fi
 fi
 
 if [ -n "$archive_path" ]; then
   rm -f -- "$archive_path"
 fi
+rm -f -- "$commit_archive_path"
 
 cd "$release_dir/backend"
 npm ci --ignore-scripts
