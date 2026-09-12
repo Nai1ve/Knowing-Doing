@@ -113,6 +113,13 @@ if [ "$(docker image inspect zhixing-openhands-local:current --format '{{.Archit
   exit 1
 fi
 
+docker_cli_source="$(command -v docker)"
+if [ ! -x "$docker_cli_source" ]; then
+  echo "Docker CLI is not executable: $docker_cli_source" >&2
+  exit 1
+fi
+install -m 0755 "$docker_cli_source" "$build_root/deploy/docker-cli"
+
 echo 'Building server-managed Python runtime image'
 docker build --tag zhixing-python-pytest-v1:local \
   --file "$build_root/deploy/Dockerfile.python-runtime" "$build_root/deploy"

@@ -1,6 +1,10 @@
 FROM zhixing-openhands-local:current
 
 USER root
+ARG DOCKER_CLI_PATH=docker-cli
+COPY ${DOCKER_CLI_PATH} /usr/local/bin/docker
+RUN chmod 0755 /usr/local/bin/docker
+
 RUN apt-get update \
   && apt-get install -y --no-install-recommends nodejs npm \
   && rm -rf /var/lib/apt/lists/*
