@@ -143,6 +143,15 @@ wait_for_http_service() {
   return 1
 }
 
+prepare_frontend_assets() {
+  # The release is created under umask 077 so backend source and deployment
+  # configuration remain private. Nginx only needs traversal of the release
+  # path and read access to the compiled frontend assets.
+  chmod 711 "$release_root" "$release_dir" "$release_dir/frontend"
+  find "$release_dir/frontend/dist" -type d -exec chmod 755 {} +
+  find "$release_dir/frontend/dist" -type f -exec chmod 644 {} +
+}
+
 mkdir -p "$release_root" "$data_root"
 
 if [ ! -f "$release_dir/backend/package.json" ]; then
@@ -187,6 +196,7 @@ npm run build
 cd "$release_dir/frontend"
 npm ci --ignore-scripts
 npm run build
+prepare_frontend_assets
 if [ ! -f "$data_root/zhixing-product.db" ]; then
   echo "Missing product database: $data_root/zhixing-product.db" >&2
   exit 1
