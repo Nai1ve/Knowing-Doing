@@ -3,6 +3,7 @@ import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { ArrowRight, LockKeyhole } from 'lucide-vue-next'
 import { RouterLink, useRoute, useRouter } from 'vue-router'
 import PracticeWorkspace from '@/components/learning/PracticeWorkspace.vue'
+import UnifiedGymShell from '@/components/learning/UnifiedGymShell.vue'
 import { useLabStore } from '@/stores/lab'
 import { usePracticeStore } from '@/stores/practice'
 import { usePlanStore } from '@/stores/plan'
@@ -19,6 +20,8 @@ const lessonUnavailable = ref(false)
 const lessonLoading = ref(true)
 const lessonTitle = ref('请从路线图选择学习节点')
 const lessonDescription = ref('Lesson 只接受明确的计划单元，不会替你猜测应该进入哪个实验。')
+const unifiedGymEnabled = computed(() => import.meta.env.VITE_UNIFIED_GYM !== 'false')
+const legacyGymEnabled = computed(() => import.meta.env.VITE_LEGACY_GYM === 'true' || !unifiedGymEnabled.value)
 let initialization = 0
 
 onMounted(() => { void initialize() })
@@ -54,6 +57,11 @@ async function initialize() {
       lessonUnavailable.value = true
       return
     }
+    if (unifiedGymEnabled.value && !['unavailable', 'workspace'].includes(unit.learningMode)) {
+      lessonTitle.value = unit.title
+      lessonDescription.value = '当前节点已经进入统一 Gym；Practice Card 会按计划单元幂等生成，刷新后从服务端恢复进度。'
+      return
+    }
     if (unit.learningMode === 'knowledge' && planStore.productPlan.roadmapId && unit.roadmapNodeId) {
       await router.replace({ name: 'roadmap-node', params: { roadmapId: planStore.productPlan.roadmapId, nodeId: unit.roadmapNodeId } })
       return
@@ -62,7 +70,7 @@ async function initialize() {
       await router.replace({ name: 'case-setup', params: { roadmapId: planStore.productPlan.roadmapId, nodeId: unit.roadmapNodeId } })
       return
     }
-    if (isDynamicGym(unit)) {
+    if (legacyGymEnabled.value && isDynamicGym(unit)) {
       await practiceStore.startPlanned(planStore.productPlan.id, unit.id)
       if (run !== initialization) return
       if (practiceStore.snapshot?.gymContext?.visibleSql) labStore.sql = practiceStore.snapshot.gymContext.visibleSql
@@ -92,6 +100,7 @@ async function initialize() {
 <template>
   <div v-if="lessonLoading || labStore.loading || practiceStore.restoring || practiceStore.starting" class="lesson-loading" role="status">正在确认知行 Gym 入口…</div>
   <section v-else-if="lessonUnavailable" class="lesson-unavailable"><LockKeyhole :size="18" aria-hidden="true" /><div><div class="eyebrow">实践入口状态</div><h1>{{ lessonTitle }}</h1><p>{{ lessonDescription }}</p><RouterLink class="primary-button" :to="{ name: planStore.productPlan ? 'overview' : 'start' }">{{ planStore.productPlan ? '返回总览' : '开始建立计划' }} <ArrowRight :size="14" aria-hidden="true" /></RouterLink></div></section>
+  <UnifiedGymShell v-else-if="unifiedGymEnabled && currentUnit && !['unavailable', 'workspace'].includes(currentUnit.learningMode)" :plan-unit-id="currentUnit.id" :mode="currentUnit.learningMode === 'knowledge' ? 'knowledge_only' : 'mixed'" :title="currentUnit.title" />
   <PracticeWorkspace
     v-else-if="currentUnit?.learningMode === 'lab' && isDynamicGym(currentUnit) && practiceStore.run?.planUnitId === currentUnit.id && labStore.run"
     :practice="practiceStore.run"

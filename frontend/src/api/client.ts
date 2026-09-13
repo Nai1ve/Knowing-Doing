@@ -1,6 +1,7 @@
 export interface ApiClientOptions {
   baseUrl: string
   getToken?: () => string | null
+  getCsrfToken?: () => string | null
 }
 
 export class ApiError extends Error {
@@ -28,7 +29,9 @@ export function createApiClient(options: ApiClientOptions) {
     if (init.body && !isFormData && !headers.has('Content-Type')) headers.set('Content-Type', 'application/json')
     const token = options.getToken?.()
     if (token) headers.set('Authorization', `Bearer ${token}`)
-    const response = await fetch(`${options.baseUrl}${path}`, { ...init, headers })
+    const csrfToken = options.getCsrfToken?.()
+    if (csrfToken && init.method && !['GET', 'HEAD', 'OPTIONS'].includes(init.method.toUpperCase())) headers.set('X-CSRF-Token', csrfToken)
+    const response = await fetch(`${options.baseUrl}${path}`, { ...init, credentials: init.credentials ?? 'include', headers })
     const text = await response.text()
     let payload: unknown
     if (text) {
@@ -38,8 +41,10 @@ export function createApiClient(options: ApiClientOptions) {
       try { payload = JSON.parse(text) } catch { throw new ApiError(response.status, '接口返回了无效 JSON，请检查 API 服务状态', text.slice(0, 200)) }
     }
     if (!response.ok) {
-      const message = payload && typeof payload === 'object' && 'error' in payload && typeof (payload as { error?: { message?: unknown } }).error?.message === 'string'
-        ? String((payload as { error: { message: string } }).error.message)
+      const message = payload && typeof payload === 'object' && 'message' in payload && typeof (payload as { message?: unknown }).message === 'string'
+        ? String((payload as { message: string }).message)
+        : payload && typeof payload === 'object' && 'error' in payload && typeof (payload as { error?: { message?: unknown } }).error?.message === 'string'
+          ? String((payload as { error: { message: string } }).error.message)
         : `请求失败：${response.status}`
       throw new ApiError(response.status, message, payload)
     }
@@ -51,5 +56,6 @@ export function createApiClient(options: ApiClientOptions) {
 
 export const apiClient = createApiClient({
   baseUrl: import.meta.env.VITE_API_BASE_URL ?? '/api',
-  getToken: () => localStorage.getItem('zhixing_access_token'),
+  getToken: () => typeof localStorage === 'undefined' ? null : localStorage.getItem('zhixing_access_token'),
+  getCsrfToken: () => typeof localStorage === 'undefined' ? null : localStorage.getItem('zhixing.csrf-token'),
 })

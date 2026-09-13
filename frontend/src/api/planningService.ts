@@ -11,7 +11,7 @@ function learnerId(): string {
 function request<T>(path: string, init: RequestInit = {}): Promise<T> { const headers = new Headers(init.headers); headers.set('X-Learner-Id', learnerId()); return apiClient.request<T>(path, { ...init, headers }) }
 
 async function streamRequest(path: string, body: Record<string, unknown>, onEvent: (event: PlanningStreamEvent) => void): Promise<void> {
-  const response = await fetch(`${import.meta.env.VITE_API_BASE_URL ?? '/api'}${path}`, { method: 'POST', headers: { Accept: 'text/event-stream', 'Content-Type': 'application/json', 'X-Learner-Id': learnerId() }, body: JSON.stringify(body) })
+  const response = await fetch(`${import.meta.env.VITE_API_BASE_URL ?? '/api'}${path}`, { method: 'POST', credentials: 'include', headers: { Accept: 'text/event-stream', 'Content-Type': 'application/json', 'X-Learner-Id': learnerId() }, body: JSON.stringify(body) })
   if (!response.ok) throw new Error(`规划请求失败：${response.status}`)
   if (!response.body) throw new Error('规划服务没有返回事件流')
   const reader = response.body.getReader(); const decoder = new TextDecoder(); let buffer = ''
