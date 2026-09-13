@@ -7,6 +7,12 @@ CREATE TABLE IF NOT EXISTS practice_cards (
   UNIQUE(learner_id, plan_unit_id, version), UNIQUE(learner_id, plan_unit_id, client_request_id)
 );
 CREATE INDEX IF NOT EXISTS idx_practice_cards_unit_status ON practice_cards(plan_unit_id, status, updated_at DESC);
+ALTER TABLE plan_units ADD COLUMN practice_card_id TEXT REFERENCES practice_cards(id);
+ALTER TABLE learning_cases ADD COLUMN practice_card_id TEXT REFERENCES practice_cards(id);
+ALTER TABLE gym_build_jobs ADD COLUMN practice_card_id TEXT REFERENCES practice_cards(id);
+CREATE INDEX IF NOT EXISTS idx_plan_units_practice_card ON plan_units(practice_card_id);
+CREATE INDEX IF NOT EXISTS idx_learning_cases_practice_card ON learning_cases(practice_card_id);
+CREATE INDEX IF NOT EXISTS idx_gym_build_jobs_practice_card ON gym_build_jobs(practice_card_id);
 CREATE TABLE IF NOT EXISTS practice_card_sources (
   practice_card_id TEXT NOT NULL REFERENCES practice_cards(id), source_item_id TEXT NOT NULL REFERENCES learner_source_items(id),
   relevance REAL NOT NULL, position INTEGER NOT NULL, created_at TEXT NOT NULL, PRIMARY KEY(practice_card_id, source_item_id)

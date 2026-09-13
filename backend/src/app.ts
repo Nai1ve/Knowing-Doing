@@ -103,10 +103,10 @@ export function buildApp(dependencies: AppDependencies): { app: FastifyInstance;
   if (caseWorkspaceService && mysqlDynamicCaseService && dependencies.gymBuildServiceFactory) {
     const gymBuildService = dependencies.gymBuildServiceFactory(caseWorkspaceService, mysqlDynamicCaseService)
     registerGymBuildRoutes(app, gymBuildService)
-    if (dependencies.config.practiceCardV2Enabled && dependencies.config.mixedGymEnabled && dependencies.mixedGymServiceFactory) registerMixedGymRoutes(app, dependencies.mixedGymServiceFactory(gymBuildService))
+    if (dependencies.config.practiceCardV2Enabled && dependencies.mixedGymServiceFactory) registerMixedGymRoutes(app, dependencies.mixedGymServiceFactory(gymBuildService))
     void gymBuildService.resume().catch((error) => console.error('[zhixing-gym] resume_unhandled', { error: error instanceof Error ? error.message : String(error) }))
   }
-  if (dependencies.identityService && dependencies.config.signedDeviceSessionEnabled) registerIdentityRoutes(app, dependencies.identityService, dependencies.config.zhihuOauthEnabled && dependencies.config.zhihuSourceSyncEnabled ? dependencies.zhihuGateway : undefined)
+  if (dependencies.identityService && dependencies.config.signedDeviceSessionEnabled) registerIdentityRoutes(app, dependencies.identityService, dependencies.config.zhihuOauthEnabled ? dependencies.zhihuGateway : undefined, dependencies.config.zhihuSourceSyncEnabled)
 
   return { app, scheduler }
 }
@@ -241,14 +241,15 @@ function learnerId(request: FastifyRequest): string {
 
 function idempotencyKey(request: FastifyRequest, body: Body): string { const value = request.headers['idempotency-key']; return typeof value === 'string' && value.trim() ? value.trim() : optionalString(body, 'clientRequestId') ?? randomUUID() }
 
-function registerIdentityRoutes(app: FastifyInstance, identity: IdentityService, zhihu?: ZhihuGateway): void {
+function registerIdentityRoutes(app: FastifyInstance, identity: IdentityService, zhihu?: ZhihuGateway, sourceSyncEnabled = false): void {
   app.get('/api/auth/session', async (request, reply) => { const id=/(?:^|;\s*)zhixing_session=([^;]+)/.exec(request.headers.cookie ?? '')?.[1]; const learner=identity.resolve(id); if (!learner) throw new LabError('session_required', '需要设备会话', 401); reply.send({ learnerId: learner }) })
   app.post('/api/auth/session', async (_request, reply) => { const session = identity.create(); reply.header('Set-Cookie', `zhixing_session=${session.id}; HttpOnly; SameSite=Lax; Path=/; Max-Age=604800`).code(201).send({ learnerId: session.learnerId, csrfToken: session.csrf, expiresAt: session.expiresAt }) })
   if (!zhihu) return
   app.get('/api/auth/connections', async (request, reply) => reply.send(zhihu.connections(learnerId(request))))
   app.delete('/api/auth/connections/zhihu', async (request, reply) => reply.send(zhihu.disconnect(learnerId(request))))
-  app.get('/api/auth/oauth/zhihu/start', async (request, reply) => reply.send(zhihu.start(learnerId(request))))
-  app.get('/api/auth/oauth/zhihu/callback', async (request, reply) => { const query = request.query as { state?: string; code?: string }; if (!query.state || !query.code) throw new LabError('invalid_request', '缺少 OAuth state 或 code', 400); reply.send(await zhihu.callback(query.state, query.code)) })
+  app.post('/api/auth/oauth/zhihu/start', async (request, reply) => reply.send(zhihu.start(learnerId(request))))
+  app.get('/api/auth/oauth/zhihu/callback', async (request, reply) => { const query = request.query as { state?: string; code?: string }; const origin=process.env.PUBLIC_ORIGIN ?? 'http://119.45.243.102'; try { if (!query.state || !query.code) throw new LabError('invalid_request', '缺少 OAuth state 或 code', 400); await zhihu.callback(query.state, query.code); reply.redirect(`${origin}/settings?oauth=zhihu_connected`,302) } catch { reply.redirect(`${origin}/settings?oauth=zhihu_failed`,302) } })
+  if (!sourceSyncEnabled) return
   app.post('/api/product/source-syncs', async (request, reply) => { const body = productBody(request); const kind = stringField(body, 'kind'); if (!['favorites','own','activities'].includes(kind)) throw new LabError('invalid_request', 'kind 不受支持', 400); reply.code(202).send(await zhihu.sync(learnerId(request), kind as 'favorites'|'own'|'activities', idempotencyKey(request, body))) })
   app.get('/api/product/source-syncs', async (request, reply) => reply.send(zhihu.syncJobs(learnerId(request))))
   app.get('/api/product/source-collections', async (request, reply) => reply.send(zhihu.collections(learnerId(request))))
@@ -258,14 +259,14 @@ function registerIdentityRoutes(app: FastifyInstance, identity: IdentityService,
 }
 
 function registerMixedGymRoutes(app: FastifyInstance, service: MixedGymService): void {
-  app.post('/api/product/plan-units/:id/practice-card', async (request, reply) => { const body=productBody(request); reply.code(201).send(service.createCard(learnerId(request), String((request.params as {id:string}).id), { clientRequestId: idempotencyKey(request, body) })) })
+  app.post('/api/product/plan-units/:id/practice-card', async (request, reply) => { const body=productBody(request); reply.code(201).send(service.createCard(learnerId(request), String((request.params as {id:string}).id), idempotencyKey(request, body))) })
   app.post('/api/product/practice-cards/:id/retry', async (request, reply) => { const body=productBody(request); reply.code(201).send(service.retryCard(learnerId(request), String((request.params as {id:string}).id), idempotencyKey(request, body))) })
   app.get('/api/product/practice-cards/:id/events', async (request, reply) => reply.send(service.cardEvents(learnerId(request), String((request.params as {id:string}).id))))
   app.post('/api/product/practice-cards/:id/gym-sessions', async (request, reply) => { const body=productBody(request); reply.code(201).send(service.startSession(learnerId(request), String((request.params as {id:string}).id), idempotencyKey(request, body))) })
   app.get('/api/product/gym-sessions/:id', async (request, reply) => reply.send(service.session(learnerId(request), String((request.params as {id:string}).id))))
   app.get('/api/product/gym-sessions/:id/events', async (request, reply) => { const after = Number((request.query as {afterSequence?:string}).afterSequence ?? 0); if (!Number.isInteger(after) || after < 0) throw new LabError('invalid_request', 'afterSequence 必须是非负整数', 400); reply.send((service.session(learnerId(request), String((request.params as {id:string}).id)).events as Array<{sequence:number}>).filter(event => event.sequence > after)) })
-  app.put('/api/product/gym-sessions/:id/answer', async (request, reply) => { const body=productBody(request); reply.send(service.draft(learnerId(request), String((request.params as {id:string}).id), stringField(body,'activityKey'), body.answer, idempotencyKey(request, body))) })
-  app.post('/api/product/gym-sessions/:id/answer', async (request, reply) => { const body=productBody(request); reply.send(service.answer(learnerId(request), String((request.params as {id:string}).id), stringField(body,'activityKey'), body.answer, idempotencyKey(request, body))) })
+  app.put('/api/product/gym-sessions/:id/activities/:activityId/answer', async (request, reply) => { const body=productBody(request); reply.send(service.draft(learnerId(request), String((request.params as {id:string}).id), String((request.params as {activityId:string}).activityId), body.answer, idempotencyKey(request, body))) })
+  app.post('/api/product/gym-sessions/:id/activities/:activityId/submit', async (request, reply) => { const body=productBody(request); reply.send(service.submitActivity(learnerId(request), String((request.params as {id:string}).id), String((request.params as {activityId:string}).activityId), body.answer, idempotencyKey(request, body))) })
   app.post('/api/product/gym-sessions/:id/submit', async (request, reply) => { const body=productBody(request); reply.send(service.complete(learnerId(request), String((request.params as {id:string}).id), idempotencyKey(request, body))) })
   app.post('/api/product/gym-sessions/:id/runtime/start', async (request, reply) => reply.code(202).send(await service.startRuntime(learnerId(request), String((request.params as {id:string}).id))))
   app.post('/api/product/gym-sessions/:id/complete', async (request, reply) => { const body=productBody(request); reply.send(service.complete(learnerId(request), String((request.params as {id:string}).id), idempotencyKey(request, body))) })

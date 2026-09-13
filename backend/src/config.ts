@@ -101,6 +101,7 @@ export function loadConfig(): LabConfig {
         : 'client'
   const caseBuilderEnabled = process.env.CASE_BUILDER_ENABLED === 'true'
   if (identityMode === 'shared_demo' && process.env.ZHIHU_OAUTH_ENABLED === 'true') throw new Error('ZHIHU_OAUTH_ENABLED is not permitted in shared_demo identity mode')
+  if (process.env.ZHIHU_OAUTH_ENABLED === 'true' && (!process.env.OAUTH_TOKEN_ENCRYPTION_KEY || Buffer.byteLength(process.env.OAUTH_TOKEN_ENCRYPTION_KEY) < 32)) throw new Error('OAUTH_TOKEN_ENCRYPTION_KEY must be at least 32 bytes when ZHIHU_OAUTH_ENABLED=true')
   const caseBuilderUrl = process.env.CASE_BUILDER_URL ?? 'http://127.0.0.1:3102'
   const caseBuilderToken = process.env.CASE_BUILDER_TOKEN ?? ''
   if (caseBuilderEnabled && !caseBuilderToken) throw new Error('CASE_BUILDER_TOKEN is required when CASE_BUILDER_ENABLED=true')
@@ -163,7 +164,7 @@ export function loadConfig(): LabConfig {
     caseBuilderLlmModel: process.env.CASE_BUILDER_LLM_MODEL ?? process.env.ZHIXING_MODEL_NAME ?? 'default',
     zhihuOauthClientId: process.env.ZHIHU_OAUTH_APP_ID ?? process.env.ZHIHU_OAUTH_CLIENT_ID ?? '',
     zhihuOauthClientSecret: process.env.ZHIHU_OAUTH_APP_KEY ?? process.env.ZHIHU_OAUTH_CLIENT_SECRET ?? '',
-    oauthTokenEncryptionKey: process.env.OAUTH_TOKEN_ENCRYPTION_KEY ?? tokenSecret,
+    oauthTokenEncryptionKey: process.env.OAUTH_TOKEN_ENCRYPTION_KEY ?? '',
     allowInsecureOauthCallback: process.env.ALLOW_INSECURE_OAUTH_CALLBACK === 'true',
     legacyHeaderLearnerId: process.env.ZHIXING_LEGACY_HEADER_IDENTITY === 'true' || process.env.NODE_ENV !== 'production',
     zhihuOauthAuthorizePath: process.env.ZHIHU_OAUTH_AUTHORIZE_PATH ?? '/authorize',
