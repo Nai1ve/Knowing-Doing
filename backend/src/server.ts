@@ -23,9 +23,14 @@ import { HttpOpenHandsBuildAdapter } from './openhands-build-adapter.js'
 import { EnvironmentRuntimeReferenceService } from './environment-runtime-reference.js'
 import { MySqlLabStore } from './mysql-store.js'
 import { EnvironmentBoundMySqlStore } from './environment-bound-mysql-store.js'
+import { IdentityService } from './identity-service.js'
+import { ZhihuGateway } from './zhihu-gateway.js'
+import { MixedGymService } from './mixed-gym-service.js'
 
 const config = loadConfig()
 const productRepository = new ProductRepository(config.productDbPath)
+const identityService = new IdentityService(productRepository)
+const zhihuGateway = new ZhihuGateway(productRepository, { clientId: config.zhihuOauthClientId, clientSecret: config.zhihuOauthClientSecret, baseUrl: config.zhihuApiBaseUrl, encryptionKey: config.oauthTokenEncryptionKey, allowInsecureCallback: config.allowInsecureOauthCallback, authorizePath: config.zhihuOauthAuthorizePath, tokenPath: config.zhihuOauthTokenPath, userPath: config.zhihuUserPath, collectionsPath: config.zhihuCollectionsPath, collectionItemsPath: config.zhihuCollectionItemsPath, contentPath: config.zhihuContentPath, momentsPath: config.zhihuMomentsPath, redirectUri: config.zhihuOauthRedirectUri, scopes: config.zhihuOauthScopes })
 productRepository.markRunningTutorInvocationsInterrupted()
 const retrieval = new RetrievalService(productRepository, new ZhihuCliProvider(config), config.retrievalCacheTtlMs)
 const curation = new CurationService(productRepository, new ModelCurationSummarizer(config))
@@ -72,6 +77,9 @@ const { app, scheduler } = buildApp({
     failureRetentionHours: config.caseBuilderFailureRetentionHours,
     maxConcurrent: config.caseBuilderMaxConcurrent,
   }),
+  identityService: config.signedDeviceSessionEnabled ? identityService : undefined,
+  zhihuGateway: config.zhihuOauthEnabled && config.zhihuSourceSyncEnabled ? zhihuGateway : undefined,
+  mixedGymServiceFactory: (build) => new MixedGymService(productRepository, build),
   runtimeStatus: async () => ({ model: { configured: Boolean(config.modelBaseUrl && config.modelApiKey), name: config.modelName }, caseBuilder: { enabled: config.caseBuilderEnabled, endpointConfigured: Boolean(config.caseBuilderUrl), model: config.caseBuilderLlmModel }, zhihu: { configured: Boolean(config.zhihuAccessSecret), executable: Boolean(config.zhihuAccessSecret), lastRetrieval: null } }),
 })
 

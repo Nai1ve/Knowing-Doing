@@ -62,6 +62,26 @@ export interface LabConfig {
   caseBuilderLlmBaseUrl: string
   caseBuilderLlmApiKey: string
   caseBuilderLlmModel: string
+  zhihuOauthClientId: string
+  zhihuOauthClientSecret: string
+  oauthTokenEncryptionKey: string
+  allowInsecureOauthCallback: boolean
+  legacyHeaderLearnerId: boolean
+  zhihuOauthAuthorizePath: string
+  zhihuOauthTokenPath: string
+  zhihuUserPath: string
+  zhihuCollectionsPath: string
+  zhihuCollectionItemsPath: string
+  zhihuContentPath: string
+  zhihuMomentsPath: string
+  zhihuOauthRedirectUri: string
+  zhihuOauthScopes: string
+  signedDeviceSessionEnabled: boolean
+  zhihuOauthEnabled: boolean
+  zhihuSourceSyncEnabled: boolean
+  practiceCardV2Enabled: boolean
+  mixedGymEnabled: boolean
+  legacyCaseFlowEnabled: boolean
 }
 
 export function loadConfig(): LabConfig {
@@ -80,6 +100,7 @@ export function loadConfig(): LabConfig {
         ? 'shared_demo'
         : 'client'
   const caseBuilderEnabled = process.env.CASE_BUILDER_ENABLED === 'true'
+  if (identityMode === 'shared_demo' && process.env.ZHIHU_OAUTH_ENABLED === 'true') throw new Error('ZHIHU_OAUTH_ENABLED is not permitted in shared_demo identity mode')
   const caseBuilderUrl = process.env.CASE_BUILDER_URL ?? 'http://127.0.0.1:3102'
   const caseBuilderToken = process.env.CASE_BUILDER_TOKEN ?? ''
   if (caseBuilderEnabled && !caseBuilderToken) throw new Error('CASE_BUILDER_TOKEN is required when CASE_BUILDER_ENABLED=true')
@@ -140,5 +161,25 @@ export function loadConfig(): LabConfig {
     caseBuilderLlmBaseUrl: process.env.CASE_BUILDER_LLM_BASE_URL ?? process.env.ZHIXING_MODEL_BASE_URL ?? '',
     caseBuilderLlmApiKey: process.env.CASE_BUILDER_LLM_API_KEY ?? process.env.ZHIXING_MODEL_API_KEY ?? '',
     caseBuilderLlmModel: process.env.CASE_BUILDER_LLM_MODEL ?? process.env.ZHIXING_MODEL_NAME ?? 'default',
+    zhihuOauthClientId: process.env.ZHIHU_OAUTH_APP_ID ?? process.env.ZHIHU_OAUTH_CLIENT_ID ?? '',
+    zhihuOauthClientSecret: process.env.ZHIHU_OAUTH_APP_KEY ?? process.env.ZHIHU_OAUTH_CLIENT_SECRET ?? '',
+    oauthTokenEncryptionKey: process.env.OAUTH_TOKEN_ENCRYPTION_KEY ?? tokenSecret,
+    allowInsecureOauthCallback: process.env.ALLOW_INSECURE_OAUTH_CALLBACK === 'true',
+    legacyHeaderLearnerId: process.env.ZHIXING_LEGACY_HEADER_IDENTITY === 'true' || process.env.NODE_ENV !== 'production',
+    zhihuOauthAuthorizePath: process.env.ZHIHU_OAUTH_AUTHORIZE_PATH ?? '/authorize',
+    zhihuOauthTokenPath: process.env.ZHIHU_OAUTH_TOKEN_PATH ?? '/access_token',
+    zhihuUserPath: process.env.ZHIHU_USER_PATH ?? '/user',
+    zhihuCollectionsPath: process.env.ZHIHU_COLLECTIONS_PATH ?? '/user/collections',
+    zhihuCollectionItemsPath: process.env.ZHIHU_COLLECTION_ITEMS_PATH ?? '/user/collection/{collection_id}',
+    zhihuContentPath: process.env.ZHIHU_CONTENT_PATH ?? '/user/content',
+    zhihuMomentsPath: process.env.ZHIHU_MOMENTS_PATH ?? '/user/moments',
+    zhihuOauthRedirectUri: process.env.ZHIHU_OAUTH_REDIRECT_URI ?? 'http://119.45.243.102/api/auth/oauth/zhihu/callback',
+    zhihuOauthScopes: process.env.ZHIHU_OAUTH_SCOPES ?? '',
+    signedDeviceSessionEnabled: process.env.SIGNED_DEVICE_SESSION_ENABLED === 'true',
+    zhihuOauthEnabled: process.env.ZHIHU_OAUTH_ENABLED === 'true',
+    zhihuSourceSyncEnabled: process.env.ZHIHU_SOURCE_SYNC_ENABLED === 'true',
+    practiceCardV2Enabled: process.env.PRACTICE_CARD_V2_ENABLED === 'true',
+    mixedGymEnabled: process.env.MIXED_GYM_ENABLED === 'true',
+    legacyCaseFlowEnabled: process.env.LEGACY_CASE_FLOW_ENABLED !== 'false',
   }
 }
