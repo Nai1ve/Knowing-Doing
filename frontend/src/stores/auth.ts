@@ -4,7 +4,7 @@ import { disconnectOAuth, getConnections, startZhihuOAuth } from '@/api/oauthSer
 import type { OAuthConnection } from '@/types/domain'
 import { apiClient } from '@/api/client'
 
-interface AuthSession { id: string; csrfToken: string; expiresAt?: string }
+interface AuthSession { learnerId: string; csrfToken: string; expiresAt?: string }
 
 export const useAuthStore = defineStore('auth', () => {
   const connections = ref<OAuthConnection[]>([])

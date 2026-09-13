@@ -1,0 +1,147 @@
+import { mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import path from 'node:path'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import type { LabStore } from '../src/mysql-store.js'
+import { applyProductMigrations } from '../src/product-migrate.js'
+import { ProductRepository } from '../src/product-repository.js'
+import { IdentityService } from '../src/identity-service.js'
+import { ZhihuGateway, ZHIHU_OAUTH_CALLBACK } from '../src/zhihu-gateway.js'
+import { buildApp } from '../src/app.js'
+import { loadConfig } from '../src/config.js'
+
+function database() {
+  const directory = mkdtempSync(path.join(tmpdir(), 'zhixing-identity-'))
+  const dbPath = path.join(directory, 'product.db')
+  applyProductMigrations(dbPath)
+  const repository = new ProductRepository(dbPath)
+  return { directory, repository }
+}
+
+function gateway(
+  repository: ProductRepository,
+  fetchImpl: typeof fetch = fetch,
+  sleep: (milliseconds: number) => Promise<void> = async () => undefined,
+  publicSearch?: { configured: boolean; search(query: string, count?: number): Promise<Array<{ externalId: string; title: string; author: string | null; url: string; excerpt: string; retrievedAt: string; metadata: Record<string, unknown> }>> },
+) {
+  return new ZhihuGateway(repository, {
+    clientId: 'app-id', clientSecret: 'app-key', baseUrl: 'https://oauth.example.test', encryptionKey: 'x'.repeat(32),
+    allowInsecureCallback: true, authorizePath: '/authorize', tokenPath: '/access_token', userPath: '/user',
+    collectionsPath: '/user/collections', collectionItemsPath: '/user/collection/{collection_id}', contentPath: '/user/content',
+    momentsPath: '/user/moments', redirectUri: ZHIHU_OAUTH_CALLBACK, scopes: 'read collections', fetchImpl, sleep, publicSearch,
+  })
+}
+
+const noopStore: LabStore = {
+  async reset() {},
+  async createSession() { throw new Error('unused') },
+  async execute() { throw new Error('unused') },
+  async closeConnection() {},
+}
+
+describe('signed device identity and Zhihu OAuth', () => {
+  const cleanup: Array<() => void> = []
+  afterEach(() => { while (cleanup.length) cleanup.pop()?.() })
+
+  it('rotates CSRF while preserving the device learner and expires invalid sessions', () => {
+    const state = database(); cleanup.push(() => { state.repository.close(); rmSync(state.directory, { recursive: true, force: true }) })
+    const identity = new IdentityService(state.repository)
+    const first = identity.issue()
+    expect(identity.resolve(first.id)?.learnerId).toBe(first.learnerId)
+    expect(identity.validCsrf(first.id, first.csrfToken)).toBe(true)
+    expect(identity.validCsrf(first.id, 'forged')).toBe(false)
+    const renewed = identity.issue(first.id)
+    expect(renewed.learnerId).toBe(first.learnerId)
+    expect(identity.validCsrf(first.id, first.csrfToken)).toBe(false)
+    expect(identity.validCsrf(first.id, renewed.csrfToken)).toBe(true)
+    state.repository.db.prepare("UPDATE learner_sessions SET expires_at='2000-01-01T00:00:00.000Z' WHERE id=?").run(first.id)
+    expect(identity.resolve(first.id)).toBeNull()
+  })
+
+  it('ignores a forged learner header and enforces session, CSRF, and Origin on mutations', async () => {
+    const state = database(); cleanup.push(() => { state.repository.close(); rmSync(state.directory, { recursive: true, force: true }) })
+    const identity = new IdentityService(state.repository)
+    const app = buildApp({
+      config: { ...loadConfig(), identityMode: 'client', signedDeviceSessionEnabled: true, legacyHeaderLearnerId: false, zhihuOauthEnabled: true, zhihuSourceSyncEnabled: false, practiceCardV2Enabled: false, mixedGymEnabled: false, publicOrigin: 'http://119.45.243.102', corsOrigin: 'http://119.45.243.102' },
+      store: noopStore, identityService: identity, zhihuGateway: gateway(state.repository),
+    }).app
+    cleanup.push(() => { void app.close() })
+
+    const missing = await app.inject({ method: 'GET', url: '/api/auth/connections', headers: { 'x-learner-id': 'forged' } })
+    expect(missing.statusCode).toBe(401)
+    const issued = await app.inject({ method: 'POST', url: '/api/auth/session', headers: { origin: 'http://119.45.243.102' } })
+    const setCookie = issued.headers['set-cookie']!
+    const cookie = (Array.isArray(setCookie) ? setCookie[0] : setCookie).split(';')[0]
+    const body = issued.json<{ learnerId: string; csrfToken: string }>()
+    expect(body.learnerId).not.toBe('forged')
+
+    const noCsrf = await app.inject({ method: 'POST', url: '/api/auth/oauth/zhihu/start', headers: { cookie, origin: 'http://119.45.243.102', 'x-learner-id': 'forged' } })
+    expect(noCsrf.statusCode).toBe(403)
+    const wrongOrigin = await app.inject({ method: 'POST', url: '/api/auth/oauth/zhihu/start', headers: { cookie, origin: 'http://evil.test', 'x-csrf-token': body.csrfToken } })
+    expect(wrongOrigin.statusCode).toBe(403)
+    const accepted = await app.inject({ method: 'POST', url: '/api/auth/oauth/zhihu/start', headers: { cookie, origin: 'http://119.45.243.102', 'x-csrf-token': body.csrfToken } })
+    expect(accepted.statusCode).toBe(200)
+    expect(accepted.json().authorizationUrl).toContain('state=')
+  })
+
+  it('binds one-time state to the device, encrypts tokens, refreshes once, and resumes paged sync', async () => {
+    const state = database(); cleanup.push(() => { state.repository.close(); rmSync(state.directory, { recursive: true, force: true }) })
+    state.repository.ensureLearner('learner-a'); state.repository.ensureLearner('learner-b')
+    let collectionAttempts = 0
+    let refreshes = 0
+    const sleeps: number[] = []
+    const fetchImpl = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const url = new URL(String(input))
+      if (url.pathname === '/access_token') {
+        const payload = JSON.parse(String(init?.body ?? '{}')) as { grant_type?: string }
+        if (payload.grant_type === 'refresh_token') { refreshes += 1; return Response.json({ access_token: 'refreshed-token', refresh_token: 'refresh-token', expires_in: 3600 }) }
+        return Response.json({ access_token: 'initial-token', refresh_token: 'refresh-token', expires_in: 3600 })
+      }
+      if (url.pathname === '/user') return Response.json({ id: 'zhihu-user-1' })
+      if (url.pathname === '/user/collections') {
+        collectionAttempts += 1
+        const authorization = new Headers(init?.headers).get('authorization')
+        if (authorization === 'Bearer initial-token') return new Response('', { status: 401 })
+        if (collectionAttempts === 2) return new Response('', { status: 429, headers: { 'retry-after': '0' } })
+        return Response.json({ data: [{ id: 'collection-1', title: '数据库收藏' }], paging: { next: null } })
+      }
+      if (url.pathname === '/user/collection/collection-1') return Response.json({ data: [{ id: 'answer-1', title: 'MySQL EXPLAIN 实战', url: 'https://www.zhihu.com/question/1/answer/1', excerpt: '使用执行计划验证索引是否命中。' }] })
+      if (url.pathname === '/user/content' || url.pathname === '/user/moments') return Response.json({ data: [] })
+      return new Response('', { status: 404 })
+    }) as typeof fetch
+    const client = gateway(state.repository, fetchImpl, async (milliseconds) => { sleeps.push(milliseconds) })
+    const started = client.start('learner-a')
+    const authUrl = new URL(started.authorizationUrl)
+    const rawState = authUrl.searchParams.get('state')!
+    expect(JSON.stringify(state.repository.db.prepare('SELECT * FROM oauth_authorization_states').all())).not.toContain(rawState)
+    await expect(client.callback('learner-b', rawState, 'code')).rejects.toMatchObject({ code: 'oauth_state_invalid' })
+    await client.callback('learner-a', rawState, 'code')
+    await expect(client.callback('learner-a', rawState, 'code')).rejects.toMatchObject({ code: 'oauth_state_invalid' })
+    const stored = state.repository.db.prepare('SELECT token_ciphertext, token_iv, token_tag FROM provider_connections').get() as Record<string, string>
+    expect(JSON.stringify(stored)).not.toContain('initial-token')
+
+    const job = client.syncAll('learner-a', 'sync-1')
+    expect(job.status).toBe('queued')
+    await vi.waitFor(() => expect(client.syncJobs('learner-a')[0]?.status).toBe('completed'))
+    expect(client.syncJobs('learner-a')[0]).toMatchObject({ importedCount: 1, errorMessage: null })
+    expect(client.items('learner-a').items[0]).toMatchObject({ title: 'MySQL EXPLAIN 实战', saved: true })
+    expect(refreshes).toBe(1)
+    expect(sleeps).toHaveLength(1)
+  })
+
+  it('imports public search results into only the requesting learner library', async () => {
+    const state = database(); cleanup.push(() => { state.repository.close(); rmSync(state.directory, { recursive: true, force: true }) })
+    state.repository.ensureLearner('learner-a'); state.repository.ensureLearner('learner-b')
+    const client = gateway(state.repository, fetch, async () => undefined, {
+      configured: true,
+      async search(query) {
+        return [{ externalId: 'public-1', title: `${query} 实战`, author: '作者', url: 'https://www.zhihu.com/p/1', excerpt: '公开摘要', retrievedAt: new Date().toISOString(), metadata: { provenance: 'test' } }]
+      },
+    })
+
+    const result = await client.search('learner-a', 'MySQL')
+    expect(result.items).toHaveLength(1)
+    expect(result.items[0]).toMatchObject({ title: 'MySQL 实战', saved: false })
+    expect(client.items('learner-b', 'MySQL').items).toHaveLength(0)
+  })
+})

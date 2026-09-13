@@ -17,6 +17,10 @@ export default defineConfig({
     // The local API runs on 3001 because port 3000 is used by another app.
     // Keep this overridable for deployments and alternate local setups.
     proxy: {
+      '/api/auth': {
+        target: process.env.VITE_API_PROXY_TARGET ?? 'http://127.0.0.1:3001',
+        changeOrigin: true,
+      },
       '/api/lab': {
         target: process.env.VITE_API_PROXY_TARGET ?? 'http://127.0.0.1:3001',
         changeOrigin: true,

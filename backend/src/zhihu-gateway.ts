@@ -3,24 +3,500 @@ import { z } from 'zod'
 import type { ProductRepository } from './product-repository.js'
 import { LabError } from './errors.js'
 
-const itemSchema = z.object({ id: z.union([z.string(), z.number()]).transform(String), title: z.string().optional(), url: z.string().url().optional(), content: z.string().optional(), excerpt: z.string().optional(), author: z.union([z.string(), z.object({ name: z.string().optional() })]).optional() }).passthrough()
-const pageSchema = z.object({ data: z.array(itemSchema).optional(), items: z.array(itemSchema).optional(), results: z.array(itemSchema).optional(), paging: z.object({ next: z.string().nullable().optional() }).optional(), cursor: z.string().nullable().optional() }).passthrough().transform(value => ({ ...value, data: value.data ?? value.items ?? value.results ?? [] }))
 export const ZHIHU_OAUTH_CALLBACK = 'http://119.45.243.102/api/auth/oauth/zhihu/callback'
 
+const tokenSchema = z.object({
+  access_token: z.string().min(1),
+  refresh_token: z.string().min(1).optional(),
+  expires_in: z.number().positive().optional(),
+  scope: z.string().optional(),
+  uid: z.union([z.string(), z.number()]).optional(),
+})
+
+const itemSchema = z.object({
+  id: z.union([z.string(), z.number()]).transform(String),
+  title: z.string().optional(),
+  name: z.string().optional(),
+  url: z.string().url().optional(),
+  link: z.string().url().optional(),
+  content: z.string().optional(),
+  excerpt: z.string().optional(),
+  summary: z.string().optional(),
+  published_at: z.union([z.string(), z.number()]).optional(),
+  author: z.union([z.string(), z.object({ name: z.string().optional() })]).optional(),
+}).passthrough()
+
+const pageSchema = z.object({
+  data: z.array(itemSchema).optional(),
+  items: z.array(itemSchema).optional(),
+  results: z.array(itemSchema).optional(),
+  paging: z.object({ next: z.string().nullable().optional() }).optional(),
+  cursor: z.string().nullable().optional(),
+}).passthrough()
+
+type Token = z.infer<typeof tokenSchema>
+type SourceItem = z.infer<typeof itemSchema>
+type ConnectionRow = Record<string, unknown>
+type PublicSearchItem = {
+  externalId: string | null
+  title: string
+  author: string | null
+  url: string
+  excerpt: string
+  retrievedAt: string
+  metadata: Record<string, unknown>
+}
+
+export interface ZhihuGatewayOptions {
+  clientId: string
+  clientSecret: string
+  baseUrl: string
+  encryptionKey: string
+  allowInsecureCallback: boolean
+  authorizePath: string
+  tokenPath: string
+  userPath: string
+  collectionsPath: string
+  collectionItemsPath: string
+  contentPath: string
+  momentsPath: string
+  redirectUri: string
+  scopes: string
+  publicSearch?: { configured: boolean; search(query: string, count?: number): Promise<PublicSearchItem[]> }
+  fetchImpl?: typeof fetch
+  sleep?: (milliseconds: number) => Promise<void>
+}
+
+function asIso(value: unknown): string | null {
+  if (typeof value === 'number') return new Date(value > 10_000_000_000 ? value : value * 1000).toISOString()
+  if (typeof value === 'string' && value.trim()) {
+    const parsed = new Date(value)
+    return Number.isNaN(parsed.valueOf()) ? null : parsed.toISOString()
+  }
+  return null
+}
+
+function publicError(error: unknown): { code: string; message: string } {
+  if (error instanceof LabError) return { code: error.code, message: error.message }
+  return { code: 'source_sync_failed', message: '知乎内容同步失败' }
+}
+
 export class ZhihuGateway {
-  constructor(private readonly repository: ProductRepository, private readonly options: { clientId: string; clientSecret: string; baseUrl: string; encryptionKey: string; allowInsecureCallback: boolean; authorizePath: string; tokenPath: string; userPath: string; collectionsPath: string; collectionItemsPath: string; contentPath: string; momentsPath: string; redirectUri: string; scopes: string }) {}
-  private hash(value: string) { return createHash('sha256').update(value).digest('hex') }
-  private key() { return createHash('sha256').update(this.options.encryptionKey).digest() }
-  private encrypt(value: string) { const iv = randomBytes(12); const cipher = createCipheriv('aes-256-gcm', this.key(), iv); const ciphertext = Buffer.concat([cipher.update(value, 'utf8'), cipher.final()]); return { ciphertext: ciphertext.toString('base64'), iv: iv.toString('base64'), tag: cipher.getAuthTag().toString('base64') } }
-  private decrypt(row: Record<string, unknown>) { const decipher = createDecipheriv('aes-256-gcm', this.key(), Buffer.from(String(row.token_iv), 'base64')); decipher.setAuthTag(Buffer.from(String(row.token_tag), 'base64')); return Buffer.concat([decipher.update(Buffer.from(String(row.token_ciphertext), 'base64')), decipher.final()]).toString('utf8') }
-  private async request(path: string, token: string, init: RequestInit = {}) { const response = await fetch(`${this.options.baseUrl.replace(/\/$/, '')}${path}`, { ...init, headers: { Authorization: `Bearer ${token}`, Accept: 'application/json', ...(init.headers ?? {}) } }); if (response.status === 429) throw Object.assign(new Error('知乎同步速率受限'), { code: 'rate_limited', retryAfter: Number(response.headers.get('retry-after') ?? 1) }); if (!response.ok) throw Object.assign(new Error(`知乎请求失败: ${response.status}`), { code: response.status === 401 ? 'unauthorized' : 'remote_error' }); return pageSchema.parse(await response.json()) }
-  start(learnerId: string) { if (this.options.redirectUri !== ZHIHU_OAUTH_CALLBACK) throw new LabError('oauth_callback_invalid', 'OAuth 回调地址未按部署契约配置', 500); if (!this.options.allowInsecureCallback) throw new LabError('oauth_insecure_callback_disabled', 'HTTP OAuth 回调需要 ALLOW_INSECURE_OAUTH_CALLBACK=true', 503); const state = randomBytes(32).toString('base64url'); const now = new Date(); this.repository.db.prepare('INSERT INTO oauth_authorization_states(id, learner_id, provider, state_hash, redirect_uri, expires_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)').run(randomUUID(), learnerId, 'zhihu', this.hash(state), this.options.redirectUri, new Date(now.getTime() + 5 * 60_000).toISOString(), now.toISOString()); const url = new URL(this.options.authorizePath, this.options.baseUrl); url.searchParams.set('app_id', this.options.clientId); url.searchParams.set('client_id', this.options.clientId); url.searchParams.set('redirect_uri', this.options.redirectUri); url.searchParams.set('response_type', 'code'); url.searchParams.set('state', state); if (this.options.scopes) url.searchParams.set('scope', this.options.scopes); return { authorizationUrl: url.toString(), expiresInSeconds: 300 } }
-  async callback(state: string, code: string) { const row = this.repository.db.prepare("SELECT * FROM oauth_authorization_states WHERE provider = 'zhihu' AND state_hash = ? AND consumed_at IS NULL AND expires_at > ?").get(this.hash(state), new Date().toISOString()) as Record<string, unknown> | undefined; if (!row) throw new LabError('oauth_state_invalid', 'OAuth state 无效、已使用或已过期', 400); try { const response = await fetch(`${this.options.baseUrl.replace(/\/$/, '')}${this.options.tokenPath}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ grant_type: 'authorization_code', code, app_id: this.options.clientId, app_key: this.options.clientSecret, client_id: this.options.clientId, client_secret: this.options.clientSecret, redirect_uri: this.options.redirectUri }) }); if (!response.ok) throw new LabError('oauth_token_exchange_failed', '知乎 OAuth token 交换失败', 502); const token = z.object({ access_token: z.string(), expires_in: z.number().optional(), refresh_token: z.string().optional(), scope: z.string().optional(), uid: z.union([z.string(), z.number()]).optional() }).parse(await response.json()); const profileResponse = await fetch(`${this.options.baseUrl.replace(/\/$/, '')}${this.options.userPath}`, { headers: { Authorization: `Bearer ${token.access_token}`, Accept: 'application/json' } }); if (!profileResponse.ok) throw new LabError('oauth_user_validation_failed', '知乎账户验证失败', 502); const profile = z.object({ id: z.union([z.string(), z.number()]).optional(), uid: z.union([z.string(), z.number()]).optional() }).passthrough().parse(await profileResponse.json()); const providerUserId = profile.id ?? profile.uid ?? token.uid; if (!providerUserId) throw new LabError('oauth_user_invalid', '知乎账户未返回用户标识', 502); const now = new Date().toISOString(); const sealed = this.encrypt(JSON.stringify(token)); this.repository.db.transaction(() => { this.repository.db.prepare('UPDATE oauth_authorization_states SET consumed_at = ? WHERE id = ? AND learner_id = ? AND consumed_at IS NULL').run(now, row.id, row.learner_id); this.repository.db.prepare(`INSERT INTO provider_connections(id, learner_id, provider, provider_user_id, token_ciphertext, token_iv, token_tag, token_expires_at, scopes_json, status, created_at, updated_at) VALUES (?, ?, 'zhihu', ?, ?, ?, ?, ?, ?, 'active', ?, ?) ON CONFLICT(learner_id, provider) DO UPDATE SET provider_user_id=excluded.provider_user_id, token_ciphertext=excluded.token_ciphertext, token_iv=excluded.token_iv, token_tag=excluded.token_tag, token_expires_at=excluded.token_expires_at, scopes_json=excluded.scopes_json, status='active', updated_at=excluded.updated_at`).run(randomUUID(), row.learner_id, String(providerUserId), sealed.ciphertext, sealed.iv, sealed.tag, token.expires_in ? new Date(Date.now() + token.expires_in * 1000).toISOString() : null, JSON.stringify(token.scope?.split(' ') ?? this.options.scopes.split(/\s+/).filter(Boolean)), now, now) })(); return { learnerId: String(row.learner_id), connected: true } } catch (error) { if (error instanceof LabError) throw error; throw new LabError('oauth_callback_failed', '知乎授权处理失败', 502) } }
-  connections(learnerId: string) { return this.repository.db.prepare('SELECT provider, provider_user_id AS providerUserId, status, token_expires_at AS tokenExpiresAt, created_at AS createdAt, updated_at AS updatedAt FROM provider_connections WHERE learner_id = ?').all(learnerId) }
-  syncJobs(learnerId: string) { return this.repository.db.prepare('SELECT * FROM source_sync_jobs WHERE learner_id=? ORDER BY created_at DESC').all(learnerId) }
-  collections(learnerId: string) { return this.repository.db.prepare('SELECT * FROM external_source_collections WHERE learner_id=? ORDER BY updated_at DESC').all(learnerId) }
-  items(learnerId: string, query?: string) { const pattern = `%${(query ?? '').trim()}%`; return this.repository.db.prepare('SELECT id, provider, external_id AS externalId, url, title, author, excerpt, created_at AS createdAt FROM learner_source_items WHERE learner_id=? AND (title LIKE ? OR excerpt LIKE ?) ORDER BY updated_at DESC LIMIT 30').all(learnerId, pattern, pattern) }
-  save(learnerId: string, input: { title: string; url: string; excerpt: string }) { const id=randomUUID(); const at=new Date().toISOString(); this.repository.db.prepare("INSERT INTO learner_source_items(id, learner_id, provider, external_id, url, title, excerpt, content_json, visibility, content_hash, created_at, updated_at) VALUES (?, ?, 'manual', ?, ?, ?, ?, '{}', 'private', ?, ?, ?)").run(id, learnerId, id, input.url, input.title, input.excerpt, this.hash(`${input.url}:${input.title}:${input.excerpt}`), at, at); return { id, title: input.title, url: input.url } }
-  disconnect(learnerId: string) { this.repository.db.transaction(() => { const rows = this.repository.db.prepare("SELECT id FROM provider_connections WHERE learner_id = ? AND provider = 'zhihu'").all(learnerId) as Array<{ id: string }>; for (const row of rows) { this.repository.db.prepare('DELETE FROM external_source_collection_items WHERE source_item_id IN (SELECT id FROM learner_source_items WHERE learner_id = ? AND visibility = \'private\')').run(learnerId); this.repository.db.prepare("DELETE FROM learner_source_items WHERE learner_id = ? AND visibility = 'private' AND id NOT IN (SELECT source_item_id FROM practice_card_sources)").run(learnerId); this.repository.db.prepare('DELETE FROM external_source_collections WHERE connection_id = ?').run(row.id) } this.repository.db.prepare("DELETE FROM provider_connections WHERE learner_id = ? AND provider = 'zhihu'").run(learnerId) })(); return { disconnected: true } }
-  async sync(learnerId: string, kind: 'favorites' | 'own' | 'activities', clientRequestId: string) { const connection = this.repository.db.prepare("SELECT * FROM provider_connections WHERE learner_id = ? AND provider = 'zhihu' AND status = 'active'").get(learnerId) as Record<string, unknown> | undefined; if (!connection) throw new Error('知乎尚未连接'); const existing = this.repository.db.prepare('SELECT * FROM source_sync_jobs WHERE learner_id = ? AND provider = ? AND client_request_id = ?').get(learnerId, 'zhihu', clientRequestId) as Record<string, unknown> | undefined; if (existing) return existing; const now = new Date().toISOString(); const jobId = randomUUID(); const collectionId = randomUUID(); this.repository.db.transaction(() => { this.repository.db.prepare("INSERT INTO external_source_collections(id, learner_id, connection_id, provider, external_id, kind, title, status, created_at, updated_at) VALUES (?, ?, ?, 'zhihu', ?, ?, ?, 'active', ?, ?) ON CONFLICT(learner_id, provider, external_id, kind) DO UPDATE SET updated_at=excluded.updated_at").run(collectionId, learnerId, connection.id, kind, kind, `知乎${kind}`, now, now); this.repository.db.prepare("INSERT INTO source_sync_jobs(id, learner_id, provider, status, client_request_id, created_at, updated_at) VALUES (?, ?, 'zhihu', 'running', ?, ?, ?)").run(jobId, learnerId, clientRequestId, now, now) })(); try { const token = z.object({ access_token: z.string() }).parse(JSON.parse(this.decrypt(connection))).access_token; let cursor: string | null = null; let count = 0; do { const page = await this.request(`/api/v1/me/${kind}${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ''}`, token); const activeCollection = this.repository.db.prepare('SELECT id FROM external_source_collections WHERE learner_id=? AND provider=? AND external_id=? AND kind=?').get(learnerId, 'zhihu', kind, kind) as { id: string }; const save = this.repository.db.prepare(`INSERT INTO learner_source_items(id, learner_id, provider, external_id, url, title, author, excerpt, content_json, visibility, content_hash, created_at, updated_at) VALUES (?, ?, 'zhihu', ?, ?, ?, ?, ?, ?, 'private', ?, ?, ?) ON CONFLICT(learner_id, provider, external_id) DO UPDATE SET title=excluded.title, url=excluded.url, author=excluded.author, excerpt=excluded.excerpt, content_json=excluded.content_json, content_hash=excluded.content_hash, updated_at=excluded.updated_at`); for (const item of page.data) { const title = item.title ?? '知乎内容'; const url = item.url ?? `https://www.zhihu.com/question/${item.id}`; const author = typeof item.author === 'string' ? item.author : item.author?.name ?? null; const excerpt = (item.excerpt ?? item.content ?? '').slice(0, 4000); const sourceId = randomUUID(); save.run(sourceId, learnerId, item.id, url, title, author, excerpt, JSON.stringify(item), this.hash(JSON.stringify(item)), now, now); const persisted = this.repository.db.prepare('SELECT id FROM learner_source_items WHERE learner_id=? AND provider=? AND external_id=?').get(learnerId, 'zhihu', item.id) as { id: string }; this.repository.db.prepare('INSERT OR IGNORE INTO external_source_collection_items(collection_id, source_item_id, position, created_at) VALUES (?, ?, ?, ?)').run(activeCollection.id, persisted.id, count++, now) } cursor = page.cursor ?? page.paging?.next ?? null } while (cursor && count < 200); this.repository.db.prepare("UPDATE source_sync_jobs SET status='succeeded', cursor=?, updated_at=? WHERE id=?").run(cursor, new Date().toISOString(), jobId) } catch (error) { const code = error && typeof error === 'object' && 'code' in error ? String(error.code) : 'sync_failed'; this.repository.db.prepare("UPDATE source_sync_jobs SET status='failed', error_code=?, error_message=?, updated_at=? WHERE id=?").run(code, error instanceof Error ? error.message : '同步失败', new Date().toISOString(), jobId) } return this.repository.db.prepare('SELECT * FROM source_sync_jobs WHERE id = ?').get(jobId) }
+  private readonly fetchImpl: typeof fetch
+  private readonly sleep: (milliseconds: number) => Promise<void>
+
+  constructor(private readonly repository: ProductRepository, private readonly options: ZhihuGatewayOptions) {
+    this.fetchImpl = options.fetchImpl ?? fetch
+    this.sleep = options.sleep ?? ((milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)))
+  }
+
+  start(learnerId: string): { authorizationUrl: string; expiresInSeconds: number } {
+    if (this.options.redirectUri !== ZHIHU_OAUTH_CALLBACK) throw new LabError('oauth_callback_invalid', 'OAuth 回调地址未按部署契约配置', 500)
+    if (!this.options.clientId || !this.options.clientSecret) throw new LabError('oauth_not_configured', '知乎 OAuth 尚未配置', 503)
+    if (this.options.redirectUri.startsWith('http://') && !this.options.allowInsecureCallback) throw new LabError('oauth_insecure_callback_disabled', 'HTTP OAuth 回调未显式启用', 503)
+
+    const state = randomBytes(32).toString('base64url')
+    const createdAt = new Date()
+    this.repository.db.prepare(
+      'INSERT INTO oauth_authorization_states(id, learner_id, provider, state_hash, redirect_uri, expires_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
+    ).run(randomUUID(), learnerId, 'zhihu', this.hash(state), this.options.redirectUri, new Date(createdAt.getTime() + 5 * 60_000).toISOString(), createdAt.toISOString())
+
+    const url = new URL(this.options.authorizePath, this.options.baseUrl)
+    url.searchParams.set('client_id', this.options.clientId)
+    url.searchParams.set('redirect_uri', this.options.redirectUri)
+    url.searchParams.set('response_type', 'code')
+    url.searchParams.set('state', state)
+    if (this.options.scopes.trim()) url.searchParams.set('scope', this.options.scopes.trim())
+    return { authorizationUrl: url.toString(), expiresInSeconds: 300 }
+  }
+
+  async callback(learnerId: string, state: string, code: string): Promise<void> {
+    const stateRow = this.repository.db.prepare(
+      "SELECT * FROM oauth_authorization_states WHERE provider = 'zhihu' AND learner_id = ? AND state_hash = ? AND consumed_at IS NULL AND expires_at > ?",
+    ).get(learnerId, this.hash(state), new Date().toISOString()) as ConnectionRow | undefined
+    if (!stateRow) throw new LabError('oauth_state_invalid', 'OAuth state 无效、已使用、跨会话或已过期', 400)
+
+    const token = await this.exchangeToken({ grant_type: 'authorization_code', code, redirect_uri: this.options.redirectUri })
+    const profileResponse = await this.fetchImpl(this.url(this.options.userPath), { headers: { Authorization: `Bearer ${token.access_token}`, Accept: 'application/json' } })
+    if (!profileResponse.ok) throw new LabError('oauth_user_validation_failed', '知乎账户验证失败', 502)
+    const profile = z.object({ id: z.union([z.string(), z.number()]).optional(), uid: z.union([z.string(), z.number()]).optional() }).passthrough().parse(await profileResponse.json())
+    const providerUserId = profile.id ?? profile.uid ?? token.uid
+    if (!providerUserId) throw new LabError('oauth_user_invalid', '知乎账户未返回用户标识', 502)
+
+    const now = new Date().toISOString()
+    const sealed = this.encrypt(JSON.stringify(token))
+    this.repository.db.transaction(() => {
+      const consumed = this.repository.db.prepare(
+        'UPDATE oauth_authorization_states SET consumed_at = ? WHERE id = ? AND learner_id = ? AND consumed_at IS NULL',
+      ).run(now, stateRow.id, learnerId)
+      if (consumed.changes !== 1) throw new LabError('oauth_state_invalid', 'OAuth state 已被消费', 400)
+      this.repository.db.prepare(`
+        INSERT INTO provider_connections(
+          id, learner_id, provider, provider_user_id, token_ciphertext, token_iv, token_tag,
+          token_expires_at, scopes_json, status, created_at, updated_at
+        ) VALUES (?, ?, 'zhihu', ?, ?, ?, ?, ?, ?, 'active', ?, ?)
+        ON CONFLICT(learner_id, provider) DO UPDATE SET
+          provider_user_id=excluded.provider_user_id, token_ciphertext=excluded.token_ciphertext,
+          token_iv=excluded.token_iv, token_tag=excluded.token_tag,
+          token_expires_at=excluded.token_expires_at, scopes_json=excluded.scopes_json,
+          status='active', updated_at=excluded.updated_at
+      `).run(
+        randomUUID(), learnerId, String(providerUserId), sealed.ciphertext, sealed.iv, sealed.tag,
+        token.expires_in ? new Date(Date.now() + token.expires_in * 1000).toISOString() : null,
+        JSON.stringify(token.scope?.split(/\s+/).filter(Boolean) ?? this.options.scopes.split(/\s+/).filter(Boolean)), now, now,
+      )
+    })()
+  }
+
+  connections(learnerId: string) {
+    const rows = this.repository.db.prepare(
+      "SELECT provider, provider_user_id providerUserId, status, scopes_json scopesJson FROM provider_connections WHERE learner_id = ? AND provider = 'zhihu'",
+    ).all(learnerId) as Array<Record<string, unknown>>
+    if (rows.length === 0) return [{ provider: 'zhihu' as const, status: 'disconnected' as const, scopes: [] as string[] }]
+    return rows.map((row) => ({
+      provider: 'zhihu' as const,
+      status: row.status === 'active' ? 'connected' as const : 'pending' as const,
+      account: row.providerUserId == null ? undefined : String(row.providerUserId),
+      scopes: this.json<string[]>(row.scopesJson, []),
+    }))
+  }
+
+  syncAll(learnerId: string, clientRequestId: string) {
+    const existing = this.repository.db.prepare(
+      'SELECT * FROM source_sync_jobs WHERE learner_id = ? AND provider = ? AND client_request_id = ?',
+    ).get(learnerId, 'zhihu', clientRequestId) as ConnectionRow | undefined
+    if (existing) return this.publicJob(existing)
+    this.connection(learnerId)
+    const id = randomUUID()
+    const now = new Date().toISOString()
+    this.repository.db.prepare(`
+      INSERT INTO source_sync_jobs(id, learner_id, provider, sync_kind, status, client_request_id, created_at, updated_at)
+      VALUES (?, ?, 'zhihu', 'all', 'queued', ?, ?, ?)
+    `).run(id, learnerId, clientRequestId, now, now)
+    queueMicrotask(() => { void this.runSync(id).catch(() => undefined) })
+    return this.publicJob(this.job(id))
+  }
+
+  resume(): void {
+    const rows = this.repository.db.prepare(
+      "SELECT id FROM source_sync_jobs WHERE provider = 'zhihu' AND status IN ('queued','running') ORDER BY created_at LIMIT 10",
+    ).all() as Array<{ id: string }>
+    for (const row of rows) queueMicrotask(() => { void this.runSync(row.id).catch(() => undefined) })
+  }
+
+  syncJobs(learnerId: string) {
+    return (this.repository.db.prepare(
+      'SELECT * FROM source_sync_jobs WHERE learner_id = ? ORDER BY created_at DESC LIMIT 20',
+    ).all(learnerId) as ConnectionRow[]).map((row) => this.publicJob(row))
+  }
+
+  syncJob(learnerId: string, id: string) {
+    const row = this.repository.db.prepare(
+      'SELECT * FROM source_sync_jobs WHERE id=? AND learner_id=?',
+    ).get(id, learnerId) as ConnectionRow | undefined
+    if (!row) throw new LabError('source_sync_not_found', '同步任务不存在', 404)
+    return this.publicJob(row)
+  }
+
+  collections(learnerId: string) {
+    return this.repository.db.prepare(`
+      SELECT c.id, c.title name, COUNT(ci.source_item_id) itemCount, c.updated_at updatedAt
+      FROM external_source_collections c
+      LEFT JOIN external_source_collection_items ci ON ci.collection_id = c.id
+      WHERE c.learner_id = ? AND c.status = 'active'
+      GROUP BY c.id ORDER BY c.updated_at DESC
+    `).all(learnerId)
+  }
+
+  items(learnerId: string, query?: string, collectionId?: string) {
+    const pattern = `%${(query ?? '').trim()}%`
+    const collectionJoin = collectionId ? 'JOIN external_source_collection_items ci ON ci.source_item_id = i.id AND ci.collection_id = ?' : ''
+    const params = collectionId ? [collectionId, learnerId, pattern, pattern] : [learnerId, pattern, pattern]
+    const rows = this.repository.db.prepare(`
+      SELECT i.id, i.title, i.excerpt, i.author, i.url, i.saved, i.published_at publishedAt, i.tags_json tagsJson
+      FROM learner_source_items i ${collectionJoin}
+      WHERE i.learner_id = ? AND i.status = 'active' AND (i.title LIKE ? OR i.excerpt LIKE ?)
+      ORDER BY i.updated_at DESC LIMIT 50
+    `).all(...params) as Array<Record<string, unknown>>
+    return { items: rows.map((row) => ({ ...row, saved: Boolean(row.saved), collectionId: collectionId ?? null, tags: this.json<string[]>(row.tagsJson, []) })), nextCursor: null }
+  }
+
+  async search(learnerId: string, query: string) {
+    const normalized = query.trim().replace(/\s+/g, ' ').slice(0, 200)
+    if (!normalized) return this.items(learnerId, '')
+    if (this.options.publicSearch?.configured) {
+      try {
+        const results = await this.options.publicSearch.search(normalized, 10)
+        const timestamp = new Date().toISOString()
+        const upsert = this.repository.db.prepare(`
+          INSERT INTO learner_source_items(
+            id,learner_id,provider,external_id,url,title,author,excerpt,content_json,visibility,
+            content_hash,status,saved,tags_json,published_at,removed_at,created_at,updated_at
+          ) VALUES(?,?,'zhihu',?,?,?,?,?,?,'public',?,'active',0,'[]',NULL,NULL,?,?)
+          ON CONFLICT(learner_id,provider,external_id) DO UPDATE SET
+            url=excluded.url,title=excluded.title,author=excluded.author,excerpt=excluded.excerpt,
+            content_json=excluded.content_json,content_hash=excluded.content_hash,
+            visibility='public',status='active',removed_at=NULL,updated_at=excluded.updated_at
+        `)
+        this.repository.db.transaction(() => {
+          for (const result of results) {
+            if (!result.externalId) continue
+            const normalizedResult = JSON.stringify({ retrievedAt: result.retrievedAt, metadata: result.metadata, query: normalized })
+            upsert.run(
+              randomUUID(), learnerId, result.externalId, result.url, result.title, result.author,
+              result.excerpt.slice(0, 4000), normalizedResult, this.hash(`${result.url}\n${result.title}\n${result.excerpt}`), timestamp, timestamp,
+            )
+          }
+        })()
+      } catch {
+        const local = this.items(learnerId, normalized)
+        if (local.items.length > 0) return local
+        throw new LabError('zhihu_search_failed', '知乎公共搜索暂时不可用', 503, true)
+      }
+    }
+    return this.items(learnerId, normalized)
+  }
+
+  save(learnerId: string, sourceItemId: string) {
+    const changed = this.repository.db.prepare(
+      "UPDATE learner_source_items SET saved = 1, updated_at = ? WHERE id = ? AND learner_id = ? AND status = 'active'",
+    ).run(new Date().toISOString(), sourceItemId, learnerId)
+    if (changed.changes !== 1) throw new LabError('source_item_not_found', '来源内容不存在', 404)
+    return { id: sourceItemId, saved: true }
+  }
+
+  disconnect(learnerId: string) {
+    this.repository.db.transaction(() => {
+      this.repository.db.prepare(`
+        DELETE FROM external_source_collection_items
+        WHERE source_item_id IN (
+          SELECT i.id FROM learner_source_items i
+          WHERE i.learner_id = ? AND i.provider = 'zhihu'
+            AND NOT EXISTS (SELECT 1 FROM practice_card_sources pcs WHERE pcs.source_item_id = i.id)
+        )
+      `).run(learnerId)
+      this.repository.db.prepare(`
+        DELETE FROM learner_source_items
+        WHERE learner_id = ? AND provider = 'zhihu'
+          AND NOT EXISTS (SELECT 1 FROM practice_card_sources pcs WHERE pcs.source_item_id = learner_source_items.id)
+      `).run(learnerId)
+      this.repository.db.prepare(`
+        UPDATE learner_source_items SET content_json = '{}', status = 'removed', removed_at = ?, updated_at = ?
+        WHERE learner_id = ? AND provider = 'zhihu'
+      `).run(new Date().toISOString(), new Date().toISOString(), learnerId)
+      this.repository.db.prepare("DELETE FROM external_source_collections WHERE learner_id = ? AND provider = 'zhihu'").run(learnerId)
+      this.repository.db.prepare("DELETE FROM provider_connections WHERE learner_id = ? AND provider = 'zhihu'").run(learnerId)
+    })()
+    return { disconnected: true }
+  }
+
+  private async runSync(jobId: string): Promise<void> {
+    const job = this.job(jobId)
+    if (job.status === 'completed') return
+    const learnerId = String(job.learner_id)
+    const connection = this.connection(learnerId)
+    const startedAt = new Date().toISOString()
+    this.repository.db.prepare(
+      "UPDATE source_sync_jobs SET status = 'running', started_at = COALESCE(started_at, ?), updated_at = ? WHERE id = ?",
+    ).run(startedAt, startedAt, jobId)
+    try {
+      let imported = 0
+      let updated = 0
+      const collections = await this.fetchAll(connection, this.options.collectionsPath, 5000)
+      for (const collection of collections) {
+        const collectionId = this.upsertCollection(learnerId, connection, collection, 'favorites')
+        const path = this.options.collectionItemsPath.replace('{collection_id}', encodeURIComponent(collection.id))
+        const result = await this.syncItems(learnerId, connection, collectionId, path, 5000 - imported)
+        imported += result.imported
+        updated += result.updated
+        if (imported >= 5000) break
+      }
+      for (const [kind, path, limit] of [
+        ['own', this.options.contentPath, 200],
+        ['activities', this.options.momentsPath, 200],
+      ] as const) {
+        const collectionId = this.upsertSyntheticCollection(learnerId, connection, kind)
+        const result = await this.syncItems(learnerId, connection, collectionId, path, limit)
+        imported += result.imported
+        updated += result.updated
+      }
+      const completedAt = new Date().toISOString()
+      this.repository.db.prepare(`
+        UPDATE source_sync_jobs SET status='completed', imported_count=?, updated_count=?, cursor=NULL,
+          completed_at=?, updated_at=?, error_code=NULL, error_message=NULL WHERE id=?
+      `).run(imported, updated, completedAt, completedAt, jobId)
+    } catch (error) {
+      const safe = publicError(error)
+      this.repository.db.prepare(`
+        UPDATE source_sync_jobs SET status='failed', error_code=?, error_message=?, completed_at=?, updated_at=? WHERE id=?
+      `).run(safe.code, safe.message, new Date().toISOString(), new Date().toISOString(), jobId)
+      throw error
+    }
+  }
+
+  private async syncItems(learnerId: string, connection: ConnectionRow, collectionId: string, path: string, limit: number) {
+    const seen = new Set<string>()
+    let imported = 0
+    let updated = 0
+    const items = await this.fetchAll(connection, path, Math.max(0, limit))
+    const now = new Date().toISOString()
+    for (const item of items) {
+      seen.add(item.id)
+      const exists = this.repository.db.prepare(
+        "SELECT id FROM learner_source_items WHERE learner_id=? AND provider='zhihu' AND external_id=?",
+      ).get(learnerId, item.id) as { id: string } | undefined
+      const sourceId = exists?.id ?? randomUUID()
+      const title = item.title ?? item.name ?? '知乎内容'
+      const url = item.url ?? item.link ?? `https://www.zhihu.com/content/${encodeURIComponent(item.id)}`
+      const author = typeof item.author === 'string' ? item.author : item.author?.name ?? null
+      const excerpt = (item.excerpt ?? item.summary ?? item.content ?? '').slice(0, 4000)
+      this.repository.db.prepare(`
+        INSERT INTO learner_source_items(
+          id, learner_id, provider, external_id, url, title, author, excerpt, content_json,
+          visibility, content_hash, status, saved, tags_json, published_at, removed_at, created_at, updated_at
+        ) VALUES (?, ?, 'zhihu', ?, ?, ?, ?, ?, ?, 'private', ?, 'active', 1, '[]', ?, NULL, ?, ?)
+        ON CONFLICT(learner_id, provider, external_id) DO UPDATE SET
+          url=excluded.url, title=excluded.title, author=excluded.author, excerpt=excluded.excerpt,
+          content_json=excluded.content_json, content_hash=excluded.content_hash,
+          status='active', removed_at=NULL, published_at=excluded.published_at, updated_at=excluded.updated_at
+      `).run(sourceId, learnerId, item.id, url, title, author, excerpt, JSON.stringify(item), this.hash(JSON.stringify(item)), asIso(item.published_at), now, now)
+      this.repository.db.prepare(
+        'INSERT OR IGNORE INTO external_source_collection_items(collection_id, source_item_id, position, created_at) VALUES (?, ?, ?, ?)',
+      ).run(collectionId, sourceId, imported + updated, now)
+      if (exists) updated += 1
+      else imported += 1
+    }
+    if (items.length < limit) {
+      const stale = this.repository.db.prepare(`
+        SELECT i.id, i.external_id FROM learner_source_items i
+        JOIN external_source_collection_items ci ON ci.source_item_id=i.id
+        WHERE ci.collection_id=? AND i.learner_id=? AND i.provider='zhihu'
+      `).all(collectionId, learnerId) as Array<{ id: string; external_id: string }>
+      for (const item of stale) if (!seen.has(item.external_id)) this.repository.db.prepare(
+        "UPDATE learner_source_items SET status='removed', removed_at=?, updated_at=? WHERE id=? AND NOT EXISTS (SELECT 1 FROM practice_card_sources WHERE source_item_id=?)",
+      ).run(now, now, item.id, item.id)
+    }
+    return { imported, updated }
+  }
+
+  private async fetchAll(connection: ConnectionRow, initialPath: string, limit: number): Promise<SourceItem[]> {
+    const output: SourceItem[] = []
+    let next: string | null = initialPath
+    while (next && output.length < limit) {
+      const page = await this.authorizedPage(connection, next)
+      const parsed = pageSchema.parse(page)
+      output.push(...(parsed.data ?? parsed.items ?? parsed.results ?? []).slice(0, limit - output.length))
+      next = parsed.cursor ?? parsed.paging?.next ?? null
+    }
+    return output
+  }
+
+  private async authorizedPage(connection: ConnectionRow, path: string): Promise<unknown> {
+    let token = this.token(connection)
+    let refreshed = false
+    while (true) {
+      const response = await this.fetchWithRateLimit(this.url(path), { headers: { Authorization: `Bearer ${token.access_token}`, Accept: 'application/json' } })
+      if (response.status === 401 && !refreshed) {
+        refreshed = true
+        if (!token.refresh_token) {
+          this.markReauthorization(String(connection.id))
+          throw new LabError('reauthorization_required', '知乎连接需要重新授权', 401)
+        }
+        token = await this.exchangeToken({ grant_type: 'refresh_token', refresh_token: token.refresh_token })
+        this.updateToken(connection, token)
+        continue
+      }
+      if (!response.ok) throw new LabError(response.status >= 500 ? 'zhihu_unavailable' : 'zhihu_request_failed', '知乎接口暂时不可用', response.status >= 500 ? 503 : 502)
+      return response.json()
+    }
+  }
+
+  private async fetchWithRateLimit(url: string, init: RequestInit): Promise<Response> {
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      const response = await this.fetchImpl(url, init)
+      if (response.status !== 429 || attempt === 3) return response
+      const retryAfter = Math.max(0, Number(response.headers.get('retry-after') ?? 0)) * 1000
+      const delay = retryAfter || Math.min(4_000, 250 * 2 ** attempt) + Math.floor(Math.random() * 100)
+      await this.sleep(delay)
+    }
+    throw new LabError('zhihu_rate_limited', '知乎接口请求过于频繁', 503)
+  }
+
+  private async exchangeToken(payload: Record<string, string>): Promise<Token> {
+    const response = await this.fetchImpl(this.url(this.options.tokenPath), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+      body: JSON.stringify({ ...payload, client_id: this.options.clientId, client_secret: this.options.clientSecret }),
+    })
+    if (!response.ok) throw new LabError('oauth_token_exchange_failed', '知乎 OAuth token 交换失败', 502)
+    return tokenSchema.parse(await response.json())
+  }
+
+  private upsertCollection(learnerId: string, connection: ConnectionRow, item: SourceItem, kind: string): string {
+    const existing = this.repository.db.prepare(
+      "SELECT id FROM external_source_collections WHERE learner_id=? AND provider='zhihu' AND external_id=? AND kind=?",
+    ).get(learnerId, item.id, kind) as { id: string } | undefined
+    const id = existing?.id ?? randomUUID()
+    const now = new Date().toISOString()
+    this.repository.db.prepare(`
+      INSERT INTO external_source_collections(id,learner_id,connection_id,provider,external_id,kind,title,status,metadata_json,created_at,updated_at)
+      VALUES(?,?,?,'zhihu',?,?,?,'active','{}',?,?)
+      ON CONFLICT(learner_id,provider,external_id,kind) DO UPDATE SET title=excluded.title,status='active',updated_at=excluded.updated_at
+    `).run(id, learnerId, connection.id, item.id, kind, item.title ?? item.name ?? '知乎收藏夹', now, now)
+    return id
+  }
+
+  private upsertSyntheticCollection(learnerId: string, connection: ConnectionRow, kind: string): string {
+    return this.upsertCollection(learnerId, connection, { id: kind, title: kind === 'own' ? '我的内容' : '关注动态' }, kind)
+  }
+
+  private connection(learnerId: string): ConnectionRow {
+    const row = this.repository.db.prepare(
+      "SELECT * FROM provider_connections WHERE learner_id=? AND provider='zhihu' AND status='active'",
+    ).get(learnerId) as ConnectionRow | undefined
+    if (!row) throw new LabError('zhihu_not_connected', '知乎尚未连接', 409)
+    return row
+  }
+
+  private token(connection: ConnectionRow): Token {
+    try { return tokenSchema.parse(JSON.parse(this.decrypt(connection))) }
+    catch { throw new LabError('oauth_token_unreadable', '知乎连接凭据无法读取，请重新授权', 409) }
+  }
+
+  private updateToken(connection: ConnectionRow, token: Token): void {
+    const sealed = this.encrypt(JSON.stringify(token))
+    this.repository.db.prepare(`
+      UPDATE provider_connections SET token_ciphertext=?,token_iv=?,token_tag=?,token_expires_at=?,status='active',updated_at=? WHERE id=?
+    `).run(sealed.ciphertext, sealed.iv, sealed.tag, token.expires_in ? new Date(Date.now() + token.expires_in * 1000).toISOString() : null, new Date().toISOString(), connection.id)
+    connection.token_ciphertext = sealed.ciphertext
+    connection.token_iv = sealed.iv
+    connection.token_tag = sealed.tag
+  }
+
+  private markReauthorization(connectionId: string): void {
+    this.repository.db.prepare("UPDATE provider_connections SET status='reauthorization_required',updated_at=? WHERE id=?").run(new Date().toISOString(), connectionId)
+  }
+
+  private job(id: string): ConnectionRow {
+    const row = this.repository.db.prepare('SELECT * FROM source_sync_jobs WHERE id=?').get(id) as ConnectionRow | undefined
+    if (!row) throw new LabError('source_sync_not_found', '同步任务不存在', 404)
+    return row
+  }
+
+  private publicJob(row: ConnectionRow) {
+    return {
+      id: String(row.id), provider: 'zhihu' as const, status: row.status,
+      importedCount: Number(row.imported_count ?? 0), updatedCount: Number(row.updated_count ?? 0),
+      errorMessage: row.error_message == null ? null : String(row.error_message),
+      startedAt: row.started_at == null ? null : String(row.started_at),
+      completedAt: row.completed_at == null ? null : String(row.completed_at),
+    }
+  }
+
+  private hash(value: string): string { return createHash('sha256').update(value).digest('hex') }
+  private key(): Buffer { return createHash('sha256').update(this.options.encryptionKey).digest() }
+  private json<T>(value: unknown, fallback: T): T { try { return typeof value === 'string' ? JSON.parse(value) as T : fallback } catch { return fallback } }
+  private url(path: string): string { return /^https?:\/\//.test(path) ? path : `${this.options.baseUrl.replace(/\/$/, '')}/${path.replace(/^\//, '')}` }
+  private encrypt(value: string) { const iv=randomBytes(12); const cipher=createCipheriv('aes-256-gcm',this.key(),iv); const ciphertext=Buffer.concat([cipher.update(value,'utf8'),cipher.final()]); return {ciphertext:ciphertext.toString('base64'),iv:iv.toString('base64'),tag:cipher.getAuthTag().toString('base64')} }
+  private decrypt(row: ConnectionRow) { const decipher=createDecipheriv('aes-256-gcm',this.key(),Buffer.from(String(row.token_iv),'base64')); decipher.setAuthTag(Buffer.from(String(row.token_tag),'base64')); return Buffer.concat([decipher.update(Buffer.from(String(row.token_ciphertext),'base64')),decipher.final()]).toString('utf8') }
 }

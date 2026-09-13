@@ -84,6 +84,7 @@ function fixtureSessionFromId(id: string) { const existing = fixtureSessions.get
 
 export async function startSourceSync(idempotencyKey = createClientId()): Promise<SourceSync> { return request('/product/source-syncs', write('POST', idempotencyKey, { provider: 'zhihu' })) }
 export async function getSourceSyncs(): Promise<SourceSync[]> { return request('/product/source-syncs') }
+export async function getSourceSync(id: string): Promise<SourceSync> { return request(`/product/source-syncs/${encode(id)}`) }
 export async function getSourceCollections(): Promise<SourceCollection[]> { return request('/product/source-collections') }
 export async function getSourceItems(collectionId?: string): Promise<SourceSearchResult> { return request(`/product/source-items${collectionId ? `?collectionId=${encode(collectionId)}` : ''}`) }
 export async function searchSourceItems(query: string): Promise<SourceSearchResult> { return request(`/product/source-search?q=${encode(query)}`) }

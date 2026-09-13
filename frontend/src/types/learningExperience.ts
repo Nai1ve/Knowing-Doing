@@ -60,7 +60,13 @@ export interface GymSession {
   activityStates: GymActivityState[]
   currentActivityId: string | null
   attemptsRemaining: number
-  runtime: { status: 'not_started' | 'starting' | 'active' | 'completed'; label?: string } | null
+  runtime: {
+    status: 'not_started' | 'starting' | 'ready' | 'active' | 'completed'
+    label?: string
+    kind?: 'mysql_lab' | 'docker_workspace'
+    practiceRunId?: string
+    workspaceRunId?: string | null
+  } | null
   reflection: string | null
   progress: { completed: number; total: number }
   createdAt: string

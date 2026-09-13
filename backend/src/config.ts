@@ -82,6 +82,8 @@ export interface LabConfig {
   practiceCardV2Enabled: boolean
   mixedGymEnabled: boolean
   legacyCaseFlowEnabled: boolean
+  publicOrigin: string
+  zhihuOauthBaseUrl: string
 }
 
 export function loadConfig(): LabConfig {
@@ -100,8 +102,20 @@ export function loadConfig(): LabConfig {
         ? 'shared_demo'
         : 'client'
   const caseBuilderEnabled = process.env.CASE_BUILDER_ENABLED === 'true'
-  if (identityMode === 'shared_demo' && process.env.ZHIHU_OAUTH_ENABLED === 'true') throw new Error('ZHIHU_OAUTH_ENABLED is not permitted in shared_demo identity mode')
-  if (process.env.ZHIHU_OAUTH_ENABLED === 'true' && (!process.env.OAUTH_TOKEN_ENCRYPTION_KEY || Buffer.byteLength(process.env.OAUTH_TOKEN_ENCRYPTION_KEY) < 32)) throw new Error('OAUTH_TOKEN_ENCRYPTION_KEY must be at least 32 bytes when ZHIHU_OAUTH_ENABLED=true')
+  const signedDeviceSessionEnabled = process.env.SIGNED_DEVICE_SESSION_ENABLED === 'true'
+  const zhihuOauthEnabled = process.env.ZHIHU_OAUTH_ENABLED === 'true'
+  const publicOrigin = process.env.PUBLIC_ORIGIN ?? 'http://119.45.243.102'
+  const zhihuOauthRedirectUri = process.env.ZHIHU_OAUTH_REDIRECT_URI ?? 'http://119.45.243.102/api/auth/oauth/zhihu/callback'
+  const expectedOauthOrigin = 'http://119.45.243.102'
+  const expectedOauthCallback = `${expectedOauthOrigin}/api/auth/oauth/zhihu/callback`
+  if (zhihuOauthEnabled && !signedDeviceSessionEnabled) throw new Error('SIGNED_DEVICE_SESSION_ENABLED=true is required when ZHIHU_OAUTH_ENABLED=true')
+  if (process.env.ZHIHU_SOURCE_SYNC_ENABLED === 'true' && !zhihuOauthEnabled) throw new Error('ZHIHU_OAUTH_ENABLED=true is required when ZHIHU_SOURCE_SYNC_ENABLED=true')
+  if (process.env.MIXED_GYM_ENABLED === 'true' && process.env.PRACTICE_CARD_V2_ENABLED !== 'true') throw new Error('PRACTICE_CARD_V2_ENABLED=true is required when MIXED_GYM_ENABLED=true')
+  if (identityMode === 'shared_demo' && zhihuOauthEnabled) throw new Error('ZHIHU_OAUTH_ENABLED is not permitted in shared_demo identity mode')
+  if (zhihuOauthEnabled && (!process.env.ZHIHU_OAUTH_APP_ID || !process.env.ZHIHU_OAUTH_APP_KEY)) throw new Error('ZHIHU_OAUTH_APP_ID and ZHIHU_OAUTH_APP_KEY are required when ZHIHU_OAUTH_ENABLED=true')
+  if (zhihuOauthEnabled && (!process.env.OAUTH_TOKEN_ENCRYPTION_KEY || Buffer.byteLength(process.env.OAUTH_TOKEN_ENCRYPTION_KEY) < 32)) throw new Error('OAUTH_TOKEN_ENCRYPTION_KEY must be at least 32 bytes when ZHIHU_OAUTH_ENABLED=true')
+  if (zhihuOauthEnabled && (publicOrigin !== expectedOauthOrigin || zhihuOauthRedirectUri !== expectedOauthCallback)) throw new Error(`Zhihu OAuth requires PUBLIC_ORIGIN=${expectedOauthOrigin} and ZHIHU_OAUTH_REDIRECT_URI=${expectedOauthCallback}`)
+  if (zhihuOauthEnabled && zhihuOauthRedirectUri.startsWith('http://') && process.env.ALLOW_INSECURE_OAUTH_CALLBACK !== 'true') throw new Error('ALLOW_INSECURE_OAUTH_CALLBACK=true is required for an HTTP OAuth callback')
   const caseBuilderUrl = process.env.CASE_BUILDER_URL ?? 'http://127.0.0.1:3102'
   const caseBuilderToken = process.env.CASE_BUILDER_TOKEN ?? ''
   if (caseBuilderEnabled && !caseBuilderToken) throw new Error('CASE_BUILDER_TOKEN is required when CASE_BUILDER_ENABLED=true')
@@ -166,21 +180,23 @@ export function loadConfig(): LabConfig {
     zhihuOauthClientSecret: process.env.ZHIHU_OAUTH_APP_KEY ?? process.env.ZHIHU_OAUTH_CLIENT_SECRET ?? '',
     oauthTokenEncryptionKey: process.env.OAUTH_TOKEN_ENCRYPTION_KEY ?? '',
     allowInsecureOauthCallback: process.env.ALLOW_INSECURE_OAUTH_CALLBACK === 'true',
-    legacyHeaderLearnerId: process.env.ZHIXING_LEGACY_HEADER_IDENTITY === 'true' || process.env.NODE_ENV !== 'production',
+    legacyHeaderLearnerId: process.env.NODE_ENV === 'test' || (process.env.NODE_ENV !== 'production' && (process.env.AUTH_MODE === 'legacy' || process.env.ZHIXING_LEGACY_HEADER_IDENTITY === 'true')),
     zhihuOauthAuthorizePath: process.env.ZHIHU_OAUTH_AUTHORIZE_PATH ?? '/authorize',
     zhihuOauthTokenPath: process.env.ZHIHU_OAUTH_TOKEN_PATH ?? '/access_token',
-    zhihuUserPath: process.env.ZHIHU_USER_PATH ?? '/user',
-    zhihuCollectionsPath: process.env.ZHIHU_COLLECTIONS_PATH ?? '/user/collections',
-    zhihuCollectionItemsPath: process.env.ZHIHU_COLLECTION_ITEMS_PATH ?? '/user/collection/{collection_id}',
-    zhihuContentPath: process.env.ZHIHU_CONTENT_PATH ?? '/user/content',
-    zhihuMomentsPath: process.env.ZHIHU_MOMENTS_PATH ?? '/user/moments',
-    zhihuOauthRedirectUri: process.env.ZHIHU_OAUTH_REDIRECT_URI ?? 'http://119.45.243.102/api/auth/oauth/zhihu/callback',
+    zhihuUserPath: process.env.ZHIHU_OAUTH_USER_PATH ?? '/user',
+    zhihuCollectionsPath: process.env.ZHIHU_OAUTH_COLLECTIONS_PATH ?? '/user/collections',
+    zhihuCollectionItemsPath: process.env.ZHIHU_OAUTH_COLLECTION_ITEMS_PATH ?? '/user/collection/{collection_id}',
+    zhihuContentPath: process.env.ZHIHU_OAUTH_CONTENT_PATH ?? '/user/content',
+    zhihuMomentsPath: process.env.ZHIHU_OAUTH_MOMENTS_PATH ?? '/user/moments',
+    zhihuOauthRedirectUri,
     zhihuOauthScopes: process.env.ZHIHU_OAUTH_SCOPES ?? '',
-    signedDeviceSessionEnabled: process.env.SIGNED_DEVICE_SESSION_ENABLED === 'true',
-    zhihuOauthEnabled: process.env.ZHIHU_OAUTH_ENABLED === 'true',
+    signedDeviceSessionEnabled,
+    zhihuOauthEnabled,
     zhihuSourceSyncEnabled: process.env.ZHIHU_SOURCE_SYNC_ENABLED === 'true',
     practiceCardV2Enabled: process.env.PRACTICE_CARD_V2_ENABLED === 'true',
     mixedGymEnabled: process.env.MIXED_GYM_ENABLED === 'true',
     legacyCaseFlowEnabled: process.env.LEGACY_CASE_FLOW_ENABLED !== 'false',
+    publicOrigin,
+    zhihuOauthBaseUrl: process.env.ZHIHU_OAUTH_BASE_URL ?? 'https://openapi.zhihu.com',
   }
 }

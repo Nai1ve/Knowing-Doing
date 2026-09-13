@@ -37,6 +37,8 @@ export function sendProductTutor(runId: string, message: string): Promise<{ run:
 
 async function streamTutorRequest(path: string, body: Record<string, unknown>, onEvent: (event: ProductTutorStreamEvent) => void): Promise<void> {
   const headers = new Headers({ Accept: 'text/event-stream' }); headers.set('Content-Type', 'application/json'); headers.set('X-Learner-Id', learnerId())
+  const csrfToken = typeof localStorage === 'undefined' ? null : localStorage.getItem('zhixing.csrf-token')
+  if (csrfToken) headers.set('X-CSRF-Token', csrfToken)
   const response = await fetch(`${import.meta.env.VITE_API_BASE_URL ?? '/api'}${path}`, { method: 'POST', credentials: 'include', headers, body: JSON.stringify(body) })
   if (!response.ok) {
     const text = await response.text(); let payload: unknown

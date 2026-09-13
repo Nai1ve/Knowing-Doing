@@ -25,6 +25,26 @@ with mode `0600`. The required runtime secrets are `LAB_TOKEN_SECRET`,
 defaults are `ZHIXING_MODEL_BASE_URL=https://api.deepseek.com` and
 `ZHIXING_MODEL_NAME=deepseek-flash`.
 
+## Zhihu OAuth over the fixed server IP
+
+This release uses the exact callback
+`http://119.45.243.102/api/auth/oauth/zhihu/callback`. Register that complete
+value in the Zhihu application; the frontend never supplies a redirect URI.
+Add `ZHIHU_OAUTH_APP_ID`, `ZHIHU_OAUTH_APP_KEY`,
+`OAUTH_TOKEN_ENCRYPTION_KEY`, and the application-approved
+`ZHIHU_OAUTH_SCOPES` as Actions secrets. Then enable the repository variables
+`SIGNED_DEVICE_SESSION_ENABLED`, `ZHIHU_OAUTH_ENABLED`, and
+`ZHIHU_SOURCE_SYNC_ENABLED` in that order.
+
+OAuth remains disabled by default. Because this callback is intentionally HTTP,
+the backend additionally requires `ALLOW_INSECURE_OAUTH_CALLBACK=true`; session
+cookies cannot use the Secure attribute on this deployment. If Zhihu rejects a
+public HTTP callback, leave OAuth disabled. Do not proxy tokens through the
+frontend or weaken state validation.
+
+Practice Card v2 and Mixed Gym are controlled independently with the repository
+variables `PRACTICE_CARD_V2_ENABLED` and `MIXED_GYM_ENABLED`.
+
 ## Enable the OpenHands Builder
 
 The current workflow enables the Builder by default. Set the repository

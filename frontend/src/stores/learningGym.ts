@@ -20,6 +20,7 @@ export const useLearningGymStore = defineStore('learning-gym', () => {
   const stateFor = (activityId: string) => session.value?.activityStates.find((state) => state.activityId === activityId)
   const actionKeys = new Map<string, string>()
   const keyFor = (action: string) => { const existing = actionKeys.get(action); if (existing) return existing; const key = createClientId(); actionKeys.set(action, key); return key }
+  const releaseKey = (action: string) => actionKeys.delete(action)
 
   async function ensureCard(planUnitId: string, mode: PracticeCardMode = 'mixed') {
     loading.value = true; cardError.value = null; error.value = null
@@ -32,8 +33,10 @@ export const useLearningGymStore = defineStore('learning-gym', () => {
     let nextCard: PracticeCard | null = null
     try { nextCard = await getPracticeCardForPlanUnit(planUnitId) } catch { nextCard = await ensureCard(planUnitId, mode) }
     if (!nextCard) return
-      const storedSessions = typeof window !== 'undefined' ? JSON.parse(window.localStorage.getItem(activeSessionKey) ?? '{}') as Record<string, string> : {}
-      const stored = storedSessions[nextCard.id]
+    const storedSessions = typeof window !== 'undefined' ? JSON.parse(window.localStorage.getItem(activeSessionKey) ?? '{}') as Record<string, string> : {}
+    const stored = storedSessions[nextCard.id]
+    if (card.value?.id !== nextCard.id) events.value = []
+    card.value = nextCard
     loading.value = true
     try {
       if (stored) {
@@ -58,18 +61,18 @@ export const useLearningGymStore = defineStore('learning-gym', () => {
   async function saveAnswer(activityId: string, answer: string | string[]) {
     if (!session.value) return
     saving.value = true; error.value = null
-    try { session.value = await saveGymActivityAnswer(session.value.id, activityId, answer, keyFor(`save:${session.value.id}:${activityId}`)) }
+    try { const action=`save:${session.value.id}:${activityId}`; session.value = await saveGymActivityAnswer(session.value.id, activityId, answer, keyFor(action)); releaseKey(action) }
     catch (cause) { error.value = cause instanceof Error ? cause.message : '答案保存失败' }
     finally { saving.value = false }
   }
   async function submitAnswer(activityId: string): Promise<AnswerSubmission | null> {
     if (!session.value) return null
     submitting.value = true; error.value = null
-    try { const result = await submitGymActivityAnswer(session.value.id, activityId, keyFor(`submit:${session.value.id}:${activityId}`)); session.value = result.session; return result }
+    try { const action=`submit:${session.value.id}:${activityId}`; const result = await submitGymActivityAnswer(session.value.id, activityId, keyFor(action)); session.value = result.session; releaseKey(action); return result }
     catch (cause) { error.value = cause instanceof Error ? cause.message : '答案提交失败'; return null }
     finally { submitting.value = false }
   }
-  async function startRuntime() { if (!session.value) return; saving.value = true; try { session.value = await startGymRuntime(session.value.id, keyFor(`runtime-start:${session.value.id}`)) } catch (cause) { error.value = cause instanceof Error ? cause.message : '运行时启动失败' } finally { saving.value = false } }
+  async function startRuntime() { if (!session.value) return; saving.value = true; try { const action=`runtime-start:${session.value.id}`; session.value = await startGymRuntime(session.value.id, keyFor(action)); releaseKey(action) } catch (cause) { error.value = cause instanceof Error ? cause.message : '运行时启动失败' } finally { saving.value = false } }
   async function refreshSession() { if (!session.value) return; try { session.value = await getGymSession(session.value.id); await refreshEvents() } catch (cause) { error.value = cause instanceof Error ? cause.message : 'Gym 状态刷新失败' } }
   async function complete(reflection: string) { if (!session.value) return; completing.value = true; error.value = null; try { const cardId = session.value.practiceCardId; const result = await completeGymSession(session.value.id, reflection, keyFor(`complete:${session.value.id}`)); session.value = result.session; if (typeof window !== 'undefined') { const stored = JSON.parse(window.localStorage.getItem(activeSessionKey) ?? '{}') as Record<string, string>; delete stored[cardId]; window.localStorage.setItem(activeSessionKey, JSON.stringify(stored)) } } catch (cause) { error.value = cause instanceof Error ? cause.message : 'Gym 完成失败' } finally { completing.value = false } }
   function reset() { card.value = null; session.value = null; events.value = []; error.value = null; cardError.value = null }

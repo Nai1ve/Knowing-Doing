@@ -30,7 +30,9 @@ import { MixedGymService } from './mixed-gym-service.js'
 const config = loadConfig()
 const productRepository = new ProductRepository(config.productDbPath)
 const identityService = new IdentityService(productRepository)
-const zhihuGateway = new ZhihuGateway(productRepository, { clientId: config.zhihuOauthClientId, clientSecret: config.zhihuOauthClientSecret, baseUrl: config.zhihuApiBaseUrl, encryptionKey: config.oauthTokenEncryptionKey, allowInsecureCallback: config.allowInsecureOauthCallback, authorizePath: config.zhihuOauthAuthorizePath, tokenPath: config.zhihuOauthTokenPath, userPath: config.zhihuUserPath, collectionsPath: config.zhihuCollectionsPath, collectionItemsPath: config.zhihuCollectionItemsPath, contentPath: config.zhihuContentPath, momentsPath: config.zhihuMomentsPath, redirectUri: config.zhihuOauthRedirectUri, scopes: config.zhihuOauthScopes })
+const zhihuOpenApi = new ZhihuOpenApiClient({ accessSecret: config.zhihuAccessSecret, baseUrl: config.zhihuApiBaseUrl, timeoutMs: config.retrievalTimeoutMs, articlePath: config.zhihuArticlePath })
+const zhihuGateway = new ZhihuGateway(productRepository, { clientId: config.zhihuOauthClientId, clientSecret: config.zhihuOauthClientSecret, baseUrl: config.zhihuOauthBaseUrl, encryptionKey: config.oauthTokenEncryptionKey, allowInsecureCallback: config.allowInsecureOauthCallback, authorizePath: config.zhihuOauthAuthorizePath, tokenPath: config.zhihuOauthTokenPath, userPath: config.zhihuUserPath, collectionsPath: config.zhihuCollectionsPath, collectionItemsPath: config.zhihuCollectionItemsPath, contentPath: config.zhihuContentPath, momentsPath: config.zhihuMomentsPath, redirectUri: config.zhihuOauthRedirectUri, scopes: config.zhihuOauthScopes, publicSearch: zhihuOpenApi })
+if (config.zhihuSourceSyncEnabled) zhihuGateway.resume()
 productRepository.markRunningTutorInvocationsInterrupted()
 const retrieval = new RetrievalService(productRepository, new ZhihuCliProvider(config), config.retrievalCacheTtlMs)
 const curation = new CurationService(productRepository, new ModelCurationSummarizer(config))
@@ -38,7 +40,6 @@ curation.resume()
 const writingService = new WritingService(productRepository, curation, new DeepSeekWritingAgent(config))
 writingService.resumeGenerations()
 const planningService = new PlanningService(productRepository, { resumeStoragePath: config.resumeStoragePath, resumeMaxBytes: config.resumeMaxBytes })
-const zhihuOpenApi = new ZhihuOpenApiClient({ accessSecret: config.zhihuAccessSecret, baseUrl: config.zhihuApiBaseUrl, timeoutMs: config.retrievalTimeoutMs, articlePath: config.zhihuArticlePath })
 const agentPlanningService = new AgentPlanningService(productRepository, new DeepSeekPlanningAgent(config), { modelName: config.modelName }, zhihuOpenApi)
 agentPlanningService.recoverRoadmapGenerations()
 const workspaceRunner = config.workspaceRunnerFake
@@ -78,7 +79,7 @@ const { app, scheduler } = buildApp({
     maxConcurrent: config.caseBuilderMaxConcurrent,
   }),
   identityService: config.signedDeviceSessionEnabled ? identityService : undefined,
-  zhihuGateway: config.zhihuOauthEnabled && config.zhihuSourceSyncEnabled ? zhihuGateway : undefined,
+  zhihuGateway: config.signedDeviceSessionEnabled ? zhihuGateway : undefined,
   mixedGymServiceFactory: (build) => new MixedGymService(productRepository, build),
   runtimeStatus: async () => ({ model: { configured: Boolean(config.modelBaseUrl && config.modelApiKey), name: config.modelName }, caseBuilder: { enabled: config.caseBuilderEnabled, endpointConfigured: Boolean(config.caseBuilderUrl), model: config.caseBuilderLlmModel }, zhihu: { configured: Boolean(config.zhihuAccessSecret), executable: Boolean(config.zhihuAccessSecret), lastRetrieval: null } }),
 })

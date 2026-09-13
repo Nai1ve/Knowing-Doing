@@ -195,6 +195,11 @@ npm ci --ignore-scripts
 npm run build
 cd "$release_dir/frontend"
 npm ci --ignore-scripts
+VITE_ZHIHU_OAUTH_ENABLED="$(read_env_value ZHIHU_OAUTH_ENABLED /etc/knowing-doing/backend.env || echo false)" \
+VITE_ZHIHU_SOURCE_SYNC_ENABLED="$(read_env_value ZHIHU_SOURCE_SYNC_ENABLED /etc/knowing-doing/backend.env || echo false)" \
+VITE_PRACTICE_CARD_V2_ENABLED="$(read_env_value PRACTICE_CARD_V2_ENABLED /etc/knowing-doing/backend.env || echo false)" \
+VITE_MIXED_GYM_ENABLED="$(read_env_value MIXED_GYM_ENABLED /etc/knowing-doing/backend.env || echo false)" \
+VITE_LEGACY_CASE_FLOW_ENABLED="$(read_env_value LEGACY_CASE_FLOW_ENABLED /etc/knowing-doing/backend.env || echo true)" \
 npm run build
 prepare_frontend_assets
 if [ ! -f "$data_root/zhixing-product.db" ]; then

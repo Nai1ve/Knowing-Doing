@@ -114,6 +114,16 @@ jobs:
           ZHIXING_MODEL_API_KEY: ${{ secrets.ZHIXING_MODEL_API_KEY }}
           ZHIXING_MODEL_NAME: ${{ secrets.ZHIXING_MODEL_NAME || 'deepseek-flash' }}
           ZHIXING_ZHIHU_ACCESS_SECRET: ${{ secrets.ZHIXING_ZHIHU_ACCESS_SECRET }}
+          ZHIHU_OAUTH_APP_ID: ${{ secrets.ZHIHU_OAUTH_APP_ID }}
+          ZHIHU_OAUTH_APP_KEY: ${{ secrets.ZHIHU_OAUTH_APP_KEY }}
+          ZHIHU_OAUTH_SCOPES: ${{ secrets.ZHIHU_OAUTH_SCOPES }}
+          OAUTH_TOKEN_ENCRYPTION_KEY: ${{ secrets.OAUTH_TOKEN_ENCRYPTION_KEY }}
+          SIGNED_DEVICE_SESSION_ENABLED: ${{ vars.SIGNED_DEVICE_SESSION_ENABLED || 'false' }}
+          ZHIHU_OAUTH_ENABLED: ${{ vars.ZHIHU_OAUTH_ENABLED || 'false' }}
+          ZHIHU_SOURCE_SYNC_ENABLED: ${{ vars.ZHIHU_SOURCE_SYNC_ENABLED || 'false' }}
+          PRACTICE_CARD_V2_ENABLED: ${{ vars.PRACTICE_CARD_V2_ENABLED || 'false' }}
+          MIXED_GYM_ENABLED: ${{ vars.MIXED_GYM_ENABLED || 'false' }}
+          LEGACY_CASE_FLOW_ENABLED: ${{ vars.LEGACY_CASE_FLOW_ENABLED || 'true' }}
           WORKSPACE_RUNNER_TOKEN: ${{ secrets.WORKSPACE_RUNNER_TOKEN }}
           # OpenHands Builder is enabled by default after the local smoke gate.
           # Set the repository variable CASE_BUILDER_ENABLED=false to pause it.
@@ -130,6 +140,18 @@ jobs:
             test -n "${!required:-}" || { echo "Missing required secret: $required" >&2; exit 1; }
           done
           case "$CASE_BUILDER_ENABLED" in true|false) ;; *) echo 'CASE_BUILDER_ENABLED must be the repository variable true or false' >&2; exit 1 ;; esac
+          for flag in SIGNED_DEVICE_SESSION_ENABLED ZHIHU_OAUTH_ENABLED ZHIHU_SOURCE_SYNC_ENABLED PRACTICE_CARD_V2_ENABLED MIXED_GYM_ENABLED LEGACY_CASE_FLOW_ENABLED; do
+            case "${!flag}" in true|false) ;; *) echo "$flag must be the repository variable true or false" >&2; exit 1 ;; esac
+          done
+          if [ "$ZHIHU_OAUTH_ENABLED" = true ]; then
+            test "$SIGNED_DEVICE_SESSION_ENABLED" = true || { echo 'SIGNED_DEVICE_SESSION_ENABLED must be true when ZHIHU_OAUTH_ENABLED=true' >&2; exit 1; }
+            for required in ZHIHU_OAUTH_APP_ID ZHIHU_OAUTH_APP_KEY OAUTH_TOKEN_ENCRYPTION_KEY; do
+              test -n "${!required:-}" || { echo "Missing Zhihu OAuth secret: $required" >&2; exit 1; }
+            done
+            test "${#OAUTH_TOKEN_ENCRYPTION_KEY}" -ge 32 || { echo 'OAUTH_TOKEN_ENCRYPTION_KEY must contain at least 32 bytes' >&2; exit 1; }
+          fi
+          test "$ZHIHU_SOURCE_SYNC_ENABLED" = false || test "$ZHIHU_OAUTH_ENABLED" = true || { echo 'ZHIHU_SOURCE_SYNC_ENABLED requires ZHIHU_OAUTH_ENABLED=true' >&2; exit 1; }
+          test "$MIXED_GYM_ENABLED" = false || test "$PRACTICE_CARD_V2_ENABLED" = true || { echo 'MIXED_GYM_ENABLED requires PRACTICE_CARD_V2_ENABLED=true' >&2; exit 1; }
           if [ "$CASE_BUILDER_ENABLED" = true ]; then
             for required in CASE_BUILDER_TOKEN CASE_BUILDER_LLM_API_KEY CASE_BUILDER_MYSQL_ROOT_PASSWORD ENVIRONMENT_RUNTIME_SIGNING_KEY; do
               test -n "${!required:-}" || { echo "Missing Case Builder secret: $required" >&2; exit 1; }
@@ -153,6 +175,23 @@ jobs:
             printf '%s\n' 'ZHIXING_MODEL_TIMEOUT_MS=300000'
             printf 'ZHIXING_ZHIHU_ACCESS_SECRET=%s\n' "$ZHIXING_ZHIHU_ACCESS_SECRET"
             printf '%s\n' 'ZHIXING_ZHIHU_API_BASE_URL=https://developer.zhihu.com' 'ZHIXING_RETRIEVAL_TIMEOUT_MS=15000' 'ZHIXING_RETRIEVAL_CACHE_TTL_MS=86400000'
+            printf '%s\n' 'PUBLIC_ORIGIN=http://119.45.243.102' 'ZHIHU_OAUTH_REDIRECT_URI=http://119.45.243.102/api/auth/oauth/zhihu/callback'
+            printf '%s\n' 'ALLOW_INSECURE_OAUTH_CALLBACK=true' 'ZHIHU_OAUTH_BASE_URL=https://openapi.zhihu.com' 'ZHIHU_OAUTH_AUTHORIZE_PATH=/authorize' 'ZHIHU_OAUTH_TOKEN_PATH=/access_token' 'ZHIHU_OAUTH_USER_PATH=/user' 'ZHIHU_OAUTH_COLLECTIONS_PATH=/user/collections' 'ZHIHU_OAUTH_COLLECTION_ITEMS_PATH=/user/collection/{collection_id}' 'ZHIHU_OAUTH_CONTENT_PATH=/user/content' 'ZHIHU_OAUTH_MOMENTS_PATH=/user/moments'
+            printf 'ZHIHU_OAUTH_APP_ID=%s\n' "$ZHIHU_OAUTH_APP_ID"
+            printf 'ZHIHU_OAUTH_APP_KEY=%s\n' "$ZHIHU_OAUTH_APP_KEY"
+            printf 'ZHIHU_OAUTH_SCOPES=%s\n' "$ZHIHU_OAUTH_SCOPES"
+            printf 'OAUTH_TOKEN_ENCRYPTION_KEY=%s\n' "$OAUTH_TOKEN_ENCRYPTION_KEY"
+            printf 'SIGNED_DEVICE_SESSION_ENABLED=%s\n' "$SIGNED_DEVICE_SESSION_ENABLED"
+            printf 'ZHIHU_OAUTH_ENABLED=%s\n' "$ZHIHU_OAUTH_ENABLED"
+            printf 'ZHIHU_SOURCE_SYNC_ENABLED=%s\n' "$ZHIHU_SOURCE_SYNC_ENABLED"
+            printf 'PRACTICE_CARD_V2_ENABLED=%s\n' "$PRACTICE_CARD_V2_ENABLED"
+            printf 'MIXED_GYM_ENABLED=%s\n' "$MIXED_GYM_ENABLED"
+            printf 'LEGACY_CASE_FLOW_ENABLED=%s\n' "$LEGACY_CASE_FLOW_ENABLED"
+            if [ "$SIGNED_DEVICE_SESSION_ENABLED" = true ]; then
+              printf '%s\n' 'ZHIXING_IDENTITY_MODE=client'
+            else
+              printf '%s\n' 'ZHIXING_IDENTITY_MODE=shared_demo' 'ZHIXING_DEMO_LEARNER_ID=demo-learner'
+            fi
             printf '%s\n' 'WORKSPACE_RUNNER_URL=http://127.0.0.1:3101'
             printf 'WORKSPACE_RUNNER_TOKEN=%s\n' "$WORKSPACE_RUNNER_TOKEN"
             printf 'CASE_BUILDER_ENABLED=%s\n' "$CASE_BUILDER_ENABLED"
@@ -160,7 +199,6 @@ jobs:
             printf 'CASE_BUILDER_TOKEN=%s\n' "$CASE_BUILDER_TOKEN"
             printf 'ENVIRONMENT_RUNTIME_SIGNING_KEY=%s\n' "$ENVIRONMENT_RUNTIME_SIGNING_KEY"
             printf '%s\n' 'CASE_BUILDER_TASK_TIMEOUT_MS=1200000' 'CASE_BUILDER_MAX_REPAIR_ROUNDS=3' 'CASE_BUILDER_MAX_CONCURRENT=1' 'CASE_BUILDER_MAX_LOG_BYTES=65536' 'CASE_BUILDER_FAILURE_RETENTION_HOURS=24'
-            printf '%s\n' 'ZHIXING_IDENTITY_MODE=shared_demo' 'ZHIXING_DEMO_LEARNER_ID=demo-learner'
           } | ssh -p "$DEPLOY_PORT" "$DEPLOY_USER@$DEPLOY_HOST" "sudo -n install -d -m 0755 /etc/knowing-doing && sudo -n install -o root -g root -m 0600 /dev/stdin /etc/knowing-doing/backend.env"
           {
             printf 'WORKSPACE_RUNNER_TOKEN=%s\n' "$WORKSPACE_RUNNER_TOKEN"
