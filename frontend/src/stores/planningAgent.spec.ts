@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { createPinia, setActivePinia } from 'pinia'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { getAgentPlanningSession, createPlanningAssessment } from '@/api/planningService'
+import { getAgentPlanningSession, createPlanningAssessment, getPlanningAssessment } from '@/api/planningService'
 import type { AgentPlanningSession, PlanningAssessment } from '@/types/product'
 import { usePlanningAgentStore } from './planningAgent'
 
@@ -117,5 +117,21 @@ describe('planningAgent assessment recovery', () => {
     expect(firstRequestId).toBeTruthy()
     expect(secondRequestId).toBe(firstRequestId)
     expect(sessionStorage.getItem('zhixing.planning.assessment.request.session-1')).toBeNull()
+  })
+
+  it('continues polling a server-owned preparation after refresh', async () => {
+    vi.mocked(getAgentPlanningSession).mockResolvedValue(baseSession({
+      stage: 'assessment_preparing',
+      assessment: { ...failedAssessment(), status: 'preparing', error: null },
+    }))
+    vi.mocked(getPlanningAssessment).mockResolvedValue({ ...failedAssessment(), id: 'assessment-ready', status: 'answering', error: null })
+
+    const store = usePlanningAgentStore()
+    await store.load('session-1')
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    expect(getPlanningAssessment).toHaveBeenCalledWith('assessment-failed')
+    expect(store.assessment?.status).toBe('answering')
+    expect(store.assessmentLoading).toBe(false)
   })
 })

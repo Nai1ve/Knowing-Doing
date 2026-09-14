@@ -11,11 +11,13 @@ export const usePlanningAgentStore = defineStore('planningAgent', () => {
   const assessmentRequestIds = new Map<string, string>()
   let pollingToken = 0
   let pollingPromise: Promise<void> | null = null
+  let assessmentPollingToken = 0
+  let assessmentPollingPromise: Promise<void> | null = null
   const terminalStatuses = new Set<AgentRoadmapGeneration['status']>(['succeeded', 'failed', 'interrupted'])
   const sleep = (milliseconds: number) => new Promise<void>((resolve) => window.setTimeout(resolve, milliseconds))
-  function stopPolling() { pollingToken += 1; pollingPromise = null; generating.value = false }
+  function stopPolling() { pollingToken += 1; pollingPromise = null; generating.value = false; assessmentPollingToken += 1; assessmentPollingPromise = null; assessmentLoading.value = false }
   function applyReadiness(value: PlanningReadiness | null | undefined) { if (!value) return; if (session.value) session.value.readiness = value; canGenerateRoadmap.value = value.canGenerateRoadmap }
-  function applySession(value: AgentPlanningSession) { session.value = value; applyReadiness(value.readiness); question.value = value.readiness?.nextAction ?? question.value; if (value.assessment) applyAssessment(value.assessment) }
+  function applySession(value: AgentPlanningSession) { session.value = value; applyReadiness(value.readiness); question.value = value.readiness?.nextAction ?? question.value; if (value.assessment) { applyAssessment(value.assessment); resumeAssessmentPolling(value.assessment) } }
   function safeAssessmentMessage(message: string | null | undefined): string | null {
     if (!message) return null
     if (/校验|验证|rubric|reference|参考答案|schema|validation|zod|json/i.test(message)) return '评估题目暂时没有准备好，但已保存的对话和画像仍然保留，可以安全重试。'
@@ -49,6 +51,28 @@ export const usePlanningAgentStore = defineStore('planningAgent', () => {
     assessmentError.value = value.status === 'failed' ? safeAssessmentMessage(value.error) ?? '评估题目暂时没有准备好，但已保存的对话和画像仍然保留，可以安全重试。' : safeAssessmentMessage(value.error)
     if (value.status !== 'preparing' && value.status !== 'failed' && session.value?.id === value.planningSessionId) clearAssessmentRequestId(value.planningSessionId)
     if (session.value) { session.value.assessment = value; if (value.progress) session.value.progress = value.progress }
+  }
+  function resumeAssessmentPolling(value: PlanningAssessment | null | undefined) {
+    if (!value || !['preparing', 'evaluating'].includes(value.status) || assessmentPollingPromise) return
+    const token = ++assessmentPollingToken
+    assessmentLoading.value = true
+    assessmentPollingPromise = (async () => {
+      try {
+        let delay = 700
+        while (token === assessmentPollingToken) {
+          const next = await getPlanningAssessment(value.id)
+          if (token !== assessmentPollingToken) return
+          applyAssessment(next)
+          if (!['preparing', 'evaluating'].includes(next.status)) return
+          await sleep(delay)
+          delay = Math.min(2000, delay + 300)
+        }
+      } catch (cause) {
+        if (token === assessmentPollingToken) assessmentError.value = assessmentErrorMessage(cause, '评估状态暂时无法获取，但已保存的对话和画像仍然保留，可以安全重试。')
+      } finally {
+        if (token === assessmentPollingToken) { assessmentPollingPromise = null; assessmentLoading.value = false }
+      }
+    })()
   }
   function hydrateGeneration(value: AgentRoadmapGeneration | null) {
     generation.value = value
@@ -159,16 +183,16 @@ export const usePlanningAgentStore = defineStore('planningAgent', () => {
     if (assessment.value?.planningSessionId === session.value.id && assessment.value.status === 'failed' && !force) return assessment.value
     if (assessment.value?.planningSessionId === session.value.id && !['failed', 'preparing'].includes(assessment.value.status)) return assessment.value
     assessmentLoading.value = true; assessmentError.value = null
-    try { const created = await createPlanningAssessment(session.value.id, requestIdForAssessment(session.value.id)); applyAssessment(created); return created }
+    try { const created = await createPlanningAssessment(session.value.id, requestIdForAssessment(session.value.id)); applyAssessment(created); resumeAssessmentPolling(created); return created }
     catch (cause) { assessmentError.value = assessmentErrorMessage(cause, '评估暂时没有准备好，但已保存的对话和画像仍然保留，可以安全重试。'); throw cause }
-    finally { assessmentLoading.value = false }
+    finally { if (!assessmentPollingPromise) assessmentLoading.value = false }
   }
   async function loadAssessment(id = assessment.value?.id ?? session.value?.assessment?.id) {
     if (!id) return null
     assessmentLoading.value = true; assessmentError.value = null
-    try { const loaded = await getPlanningAssessment(id); applyAssessment(loaded); return loaded }
+    try { const loaded = await getPlanningAssessment(id); applyAssessment(loaded); resumeAssessmentPolling(loaded); return loaded }
     catch (cause) { assessmentError.value = assessmentErrorMessage(cause, '评估加载失败，但已保存的对话和画像仍然保留，可以安全重试。'); throw cause }
-    finally { assessmentLoading.value = false }
+    finally { if (!assessmentPollingPromise) assessmentLoading.value = false }
   }
   async function retryAssessment() {
     assessmentError.value = null
