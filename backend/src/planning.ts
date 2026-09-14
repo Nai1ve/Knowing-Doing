@@ -146,24 +146,28 @@ export class PlanningService {
     }
   }
 
-  resumePendingParses(): void { for (const row of this.repository.pendingResumeDocuments()) queueMicrotask(() => { void this.parsePendingResume(String(row.id)) }) }
+  resumePendingParses(): void { this.repository.recoverResumeParses(); for (const row of this.repository.pendingResumeDocuments()) queueMicrotask(() => { void this.parsePendingResume(String(row.id)) }) }
   private async parsePendingResume(id: string): Promise<void> {
     const row = this.repository.claimResumeParse(id); if (!row) return
+    const leaseToken = String(row.parse_lease_token)
     try {
       const data = await readFile(path.join(this.resumeStoragePath, String(row.stored_filename)))
       let provider: 'zhihu' | 'local' = 'zhihu'; let providerError: string | null = null
       let parsed
       try {
         if (!this.remoteResumeParser) throw new Error('disabled')
-        parsed = await this.remoteResumeParser.parse(data, (taskId) => this.repository.recordResumeProviderTask(id, taskId))
+        const existingTask = typeof row.provider_task_id === 'string' && row.provider_task_id.trim() ? row.provider_task_id : null
+        parsed = existingTask && 'continueTask' in this.remoteResumeParser
+          ? await (this.remoteResumeParser as typeof this.remoteResumeParser & { continueTask(taskId: string): Promise<{ pageCount: number; text: string }> }).continueTask(existingTask)
+          : await this.remoteResumeParser.parse(data, (taskId) => this.repository.recordResumeProviderTask(id, leaseToken, taskId))
       } catch (error) {
         provider = 'local'; providerError = error instanceof Error && 'code' in error ? String((error as { code: unknown }).code) : 'zhihu_pdf_fallback'
         parsed = await parseResumePdf(data)
       }
       if (!parsed.text.trim()) throw new ResumeTextUnavailableError()
-      this.repository.finishResumeParse(id, { pageCount: parsed.pageCount, text: parsed.text, provider, errorCode: providerError })
+      this.repository.finishResumeParse(id, leaseToken, { pageCount: parsed.pageCount, text: parsed.text, provider, errorCode: providerError })
     } catch (error) {
-      try { this.repository.failResumeParse(id, error instanceof ResumeTextUnavailableError ? 'resume_text_unavailable' : 'resume_parse_failed') } catch { /* process shutdown may close the database; startup recovery retries it */ }
+      try { this.repository.failResumeParse(id, leaseToken, error instanceof ResumeTextUnavailableError ? 'resume_text_unavailable' : 'resume_parse_failed') } catch { /* process shutdown may close the database; startup recovery retries it */ }
     }
   }
 

@@ -661,20 +661,24 @@ export class ProductRepository {
   }
 
   claimResumeParse(id: string, leaseMs = 5 * 60_000): Row | null {
-    const now = new Date(); const until = new Date(now.getTime() + leaseMs).toISOString()
-    const changed = this.db.prepare("UPDATE learner_resume_documents SET parse_status='processing',parse_lease_until=?,updated_at=? WHERE id=? AND (parse_status='pending' OR (parse_status='processing' AND (parse_lease_until IS NULL OR parse_lease_until<?)))").run(until, now.toISOString(), id, now.toISOString())
+    const now = new Date(); const until = new Date(now.getTime() + leaseMs).toISOString(); const token = randomUUID()
+    const changed = this.db.prepare("UPDATE learner_resume_documents SET parse_status='processing',parse_lease_until=?,parse_lease_token=?,updated_at=? WHERE id=? AND (parse_status='pending' OR (parse_status='processing' AND (parse_lease_until IS NULL OR parse_lease_until<?)))").run(until, token, now.toISOString(), id, now.toISOString())
     return changed.changes ? this.db.prepare('SELECT * FROM learner_resume_documents WHERE id=?').get(id) as Row : null
   }
 
-  finishResumeParse(id: string, result: { pageCount: number; text: string; provider: 'zhihu' | 'local'; errorCode?: string | null }): void {
-    const now = new Date().toISOString(); this.db.transaction(() => {
-      this.db.prepare("UPDATE learner_resume_documents SET parse_status='ready',page_count=?,text_length=?,extracted_text=?,parse_error=NULL,parse_error_code=?,parse_provider=?,parse_lease_until=NULL,updated_at=? WHERE id=?").run(result.pageCount,result.text.length,result.text,result.errorCode ?? null,result.provider,now,id)
+  finishResumeParse(id: string, leaseToken: string, result: { pageCount: number; text: string; provider: 'zhihu' | 'local'; errorCode?: string | null }): boolean {
+    const now = new Date().toISOString(); let completed = false; this.db.transaction(() => {
+      const changed = this.db.prepare("UPDATE learner_resume_documents SET parse_status='ready',page_count=?,text_length=?,extracted_text=?,parse_error=NULL,parse_error_code=?,parse_provider=?,parse_lease_until=NULL,parse_lease_token=NULL,updated_at=? WHERE id=? AND parse_status='processing' AND parse_lease_token=?").run(result.pageCount,result.text.length,result.text,result.errorCode ?? null,result.provider,now,id,leaseToken)
+      if (!changed.changes) return
+      completed = true
       const row = this.db.prepare('SELECT learner_id FROM learner_resume_documents WHERE id=?').get(id) as Row; this.ensureResumeChunks(id,text(row,'learner_id'))
     })()
+    return completed
   }
-  recordResumeProviderTask(id: string, taskId: string): void { this.db.prepare("UPDATE learner_resume_documents SET parse_provider='zhihu',provider_task_id=?,updated_at=? WHERE id=? AND parse_status='processing'").run(taskId,new Date().toISOString(),id) }
-  failResumeParse(id: string, code: string): void { this.db.prepare("UPDATE learner_resume_documents SET parse_status='failed',parse_error='简历解析失败',parse_error_code=?,parse_lease_until=NULL,updated_at=? WHERE id=?").run(code,new Date().toISOString(),id) }
-  pendingResumeDocuments(): Row[] { return this.db.prepare("SELECT * FROM learner_resume_documents WHERE parse_status IN ('pending','processing') ORDER BY created_at LIMIT 20").all() as Row[] }
+  recordResumeProviderTask(id: string, leaseToken: string, taskId: string): boolean { return Boolean(this.db.prepare("UPDATE learner_resume_documents SET parse_provider='zhihu',provider_task_id=?,updated_at=? WHERE id=? AND parse_status='processing' AND parse_lease_token=?").run(taskId,new Date().toISOString(),id,leaseToken).changes) }
+  failResumeParse(id: string, leaseToken: string, code: string): boolean { return Boolean(this.db.prepare("UPDATE learner_resume_documents SET parse_status='failed',parse_error='简历解析失败',parse_error_code=?,parse_lease_until=NULL,parse_lease_token=NULL,updated_at=? WHERE id=? AND parse_status='processing' AND parse_lease_token=?").run(code,new Date().toISOString(),id,leaseToken).changes) }
+  pendingResumeDocuments(): Row[] { return this.db.prepare("SELECT * FROM learner_resume_documents WHERE parse_status='pending' OR (parse_status='processing' AND (parse_lease_until IS NULL OR parse_lease_until<?)) ORDER BY created_at LIMIT 20").all(new Date().toISOString()) as Row[] }
+  recoverResumeParses(): void { this.db.prepare("UPDATE learner_resume_documents SET parse_status='pending',parse_lease_until=NULL,parse_lease_token=NULL,updated_at=? WHERE parse_status='processing'").run(new Date().toISOString()) }
 
   // Compatibility for historical imports and tests. Runtime reads use learner_resume_documents.
   replacePlanningResumeAttachment(input: { id: string; learnerId: string; planningSessionId: string; originalFilename: string; storedFilename: string; sizeBytes: number; sha256: string; pageCount: number; extractedText: string }): { attachment: ResumeAttachment; previousStoredFilename: string | null } {

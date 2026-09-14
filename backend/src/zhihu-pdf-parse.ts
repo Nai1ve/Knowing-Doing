@@ -25,6 +25,10 @@ export class ZhihuPdfParseAdapter {
     const taskId = text(object(created)?.task_id)
     if (!taskId) throw new ZhihuOpenApiError('zhihu_schema_invalid', '知乎 PDF 任务响应格式无效', false)
     onTaskCreated?.(taskId)
+    return this.continueTask(taskId)
+  }
+  async continueTask(taskId: string): Promise<ResumeParseResult> {
+    if (!this.configured || !taskId.trim()) throw new ZhihuOpenApiError('zhihu_capability_disabled', '知乎 PDF 解析尚未启用', false)
     for (let attempt = 0; attempt < this.options.maxPolls; attempt += 1) {
       const task = object(await this.request(`/api/v1/pdf-parse/tasks/${encodeURIComponent(taskId)}`, { method: 'GET' }))
       const status = text(task?.task_status)
