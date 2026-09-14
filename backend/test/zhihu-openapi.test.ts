@@ -20,6 +20,10 @@ function reply(payload: unknown, status = 200): void {
   globalThis.fetch = vi.fn(async () => response(payload, status)) as typeof fetch
 }
 
+function rawReply(body: string, status: number): void {
+  globalThis.fetch = vi.fn(async () => new Response(body, { status, headers: { 'content-type': 'text/html' } })) as typeof fetch
+}
+
 describe('ZhihuOpenApiClient Data Platform protocol', () => {
   it('unwraps the official envelope and maps formal search fields', async () => {
     const requests: Request[] = []
@@ -86,6 +90,24 @@ describe('ZhihuOpenApiClient Data Platform protocol', () => {
     reply(payload, status)
 
     await expect(client().search('HTTP 优先级')).rejects.toMatchObject({ code, retryable })
+  })
+
+  it.each([
+    [429, 'zhihu_rate_limited', true],
+    [503, 'zhihu_upstream_unavailable', true],
+    [400, 'zhihu_http_error', false],
+    [200, 'zhihu_invalid_json', true],
+  ])('classifies HTML response status %i without exposing its body', async (status, code, retryable) => {
+    rawReply('<html>test-access-secret raw provider body</html>', status)
+
+    try {
+      await client().search('HTML 响应')
+      throw new Error('expected a ZhihuOpenApiError')
+    } catch (error) {
+      expect(error).toMatchObject({ code, retryable })
+      expect((error as Error).message).not.toContain('test-access-secret')
+      expect((error as Error).message).not.toContain('raw provider body')
+    }
   })
 
   it.each([

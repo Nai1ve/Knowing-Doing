@@ -103,10 +103,13 @@ export class ZhihuOpenApiClient {
         headers,
       })
       const raw = await response.text()
-      let payload: unknown = {}
-      try { payload = raw ? JSON.parse(raw) : {} } catch { throw new ZhihuOpenApiError('zhihu_invalid_json', '知乎开放 API 返回了无效 JSON') }
       if (response.status === 429) throw new ZhihuOpenApiError('zhihu_rate_limited', '知乎开放 API 请求过于频繁')
       if (response.status >= 500) throw new ZhihuOpenApiError('zhihu_upstream_unavailable', '知乎开放 API 服务暂时不可用')
+      let payload: unknown = {}
+      try { payload = raw ? JSON.parse(raw) : {} } catch {
+        if (!response.ok) throw new ZhihuOpenApiError('zhihu_http_error', `知乎开放 API 返回 HTTP ${response.status}`, false)
+        throw new ZhihuOpenApiError('zhihu_invalid_json', '知乎开放 API 返回了无效 JSON')
+      }
       if (!response.ok) {
         if (protocol === 'data') payload = unwrapDataEnvelope(payload)
         throw new ZhihuOpenApiError('zhihu_http_error', `知乎开放 API 返回 HTTP ${response.status}`, false)
