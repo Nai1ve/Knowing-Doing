@@ -3,6 +3,7 @@ import { computed, onUnmounted, reactive, watch } from 'vue'
 import { CheckCircle2, CircleAlert, FlaskConical, LoaderCircle, RefreshCw, Save, Send, Sparkles } from 'lucide-vue-next'
 import { useLearningGymStore } from '@/stores/learningGym'
 import type { PracticeActivity } from '@/types/learningExperience'
+import PracticeCardSources from '@/components/learning/PracticeCardSources.vue'
 
 const props = defineProps<{ planUnitId: string; mode?: 'knowledge_only' | 'mixed'; title?: string }>()
 const gym = useLearningGymStore()
@@ -36,6 +37,7 @@ async function finish() { if (reflection.value.trim().length < 12) return; await
     <section v-else-if="gym.cardError" class="gym-state error"><CircleAlert :size="17" /><div><strong>Practice Card 暂时不可用</strong><p>{{ gym.cardError }}</p><button type="button" @click="gym.retryCard">重试生成卡片</button></div></section>
     <template v-else-if="gym.session">
       <section class="gym-context"><Sparkles :size="16" aria-hidden="true" /><div><strong>先做判断，再进入实践</strong><p>{{ gym.card?.summary }}</p></div><span class="attempts">每题最多两次尝试</span></section>
+      <PracticeCardSources :sources="gym.card?.sourceReferences" />
       <section class="activity-list" aria-label="Gym activities">
         <article v-for="activity in gym.session.activities" :key="activity.id" class="activity-card" :class="{ active: gym.currentActivity?.id === activity.id, done: ['correct', 'completed'].includes(state(activity)?.status ?? '') }">
           <div class="activity-heading"><span class="activity-index">{{ activityLabel[activity.type] }}</span><div><h2>{{ activity.title }}</h2><p v-if="activity.context">{{ activity.context }}</p></div><CheckCircle2 v-if="['correct', 'completed'].includes(state(activity)?.status ?? '')" class="done-icon" :size="17" aria-label="已完成" /></div>

@@ -31,7 +31,7 @@ export interface PracticeCard {
   isFixture?: boolean
 }
 
-export interface PublicSourceReference { id: string; title: string; author: string | null; canonicalUrl: string }
+export interface PublicSourceReference { id: string; title: string; author: string | null; canonicalUrl: string; sourceType?: string | null; summary?: string | null; sourceAnchor?: string | null; selectedReason?: string | null; fetchedAt?: string | null }
 
 export interface PracticeCardEvent {
   id: string
