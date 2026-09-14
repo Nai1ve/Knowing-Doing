@@ -13,6 +13,7 @@ export interface ZhihuOpenApiConfig {
   baseUrl: string
   timeoutMs: number
   articlePath?: string
+  fetchImpl?: typeof fetch
 }
 
 function text(value: unknown): string | null {
@@ -84,7 +85,9 @@ function mapSearchItem(value: unknown, query: string, position: number): SourceI
 }
 
 export class ZhihuOpenApiClient {
-  constructor(private readonly config: ZhihuOpenApiConfig) {}
+  private readonly fetchImpl: typeof fetch
+
+  constructor(private readonly config: ZhihuOpenApiConfig) { this.fetchImpl = config.fetchImpl ?? fetch }
 
   get configured(): boolean { return Boolean(this.config.accessSecret) }
 
@@ -98,7 +101,7 @@ export class ZhihuOpenApiClient {
       headers.set('Content-Type', 'application/json')
       headers.set('Authorization', `Bearer ${this.config.accessSecret}`)
       headers.set('X-Request-Timestamp', String(Math.floor(Date.now() / 1000)))
-      const response = await fetch(`${this.config.baseUrl.replace(/\/$/, '')}${path}`, {
+      const response = await this.fetchImpl(`${this.config.baseUrl.replace(/\/$/, '')}${path}`, {
         ...init, signal: controller.signal,
         headers,
       })
@@ -130,10 +133,48 @@ export class ZhihuOpenApiClient {
     return arrayFrom(payload).map((item, index) => mapSearchItem(item, normalized, index)).filter((item): item is SourceItem => item !== null)
   }
 
+  async globalSearch(query: string, count = 5, filter?: string, searchDb?: 'all' | 'realtime' | 'static'): Promise<SourceItem[]> {
+    const normalized = query.trim().replace(/\s+/g, ' ')
+    if (!normalized) return []
+    const params = new URLSearchParams({ Query: normalized, Count: String(Math.min(20, Math.max(1, Math.trunc(count)))) })
+    if (filter) params.set('Filter', filter)
+    if (searchDb) params.set('SearchDB', searchDb)
+    const payload = await this.request(`/api/v1/content/global_search?${params.toString()}`, { method: 'GET' }, 'data')
+    const output: SourceItem[] = []
+    for (const [index, item] of arrayFrom(payload).entries()) {
+      const mapped = mapSearchItem(item, normalized, index)
+      if (mapped) output.push({ ...mapped, provider: 'global_search', metadata: { ...mapped.metadata, provenance: 'zhihu_global_search' } })
+    }
+    return output
+  }
+
+  async recommendQuestions(query?: string, count = 5): Promise<Array<{ title: string; url: string }>> {
+    const params = new URLSearchParams({ Count: String(Math.min(20, Math.max(1, Math.trunc(count)))) })
+    if (query?.trim()) params.set('Query', query.trim())
+    const payload = await this.request(`/api/v1/user/question_recommendations?${params.toString()}`, { method: 'GET' }, 'data')
+    return arrayFrom(payload).flatMap((value) => {
+      const item = record(value); const title = item ? text(item.Title) ?? text(item.title) : null; const url = item ? text(item.Url) ?? text(item.url) : null
+      return title && url ? [{ title, url }] : []
+    })
+  }
+
+  async questionAnswers(questionUrl: string, offset = 0, limit = 20): Promise<Array<{ contentToken: string; url: string; summary: string }>> {
+    const params = new URLSearchParams({ QuestionUrl: questionUrl, Offset: String(Math.max(0, Math.trunc(offset))), Limit: String(Math.min(50, Math.max(1, Math.trunc(limit)))) })
+    const payload = await this.request(`/api/v1/content/question_answers?${params.toString()}`, { method: 'GET' }, 'data')
+    return arrayFrom(payload).flatMap((value) => {
+      const item = record(value)
+      const contentToken = item ? text(item.ContentToken) ?? text(item.contentToken) : null
+      const url = item ? text(item.Url) ?? text(item.url) : null
+      const summary = item ? text(item.Summary) ?? text(item.summary) : null
+      return contentToken && url && summary ? [{ contentToken, url, summary: summary.slice(0, 4000) }] : []
+    })
+  }
+
   async fetchArticle(source: Pick<SourceItem, 'externalId' | 'url'>): Promise<string> {
     const externalId = source.externalId?.trim()
     if (!externalId) throw new ZhihuOpenApiError('zhihu_external_id_missing', '知乎材料缺少可读取的 externalId', false)
-    const path = this.config.articlePath ?? '/api/v1/content/zhihu_article'
+    const path = this.config.articlePath?.trim()
+    if (!path) throw new ZhihuOpenApiError('zhihu_capability_disabled', '知乎文章正文读取尚未启用', false)
     const payload = await this.request(`${path}?Id=${encodeURIComponent(externalId)}`, { method: 'GET' }, 'data')
     const content = findContent(payload)
     if (!content) throw new ZhihuOpenApiError('zhihu_content_unavailable', '知乎开放 API 没有返回文章正文')
@@ -151,6 +192,7 @@ export class ZhihuOpenApiClient {
     if (!result.trim()) throw new ZhihuOpenApiError('zhihu_empty_research', '知乎直答没有返回研究结果')
     return result.replace(/<think(?:ing)?>([\s\S]*?)<\/(?:think|thinking)>/gi, '').trim()
   }
+
 }
 
 function findContent(value: unknown): string | null {

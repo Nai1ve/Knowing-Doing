@@ -50,6 +50,25 @@ describe('ZhihuOpenApiClient Data Platform protocol', () => {
     await expect(client().search('旧格式')).resolves.toMatchObject([{ externalId: 'legacy-1', title: '旧格式标题', author: '旧作者', metadata: { authority: 2, score: 1.5 } }])
   })
 
+  it('uses documented global-search and question-discovery paths with strict Data.Items parsing', async () => {
+    const urls: string[] = []
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input); urls.push(url)
+      if (url.includes('global_search')) return response({ Code: 0, Data: { Items: [{ Title: '全网索引案例', ContentID: 'global-1', ContentText: '摘要', Url: 'https://example.test/a', AuthorName: '作者' }] } })
+      if (url.includes('question_recommendations')) return response({ Code: 0, Data: { Items: [{ Title: '如何理解索引？', Url: 'https://www.zhihu.com/question/1' }] } })
+      return response({ Code: 0, Data: { Items: [{ ContentToken: 'answer-token', Url: 'https://www.zhihu.com/question/1/answer/2', Summary: '回答摘要' }] } })
+    }) as typeof fetch
+
+    await expect(client().globalSearch('索引', 99, 'article', 'static')).resolves.toMatchObject([{ provider: 'global_search', externalId: 'global-1', metadata: { provenance: 'zhihu_global_search' } }])
+    await expect(client().recommendQuestions('索引', 99)).resolves.toEqual([{ title: '如何理解索引？', url: 'https://www.zhihu.com/question/1' }])
+    await expect(client().questionAnswers('https://www.zhihu.com/question/1', -2, 99)).resolves.toEqual([{ contentToken: 'answer-token', url: 'https://www.zhihu.com/question/1/answer/2', summary: '回答摘要' }])
+    expect(urls).toEqual(expect.arrayContaining([
+      'https://developer.test/api/v1/content/global_search?Query=%E7%B4%A2%E5%BC%95&Count=20&Filter=article&SearchDB=static',
+      'https://developer.test/api/v1/user/question_recommendations?Count=20&Query=%E7%B4%A2%E5%BC%95',
+      'https://developer.test/api/v1/content/question_answers?QuestionUrl=https%3A%2F%2Fwww.zhihu.com%2Fquestion%2F1&Offset=0&Limit=50',
+    ]))
+  })
+
   it('returns an empty list for an official successful envelope with no items', async () => {
     reply({ Code: 0, Message: 'success', Data: { Items: [] } })
 

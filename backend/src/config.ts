@@ -69,11 +69,11 @@ export interface LabConfig {
   legacyHeaderLearnerId: boolean
   zhihuOauthAuthorizePath: string
   zhihuOauthTokenPath: string
-  zhihuUserPath: string
   zhihuCollectionsPath: string
-  zhihuCollectionItemsPath: string
   zhihuContentPath: string
-  zhihuMomentsPath: string
+  zhihuFolloweesPath: string
+  zhihuFavlistsPath: string
+  zhihuFavlistContentsPath: string
   zhihuOauthRedirectUri: string
   zhihuOauthScopes: string
   signedDeviceSessionEnabled: boolean
@@ -155,7 +155,8 @@ export function loadConfig(): LabConfig {
     zhihuCliPath: process.env.ZHIXING_ZHIHU_CLI_PATH ?? '',
     zhihuAccessSecret: process.env.ZHIXING_ZHIHU_ACCESS_SECRET ?? '',
     zhihuApiBaseUrl: process.env.ZHIXING_ZHIHU_API_BASE_URL ?? 'https://developer.zhihu.com',
-    zhihuArticlePath: process.env.ZHIXING_ZHIHU_ARTICLE_PATH ?? '/api/v1/content/zhihu_article',
+    // No official article-body endpoint was confirmed for this integration.
+    zhihuArticlePath: process.env.ZHIXING_ZHIHU_ARTICLE_PATH ?? '',
     retrievalTimeoutMs: numberEnv('ZHIXING_RETRIEVAL_TIMEOUT_MS', 15_000),
     retrievalCacheTtlMs: numberEnv('ZHIXING_RETRIEVAL_CACHE_TTL_MS', 24 * 60 * 60 * 1000),
     identityMode,
@@ -188,11 +189,11 @@ export function loadConfig(): LabConfig {
     legacyHeaderLearnerId: process.env.NODE_ENV === 'test' || (process.env.NODE_ENV !== 'production' && (process.env.AUTH_MODE === 'legacy' || process.env.ZHIXING_LEGACY_HEADER_IDENTITY === 'true')),
     zhihuOauthAuthorizePath: process.env.ZHIHU_OAUTH_AUTHORIZE_PATH ?? '/authorize',
     zhihuOauthTokenPath: process.env.ZHIHU_OAUTH_TOKEN_PATH ?? '/access_token',
-    zhihuUserPath: process.env.ZHIHU_OAUTH_USER_PATH ?? '/user',
-    zhihuCollectionsPath: process.env.ZHIHU_OAUTH_COLLECTIONS_PATH ?? '/user/collections',
-    zhihuCollectionItemsPath: process.env.ZHIHU_OAUTH_COLLECTION_ITEMS_PATH ?? '/user/collection/{collection_id}',
-    zhihuContentPath: process.env.ZHIHU_OAUTH_CONTENT_PATH ?? '/user/content',
-    zhihuMomentsPath: process.env.ZHIHU_OAUTH_MOMENTS_PATH ?? '/user/moments',
+    zhihuCollectionsPath: '/api/v1/user/collections',
+    zhihuContentPath: '/api/v1/user/contents',
+    zhihuFolloweesPath: '/api/v1/user/followees',
+    zhihuFavlistsPath: '/api/v1/user/favlists',
+    zhihuFavlistContentsPath: '/api/v1/user/favlist_contents',
     zhihuOauthRedirectUri,
     zhihuOauthScopes: process.env.ZHIHU_OAUTH_SCOPES ?? '',
     signedDeviceSessionEnabled,

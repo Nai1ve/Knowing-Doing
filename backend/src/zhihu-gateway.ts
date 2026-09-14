@@ -58,11 +58,13 @@ export interface ZhihuGatewayOptions {
   allowInsecureCallback: boolean
   authorizePath: string
   tokenPath: string
-  userPath: string
+  dataPlatformBaseUrl: string
+  dataPlatformAccessSecret: string
   collectionsPath: string
-  collectionItemsPath: string
   contentPath: string
-  momentsPath: string
+  followeesPath: string
+  favlistsPath: string
+  favlistContentsPath: string
   redirectUri: string
   scopes: string
   publicSearch?: { configured: boolean; search(query: string, count?: number): Promise<PublicSearchItem[]> }
@@ -162,14 +164,11 @@ export class ZhihuGateway {
     if (!stateRow) throw new LabError('oauth_state_invalid', 'OAuth state 无效、已使用、跨会话或已过期', 400)
 
     const token = await this.exchangeToken({ grant_type: 'authorization_code', code, redirect_uri: this.options.redirectUri })
-    let endpointIdentity: { providerUserId: string | null; profile: ZhihuPublicProfile | null } = { providerUserId: null, profile: null }
-    try {
-      const profileResponse = await this.fetchImpl(this.url(this.options.userPath), { headers: { Authorization: `Bearer ${token.access_token}`, Accept: 'application/json' } })
-      if (profileResponse.ok) endpointIdentity = publicProfile(await profileResponse.json())
-    } catch {
-      // A token uid is sufficient even when this optional public-profile call is unavailable.
-    }
-    const providerUserId = stableProviderId(token.uid) ?? endpointIdentity.providerUserId
+    // Zhihu's published OAuth contract does not document a profile endpoint or
+    // a provider-id response. A verified uid supplied with the token is the
+    // only identity evidence accepted here; never derive identity from a token.
+    const endpointIdentity: { providerUserId: string | null; profile: ZhihuPublicProfile | null } = { providerUserId: null, profile: null }
+    const providerUserId = stableProviderId(token.uid)
     if (!providerUserId) throw new LabError('oauth_provider_identity_unavailable', '无法确认知乎账号身份，请重新授权', 502)
 
     const now = new Date().toISOString()
@@ -395,33 +394,24 @@ export class ZhihuGateway {
       const checkpoint = this.json<SyncCursor | null>(job.cursor, null)
       let imported = checkpoint?.imported ?? Number(job.imported_count ?? 0)
       let updated = checkpoint?.updated ?? Number(job.updated_count ?? 0)
-      const collections = await this.fetchAll(connection, this.options.collectionsPath, 5000)
-      for (let index = 0; index < collections.length; index += 1) {
-        if (checkpoint && checkpoint.phase !== 'favorites') break
-        if (checkpoint?.phase === 'favorites' && index < checkpoint.collectionIndex) continue
-        const collection = collections[index]
-        const collectionId = this.upsertCollection(learnerId, connection, collection, 'favorites')
-        const path = this.options.collectionItemsPath.replace('{collection_id}', encodeURIComponent(collection.id))
-        const resumePath = checkpoint?.phase === 'favorites' && checkpoint.collectionIndex === index ? checkpoint.next : path
-        const result = await this.syncItems(jobId, learnerId, connection, collectionId, resumePath, Math.max(0, 5000 - imported - updated), {
-          phase: 'favorites', collectionIndex: index, imported, updated,
-        }, resumePath === path)
-        imported += result.imported
-        updated += result.updated
-        if (imported + updated >= 5000) break
+      // Official user collections are a bounded recent-favourites feed.  Its
+      // metadata is enough for source selection; full text is never retained.
+      if (!checkpoint || checkpoint.phase === 'favorites') {
+        const favoriteCollection = this.upsertSyntheticCollection(learnerId, connection, 'favorites')
+        const favorites = this.userItems(await this.authorizedUserPage(connection, this.options.collectionsPath, { Limit: '20' }))
+        const result = this.persistSourcePage(jobId, learnerId, favoriteCollection, favorites, 0, 0, { phase: 'favorites', collectionIndex: 0, imported, updated }, null, true)
+        imported += result.imported; updated += result.updated
       }
-      for (const [phase, kind, path, limit] of [
-        ['own', 'own', this.options.contentPath, 200],
-        ['activities', 'activities', this.options.momentsPath, 200],
-      ] as const) {
-        if (checkpoint?.phase === 'activities' && phase === 'own') continue
-        const collectionId = this.upsertSyntheticCollection(learnerId, connection, kind)
-        const resumePath = checkpoint?.phase === phase ? checkpoint.next : path
-        const result = await this.syncItems(jobId, learnerId, connection, collectionId, resumePath, limit, {
-          phase, collectionIndex: 0, imported, updated,
-        }, resumePath === path)
-        imported += result.imported
-        updated += result.updated
+      // Own content has documented Offset/Limit pagination. We deliberately do
+      // not follow arbitrary remote next URLs, preventing provider-driven SSRF.
+      const startOffset = checkpoint?.phase === 'own' && checkpoint.next ? Number(checkpoint.next) : 0
+      const ownCollection = this.upsertSyntheticCollection(learnerId, connection, 'own')
+      for (let offset = Number.isFinite(startOffset) && startOffset >= 0 ? startOffset : 0; offset < 200; offset += 50) {
+        const page = await this.authorizedUserPage(connection, this.options.contentPath, { ContentType: 'all', Offset: String(offset), Limit: '50' })
+        const items = this.userItems(page)
+        const result = this.persistSourcePage(jobId, learnerId, ownCollection, items, 0, 0, { phase: 'own', collectionIndex: 0, imported, updated }, String(offset + 50), offset === 0)
+        imported += result.imported; updated += result.updated
+        if (this.userPagingEnded(page) || items.length < 50) break
       }
       this.repository.db.prepare(`
         UPDATE learner_source_items SET status='removed',removed_at=?,updated_at=?
@@ -441,24 +431,6 @@ export class ZhihuGateway {
       `).run(safe.code, safe.message, new Date().toISOString(), new Date().toISOString(), jobId)
       throw error
     }
-  }
-
-  private async syncItems(jobId: string, learnerId: string, connection: ConnectionRow, collectionId: string, initialPath: string | null, limit: number, base: Omit<SyncCursor, 'next'>, fresh: boolean) {
-    let imported = 0
-    let updated = 0
-    let next = initialPath
-    let firstPage = true
-    while (next && imported + updated < limit) {
-      const parsed = pageSchema.parse(await this.authorizedPage(connection, next))
-      const items = (parsed.data ?? parsed.items ?? parsed.results ?? []).slice(0, limit - imported - updated)
-      const nextCursor = parsed.cursor ?? parsed.paging?.next ?? null
-      const pageResult = this.persistSourcePage(jobId, learnerId, collectionId, items, imported, updated, base, nextCursor, fresh && firstPage)
-      imported += pageResult.imported
-      updated += pageResult.updated
-      next = nextCursor
-      firstPage = false
-    }
-    return { imported, updated }
   }
 
   private persistSourcePage(jobId: string, learnerId: string, collectionId: string, items: SourceItem[], priorImported: number, priorUpdated: number, base: Omit<SyncCursor, 'next'>, next: string | null, clearCollection: boolean) {
@@ -494,36 +466,54 @@ export class ZhihuGateway {
     return { imported, updated }
   }
 
-  private async fetchAll(connection: ConnectionRow, initialPath: string, limit: number): Promise<SourceItem[]> {
-    const output: SourceItem[] = []
-    let next: string | null = initialPath
-    while (next && output.length < limit) {
-      const page = await this.authorizedPage(connection, next)
-      const parsed = pageSchema.parse(page)
-      output.push(...(parsed.data ?? parsed.items ?? parsed.results ?? []).slice(0, limit - output.length))
-      next = parsed.cursor ?? parsed.paging?.next ?? null
+  private async authorizedUserPage(connection: ConnectionRow, path: string, query: Record<string, string>): Promise<unknown> {
+    if (!this.options.dataPlatformAccessSecret) throw new LabError('zhihu_capability_disabled', '知乎用户数据同步尚未启用', 503)
+    const token = this.token(connection)
+    const url = new URL(path, this.options.dataPlatformBaseUrl)
+    for (const [key, value] of Object.entries(query)) url.searchParams.set(key, value)
+    const response = await this.fetchWithRateLimit(url.toString(), {
+      headers: {
+        Authorization: `Bearer ${this.options.dataPlatformAccessSecret}`,
+        'X-OAuth-Token': token.access_token,
+        'X-Request-Timestamp': String(Math.floor(Date.now() / 1000)),
+        Accept: 'application/json',
+      },
+    })
+    const raw = await response.text()
+    if (response.status === 401) {
+      this.markReauthorization(String(connection.id))
+      throw new LabError('reauthorization_required', '知乎连接需要重新授权', 401)
     }
-    return output
+    if (response.status === 429) throw new LabError('zhihu_rate_limited', '知乎接口请求过于频繁', 503, true)
+    if (response.status >= 500) throw new LabError('zhihu_upstream_unavailable', '知乎接口暂时不可用', 503, true)
+    let parsed: unknown
+    try { parsed = raw ? JSON.parse(raw) : null } catch { throw new LabError(response.ok ? 'zhihu_schema_invalid' : 'zhihu_http_error', response.ok ? '知乎接口响应格式无效' : '知乎接口请求未成功', response.ok ? 502 : 502) }
+    const envelope = parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed as Record<string, unknown> : null
+    const code = envelope?.Code ?? envelope?.code
+    const success = code === 0 || code === '0'
+    if (!response.ok || !success) throw new LabError(code === 30001 || code === '30001' ? 'zhihu_rate_limited' : code === 30002 || code === '30002' ? 'zhihu_quota_exhausted' : 'zhihu_business_error', '知乎用户数据请求未成功', code === 30001 || code === '30001' ? 503 : 502, code === 30001 || code === '30001')
+    if (!envelope || (!Object.prototype.hasOwnProperty.call(envelope, 'Data') && !Object.prototype.hasOwnProperty.call(envelope, 'data'))) throw new LabError('zhihu_schema_invalid', '知乎用户数据响应格式无效', 502)
+    return envelope.Data ?? envelope.data
   }
 
-  private async authorizedPage(connection: ConnectionRow, path: string): Promise<unknown> {
-    let token = this.token(connection)
-    let refreshed = false
-    while (true) {
-      const response = await this.fetchWithRateLimit(this.url(path), { headers: { Authorization: `Bearer ${token.access_token}`, Accept: 'application/json' } })
-      if (response.status === 401 && !refreshed) {
-        refreshed = true
-        if (!token.refresh_token) {
-          this.markReauthorization(String(connection.id))
-          throw new LabError('reauthorization_required', '知乎连接需要重新授权', 401)
-        }
-        token = await this.exchangeToken({ grant_type: 'refresh_token', refresh_token: token.refresh_token })
-        this.updateToken(connection, token)
-        continue
-      }
-      if (!response.ok) throw new LabError(response.status >= 500 ? 'zhihu_unavailable' : 'zhihu_request_failed', '知乎接口暂时不可用', response.status >= 500 ? 503 : 502)
-      return response.json()
-    }
+  private userItems(value: unknown): SourceItem[] {
+    const body = value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : null
+    const values = body && Array.isArray(body.Items) ? body.Items : body && Array.isArray(body.items) ? body.items : []
+    return values.flatMap((value) => {
+      const item = value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : null
+      const url = item ? safeHttpUrl(item.Url ?? item.url) : null
+      if (!item || !url) return []
+      const title = safeString(item.Title ?? item.title, 1000) ?? '知乎内容'
+      const author = item.Author && typeof item.Author === 'object' ? safeString((item.Author as Record<string, unknown>).Name, 512) : null
+      const published = item.CreatedAt ?? item.created_at
+      return [{ id: url, title, url, summary: safeString(item.Summary ?? item.summary, 4000) ?? '', published_at: typeof published === 'string' || typeof published === 'number' ? published : undefined, author: author ?? undefined }]
+    })
+  }
+
+  private userPagingEnded(value: unknown): boolean {
+    const body = value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : null
+    const paging = body?.Paging && typeof body.Paging === 'object' ? body.Paging as Record<string, unknown> : body?.paging && typeof body.paging === 'object' ? body.paging as Record<string, unknown> : null
+    return paging?.IsEnd === true || paging?.isEnd === true
   }
 
   private async fetchWithRateLimit(url: string, init: RequestInit): Promise<Response> {

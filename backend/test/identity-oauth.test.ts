@@ -26,9 +26,11 @@ function gateway(
 ) {
   return new ZhihuGateway(repository, {
     clientId: 'app-id', clientSecret: 'app-key', baseUrl: 'https://oauth.example.test', encryptionKey: 'x'.repeat(32),
-    allowInsecureCallback: true, authorizePath: '/authorize', tokenPath: '/access_token', userPath: '/user',
-    collectionsPath: '/user/collections', collectionItemsPath: '/user/collection/{collection_id}', contentPath: '/user/content',
-    momentsPath: '/user/moments', redirectUri: ZHIHU_OAUTH_CALLBACK, scopes: 'read collections', fetchImpl, sleep, publicSearch,
+    allowInsecureCallback: true, authorizePath: '/authorize', tokenPath: '/access_token',
+    dataPlatformBaseUrl: 'https://developer.zhihu.com', dataPlatformAccessSecret: 'data-access-secret',
+    collectionsPath: '/api/v1/user/collections', contentPath: '/api/v1/user/contents', followeesPath: '/api/v1/user/followees',
+    favlistsPath: '/api/v1/user/favlists', favlistContentsPath: '/api/v1/user/favlist_contents',
+    redirectUri: ZHIHU_OAUTH_CALLBACK, scopes: 'read collections', fetchImpl, sleep, publicSearch,
   })
 }
 
@@ -91,7 +93,7 @@ describe('signed device identity and Zhihu OAuth', () => {
   it('uses token uid when the profile endpoint is unavailable and rebinds a second device to the canonical learner', async () => {
     const state = database(); cleanup.push(() => { state.repository.close(); rmSync(state.directory, { recursive: true, force: true }) })
     const identity = new IdentityService(state.repository)
-    const fetchImpl = vi.fn(async (input: string | URL | Request) => {
+    const fetchImpl = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
       const url = new URL(String(input))
       if (url.pathname === '/access_token') return Response.json({ access_token: 'token-not-an-identity', uid: 'stable-zhihu-uid', expires_in: 3600 })
       if (url.pathname === '/user') return new Response('<html>not found</html>', { status: 404 })
@@ -209,7 +211,7 @@ describe('signed device identity and Zhihu OAuth', () => {
     const callback = await app.inject({ method: 'GET', url: `/api/auth/oauth/zhihu/callback?state=${encodeURIComponent(oauthState)}&authorization_code=session-code`, headers: { cookie } })
     expect(callback.statusCode).toBe(302)
     const authenticated = await app.inject({ method: 'GET', url: '/api/auth/session', headers: { cookie } })
-    expect(authenticated.json()).toMatchObject({ auth: { required: true, authenticated: true, provider: 'zhihu', profile: { displayName: '知乎用户', avatarUrl: 'https://img.zhihu.test/avatar.png', profileUrl: 'https://www.zhihu.com/people/profile-id' } } })
+    expect(authenticated.json()).toMatchObject({ auth: { required: true, authenticated: true, provider: 'zhihu', profile: null } })
     expect(JSON.stringify(authenticated.json())).not.toContain('session-secret-token')
     expect(state.repository.db.prepare("SELECT provider_user_id providerUserId FROM provider_connections WHERE learner_id=? AND provider='zhihu'").get(createdBody.learnerId)).toEqual({ providerUserId: 'session-user' })
     expect((await app.inject({ method: 'GET', url: '/api/product/runtime-status', headers: { cookie } })).statusCode).toBe(200)
@@ -243,15 +245,14 @@ describe('signed device identity and Zhihu OAuth', () => {
     const client = gateway(state.repository, fetchImpl)
     const stateValue = new URL(client.start('profile-priority').authorizationUrl).searchParams.get('state')!
 
-    await expect(client.callback('profile-priority', stateValue, 'profile-code')).resolves.toEqual({ learnerId: 'profile-priority', profile: { displayName: '公开昵称', avatarUrl: null, profileUrl: null } })
+    await expect(client.callback('profile-priority', stateValue, 'profile-code')).resolves.toEqual({ learnerId: 'profile-priority', profile: null })
     expect(state.repository.db.prepare("SELECT provider_user_id providerUserId FROM provider_connections WHERE learner_id='profile-priority'").get()).toEqual({ providerUserId: 'token-uid-wins' })
   })
 
-  it('binds one-time state to the device, encrypts tokens, refreshes once, and resumes paged sync', async () => {
+  it('binds one-time state to the device, encrypts tokens, and syncs through the documented double-token Data Platform headers', async () => {
     const state = database(); cleanup.push(() => { state.repository.close(); rmSync(state.directory, { recursive: true, force: true }) })
     state.repository.ensureLearner('learner-a'); state.repository.ensureLearner('learner-b')
     let collectionAttempts = 0
-    let refreshes = 0
     const sleeps: number[] = []
     const fetchImpl = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
       const url = new URL(String(input))
@@ -260,19 +261,18 @@ describe('signed device identity and Zhihu OAuth', () => {
         const payload = new URLSearchParams(String(init?.body ?? ''))
         expect(payload.get('app_id')).toBe('app-id')
         expect(payload.get('app_key')).toBe('app-key')
-        if (payload.get('grant_type') === 'refresh_token') { refreshes += 1; return Response.json({ access_token: 'refreshed-token', refresh_token: 'refresh-token', expires_in: 3600 }) }
-        return Response.json({ access_token: 'initial-token', refresh_token: 'refresh-token', expires_in: 3600 })
+        return Response.json({ access_token: 'initial-token', uid: 'zhihu-user-1', expires_in: 3600 })
       }
-      if (url.pathname === '/user') return Response.json({ id: 'zhihu-user-1' })
-      if (url.pathname === '/user/collections') {
+      if (url.pathname === '/api/v1/user/collections') {
         collectionAttempts += 1
         const authorization = new Headers(init?.headers).get('authorization')
-        if (authorization === 'Bearer initial-token') return new Response('', { status: 401 })
-        if (collectionAttempts === 2) return new Response('', { status: 429, headers: { 'retry-after': '0' } })
-        return Response.json({ data: [{ id: 'collection-1', title: '数据库收藏' }], paging: { next: null } })
+        expect(authorization).toBe('Bearer data-access-secret')
+        expect(new Headers(init?.headers).get('x-oauth-token')).toBe('initial-token')
+        expect(new Headers(init?.headers).get('x-request-timestamp')).toMatch(/^\d+$/)
+        if (collectionAttempts === 1) return new Response('', { status: 429, headers: { 'retry-after': '0' } })
+        return Response.json({ Code: 0, Data: { Items: [{ Title: 'MySQL EXPLAIN 实战', Url: 'https://www.zhihu.com/question/1/answer/1', Summary: '使用执行计划验证索引是否命中。' }] } })
       }
-      if (url.pathname === '/user/collection/collection-1') return Response.json({ data: [{ id: 'answer-1', title: 'MySQL EXPLAIN 实战', url: 'https://www.zhihu.com/question/1/answer/1', excerpt: '使用执行计划验证索引是否命中。' }] })
-      if (url.pathname === '/user/content' || url.pathname === '/user/moments') return Response.json({ data: [] })
+      if (url.pathname === '/api/v1/user/contents') return Response.json({ Code: 0, Data: { Items: [], Paging: { IsEnd: true } } })
       return new Response('', { status: 404 })
     }) as typeof fetch
     const client = gateway(state.repository, fetchImpl, async (milliseconds) => { sleeps.push(milliseconds) })
@@ -291,30 +291,20 @@ describe('signed device identity and Zhihu OAuth', () => {
     await vi.waitFor(() => expect(client.syncJobs('learner-a')[0]?.status).toBe('completed'))
     expect(client.syncJobs('learner-a')[0]).toMatchObject({ importedCount: 1, errorMessage: null })
     expect(client.items('learner-a').items[0]).toMatchObject({ title: 'MySQL EXPLAIN 实战', saved: true })
-    expect(refreshes).toBe(1)
+    expect(collectionAttempts).toBe(2)
     expect(sleeps).toHaveLength(1)
   })
 
-  it('retries a failed sync from its committed page cursor without importing the first page twice', async () => {
+  it('keeps official user-data paths isolated from OAuth token exchange', async () => {
     const state = database(); cleanup.push(() => { state.repository.close(); rmSync(state.directory, { recursive: true, force: true }) })
     state.repository.ensureLearner('learner-a')
-    let firstPageCalls = 0
-    let secondPageCalls = 0
-    const fetchImpl = vi.fn(async (input: string | URL | Request) => {
+    const requests: Array<{ path: string; authorization: string | null; oauth: string | null }> = []
+    const fetchImpl = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
       const url = new URL(String(input))
-      if (url.pathname === '/access_token') return Response.json({ access_token: 'token', refresh_token: 'refresh', expires_in: 3600 })
-      if (url.pathname === '/user') return Response.json({ id: 'zhihu-user-1' })
-      if (url.pathname === '/user/collections') return Response.json({ data: [{ id: 'collection-1', title: '收藏夹' }] })
-      if (url.pathname === '/user/collection/collection-1') {
-        firstPageCalls += 1
-        return Response.json({ data: [{ id: 'answer-1', title: '第一页', excerpt: '第一页摘要' }], paging: { next: '/favorite-page-2' } })
-      }
-      if (url.pathname === '/favorite-page-2') {
-        secondPageCalls += 1
-        if (secondPageCalls === 1) return new Response('', { status: 500 })
-        return Response.json({ data: [{ id: 'answer-2', title: '第二页', excerpt: '第二页摘要' }], paging: { next: null } })
-      }
-      if (url.pathname === '/user/content' || url.pathname === '/user/moments') return Response.json({ data: [] })
+      if (url.pathname === '/access_token') return Response.json({ access_token: 'token', uid: 'zhihu-user-1', expires_in: 3600 })
+      requests.push({ path: url.pathname, authorization: new Headers(init?.headers).get('authorization'), oauth: new Headers(init?.headers).get('x-oauth-token') })
+      if (url.pathname === '/api/v1/user/collections') return Response.json({ Code: '0', Data: { Items: [] } })
+      if (url.pathname === '/api/v1/user/contents') return Response.json({ Code: '0', Data: { Items: [{ Title: '我的文章', Url: 'https://www.zhihu.com/p/1', Summary: '摘要' }], Paging: { IsEnd: true } } })
       return new Response('', { status: 404 })
     }) as typeof fetch
     const client = gateway(state.repository, fetchImpl)
@@ -322,16 +312,13 @@ describe('signed device identity and Zhihu OAuth', () => {
     await client.callback('learner-a', new URL(authorization.authorizationUrl).searchParams.get('state')!, 'code')
 
     client.syncAll('learner-a', 'resume-sync')
-    await vi.waitFor(() => expect(client.syncJobs('learner-a')[0]?.status).toBe('failed'))
-    const failedRow = state.repository.db.prepare('SELECT cursor FROM source_sync_jobs WHERE learner_id=?').get('learner-a') as { cursor: string }
-    expect(JSON.parse(failedRow.cursor)).toMatchObject({ phase: 'favorites', next: '/favorite-page-2', imported: 1 })
-
-    expect(client.syncAll('learner-a', 'resume-sync').status).toBe('queued')
     await vi.waitFor(() => expect(client.syncJobs('learner-a')[0]?.status).toBe('completed'))
-    expect(client.syncJobs('learner-a')[0]).toMatchObject({ importedCount: 2, updatedCount: 0 })
-    expect(client.items('learner-a').items).toHaveLength(2)
-    expect(firstPageCalls).toBe(1)
-    expect(secondPageCalls).toBe(2)
+    expect(client.syncJobs('learner-a')[0]).toMatchObject({ importedCount: 1, updatedCount: 0 })
+    expect(requests).toEqual(expect.arrayContaining([
+      expect.objectContaining({ path: '/api/v1/user/collections', authorization: 'Bearer data-access-secret', oauth: 'token' }),
+      expect.objectContaining({ path: '/api/v1/user/contents', authorization: 'Bearer data-access-secret', oauth: 'token' }),
+    ]))
+    expect(requests.some((request) => request.path === '/user' || request.path.startsWith('/api/v4/'))).toBe(false)
   })
 
   it('imports public search results into only the requesting learner library', async () => {
