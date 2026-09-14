@@ -121,6 +121,7 @@ jobs:
           SIGNED_DEVICE_SESSION_ENABLED: ${{ vars.SIGNED_DEVICE_SESSION_ENABLED || 'false' }}
           ZHIHU_OAUTH_ENABLED: ${{ vars.ZHIHU_OAUTH_ENABLED || 'false' }}
           ZHIHU_SOURCE_SYNC_ENABLED: ${{ vars.ZHIHU_SOURCE_SYNC_ENABLED || 'false' }}
+          PLANNER_ASSESSMENT_V2_ENABLED: ${{ vars.PLANNER_ASSESSMENT_V2_ENABLED || 'false' }}
           PRACTICE_CARD_V2_ENABLED: ${{ vars.PRACTICE_CARD_V2_ENABLED || 'false' }}
           MIXED_GYM_ENABLED: ${{ vars.MIXED_GYM_ENABLED || 'false' }}
           LEGACY_CASE_FLOW_ENABLED: ${{ vars.LEGACY_CASE_FLOW_ENABLED || 'true' }}
@@ -140,7 +141,7 @@ jobs:
             test -n "${!required:-}" || { echo "Missing required secret: $required" >&2; exit 1; }
           done
           case "$CASE_BUILDER_ENABLED" in true|false) ;; *) echo 'CASE_BUILDER_ENABLED must be the repository variable true or false' >&2; exit 1 ;; esac
-          for flag in SIGNED_DEVICE_SESSION_ENABLED ZHIHU_OAUTH_ENABLED ZHIHU_SOURCE_SYNC_ENABLED PRACTICE_CARD_V2_ENABLED MIXED_GYM_ENABLED LEGACY_CASE_FLOW_ENABLED; do
+          for flag in SIGNED_DEVICE_SESSION_ENABLED ZHIHU_OAUTH_ENABLED ZHIHU_SOURCE_SYNC_ENABLED PLANNER_ASSESSMENT_V2_ENABLED PRACTICE_CARD_V2_ENABLED MIXED_GYM_ENABLED LEGACY_CASE_FLOW_ENABLED; do
             case "${!flag}" in true|false) ;; *) echo "$flag must be the repository variable true or false" >&2; exit 1 ;; esac
           done
           if [ "$ZHIHU_OAUTH_ENABLED" = true ]; then
@@ -184,6 +185,7 @@ jobs:
             printf 'SIGNED_DEVICE_SESSION_ENABLED=%s\n' "$SIGNED_DEVICE_SESSION_ENABLED"
             printf 'ZHIHU_OAUTH_ENABLED=%s\n' "$ZHIHU_OAUTH_ENABLED"
             printf 'ZHIHU_SOURCE_SYNC_ENABLED=%s\n' "$ZHIHU_SOURCE_SYNC_ENABLED"
+            printf 'PLANNER_ASSESSMENT_V2_ENABLED=%s\n' "$PLANNER_ASSESSMENT_V2_ENABLED"
             printf 'PRACTICE_CARD_V2_ENABLED=%s\n' "$PRACTICE_CARD_V2_ENABLED"
             printf 'MIXED_GYM_ENABLED=%s\n' "$MIXED_GYM_ENABLED"
             printf 'LEGACY_CASE_FLOW_ENABLED=%s\n' "$LEGACY_CASE_FLOW_ENABLED"
