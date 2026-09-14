@@ -88,13 +88,16 @@ describe('planningAgent assessment recovery', () => {
     expect(store.session?.progress).toMatchObject({ completed: 5, total: 6, current: 6 })
   })
 
-  it('does not auto-create another assessment for a loaded failure, but retries once explicitly', async () => {
+  it('leaves a loaded failure to server-side recovery and retries once explicitly', async () => {
     vi.mocked(getAgentPlanningSession).mockResolvedValue(baseSession({ stage: 'assessment_preparing', assessment: failedAssessment() }))
     vi.mocked(createPlanningAssessment).mockResolvedValue({ ...failedAssessment(), id: 'assessment-retry', status: 'answering', error: null })
 
     const store = usePlanningAgentStore()
     await store.load('session-1')
 
+    // The backend regenerates a failed assessment when the planner reopens, so
+    // the client must not race it with a duplicate create call. A failure that
+    // still surfaces here was already auto-recovered once; retry stays manual.
     expect(createPlanningAssessment).not.toHaveBeenCalled()
     expect(store.assessmentError).toContain('已保存的对话和画像仍然保留')
 
@@ -104,6 +107,19 @@ describe('planningAgent assessment recovery', () => {
 
     await store.retryAssessment()
     expect(createPlanningAssessment).toHaveBeenCalledTimes(1)
+  })
+
+  it('surfaces the stable-protocol notice when the server recovered the assessment', async () => {
+    const recovered = { ...failedAssessment(), id: 'assessment-recovered', status: 'answering' as const, error: null, recoveredFromFailure: true }
+    vi.mocked(getAgentPlanningSession).mockResolvedValue(baseSession({ stage: 'assessment_answering', assessment: recovered }))
+    vi.mocked(getPlanningAssessment).mockResolvedValue(recovered)
+
+    const store = usePlanningAgentStore()
+    await store.load('session-1')
+
+    expect(store.assessmentRecoveryNotice).toContain('已使用稳定生成协议重新准备测评')
+    expect(store.assessmentError).toBeNull()
+    expect(store.assessment?.status).toBe('answering')
   })
 
   it('reuses the same request identity while recovering an in-flight preparation', async () => {

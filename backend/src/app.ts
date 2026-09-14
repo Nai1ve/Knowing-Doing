@@ -146,8 +146,13 @@ export function buildApp(dependencies: AppDependencies): { app: FastifyInstance;
 function registerPlanningRoutes(app: FastifyInstance, service: PlanningService, agent: AgentPlanningService): void {
   app.get('/api/product/planning-sessions/:sessionId', async (request, reply) => {
     const id = String((request.params as { sessionId: string }).sessionId)
-    if (!agent.isAgentSession(learnerId(request), id)) throw new LabError('planning_not_found', '规划对话不存在', 404)
-    reply.send(agent.getSession(learnerId(request), id))
+    const learner = learnerId(request)
+    if (!agent.isAgentSession(learner, id)) throw new LabError('planning_not_found', '规划对话不存在', 404)
+    // Reopening a planner must self-heal sessions whose assessment failed before
+    // the stable generation protocol existed. Recovery is idempotent and bounded;
+    // it must not delay surfacing the current session state.
+    void agent.recoverFailedAssessment(learner, id).catch(() => undefined)
+    reply.send(agent.getSession(learner, id))
   })
   app.post('/api/product/planning-sessions/:sessionId/resume', async (request, reply) => {
     const sessionId = String((request.params as { sessionId: string }).sessionId)

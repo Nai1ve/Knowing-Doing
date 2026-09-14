@@ -235,7 +235,7 @@ export type PlanningDiagnosticStage = 'baseline' | 'assessment_preparing' | 'ass
 export interface PlanningReadiness { ready: boolean; canGenerateRoadmap: boolean; blockers: string[]; stage: PlanningDiagnosticStage; nextAction: string | null }
 export interface PlanningProgress { completed: number; total: number; current: number; label?: string }
 export interface AssessmentQuestion { id: string; key: string; position: number; dimensionKey: string; type: 'single_choice' | 'multiple_choice' | 'short_text' | 'scenario'; difficulty: 'foundation' | 'applied' | 'advanced'; prompt: string; options: Array<{ value: string; label: string }> }
-export interface DiagnosticAssessment { id: string; planningSessionId: string; version: number; status: 'preparing' | 'answering' | 'evaluating' | 'completed' | 'abandoned' | 'failed' | 'superseded'; dimensions: Array<{ key: string; title: string; rationale: string }>; questions: AssessmentQuestion[]; answers: Record<string, unknown>; skipped: string[]; currentQuestionIndex: number; progress: PlanningProgress; answerCount: number; summary: { id: string; status: DiagnosticAssessment['status']; dimensions: Array<{ key: string; label: string; level: string; confidence: number; evidence: string[]; nextValidation: string }> } | null; evaluation: z.infer<typeof AssessmentEvaluationSchema> | null; error: string | null; createdAt: string; updatedAt: string }
+export interface DiagnosticAssessment { id: string; planningSessionId: string; version: number; status: 'preparing' | 'answering' | 'evaluating' | 'completed' | 'abandoned' | 'failed' | 'superseded'; recoveredFromFailure: boolean; dimensions: Array<{ key: string; title: string; rationale: string }>; questions: AssessmentQuestion[]; answers: Record<string, unknown>; skipped: string[]; currentQuestionIndex: number; progress: PlanningProgress; answerCount: number; summary: { id: string; status: DiagnosticAssessment['status']; dimensions: Array<{ key: string; label: string; level: string; confidence: number; evidence: string[]; nextValidation: string }> } | null; evaluation: z.infer<typeof AssessmentEvaluationSchema> | null; error: string | null; createdAt: string; updatedAt: string }
 export interface RequirementBrief { id: string; version: number; status: 'draft' | 'confirmed' | 'superseded'; content: z.infer<typeof RequirementBriefSchema>; confirmedAt: string | null; createdAt: string; updatedAt: string }
 export interface PhasedPlanningStatus { sessionId: string; stage: PlanningDiagnosticStage; baselineTurns: number; assessment: DiagnosticAssessment | null; requirementBrief: RequirementBrief | null; readiness: PlanningReadiness }
 
@@ -829,7 +829,7 @@ export class AgentPlanningService {
     const dimensions = json<Array<{ key: string; title: string; rationale: string }>>(row.dimensions_json, [])
     const summary = evaluation ? { id, status, dimensions: evaluation.dimensions.map((dimension) => ({ key: dimension.key, label: dimensions.find((item) => item.key === dimension.key)?.title ?? dimension.key, level: dimension.level, confidence: dimension.confidence, evidence: dimension.evidence, nextValidation: dimension.nextValidation })) } : null
     void includeAnswers
-    return { id, planningSessionId: text(row, 'session_id'), version: number(row, 'version'), status, dimensions, questions, answers, skipped, currentQuestionIndex: Math.min(answerCount, Math.max(0, questions.length - 1)), progress: { completed: answerCount, total: questions.length, current: Math.min(answerCount + 1, questions.length), label: `${answerCount}/${questions.length}` }, answerCount, summary, evaluation, error: nullable(row, 'error_message'), createdAt: text(row, 'created_at'), updatedAt: text(row, 'updated_at') }
+    return { id, planningSessionId: text(row, 'session_id'), version: number(row, 'version'), status, recoveredFromFailure: (nullable(row, 'client_request_id') ?? '').startsWith('recovery:'), dimensions, questions, answers, skipped, currentQuestionIndex: Math.min(answerCount, Math.max(0, questions.length - 1)), progress: { completed: answerCount, total: questions.length, current: Math.min(answerCount + 1, questions.length), label: `${answerCount}/${questions.length}` }, answerCount, summary, evaluation, error: nullable(row, 'error_message'), createdAt: text(row, 'created_at'), updatedAt: text(row, 'updated_at') }
   }
 
   private requirementFrom(row: Row | undefined): RequirementBrief | null {
@@ -992,6 +992,25 @@ export class AgentPlanningService {
       this.db.prepare("UPDATE planning_agent_invocations SET status = 'failed', failure_code = ?, failure_message = ?, completed_at = ? WHERE id = ?").run(code, message, failedAt, invocationId)
       this.setStage(sessionId, 'assessment_preparing'); throw error
     }
+  }
+
+  // Failure codes that dead-end a learner through no fault of their own: the
+  // questions never materialized, so nothing of value is lost by regenerating.
+  private static readonly recoverableAssessmentFailureCodes = new Set(['assessment_invalid_output', 'assessment_failed', 'service_restarted'])
+
+  async recoverFailedAssessment(learnerId: string, sessionId: string): Promise<DiagnosticAssessment | null> {
+    const session = this.getSession(learnerId, sessionId)
+    if (!['baseline', 'assessment_preparing'].includes(session.diagnosticStage)) return null
+    const current = this.currentAssessment(sessionId)
+    if (!current || text(current, 'status') !== 'failed') return null
+    const failureCode = nullable(current, 'failure_code')
+    if (!failureCode || !AgentPlanningService.recoverableAssessmentFailureCodes.has(failureCode)) return null
+    // Auto-recovery runs at most once per failure chain. An assessment that was
+    // itself produced by a recovery attempt keeps failing only through explicit
+    // user retries, so a broken provider cannot loop on every planner open.
+    if ((nullable(current, 'client_request_id') ?? '').startsWith('recovery:')) return null
+    await this.prepareAssessment(learnerId, sessionId, `recovery:${text(current, 'id')}`)
+    return this.assessmentFrom(this.currentAssessment(sessionId)) ?? null
   }
 
   submitAssessmentAnswers(learnerId: string, sessionId: string, assessmentId: string, answers: Array<{ questionId: string; value?: unknown; skipped?: boolean }>, clientRequestId: string): DiagnosticAssessment {

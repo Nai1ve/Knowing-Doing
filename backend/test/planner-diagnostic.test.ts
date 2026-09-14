@@ -168,6 +168,80 @@ describe('Planner phased diagnostic flow', () => {
     }
   })
 
+  it('recovers a failed assessment once on planner reopen, preserving the failed record as superseded', async () => {
+    const directory = mkdtempSync(path.join(tmpdir(), 'zhixing-diagnostic-recovery-'))
+    const database = path.join(directory, 'product.db')
+    applyProductMigrations(database)
+    const repository = new ProductRepository(database)
+    let contentBroken = true
+    const provider: PlanningProvider = {
+      providerName: 'recovering-model', modelName: 'test-model',
+      async stream(_input, onDelta) { await onDelta('请补充一个真实项目经历。'); return '请补充一个真实项目经历。' },
+      async interpret() { return { coveredTopics: ['projects'], dimensions: [{ key: 'foundations', level: 'applied', confidence: 0.7, summary: '有概念证据', nextValidation: '解释边界' }, { key: 'experience', level: 'exposed', confidence: 0.5, summary: '有项目证据', nextValidation: '补充结果' }], evidence: [{ topicKey: 'projects', sourceType: 'user_message', sourceId: 'message', excerpt: '负责过一个上线服务的设计、交付和复盘。' }], supportedPracticeCandidates: [], followUpTopic: null } },
+      async generateAssessmentContent(input) {
+        if (contentBroken) throw new Error('provider unavailable')
+        return validQuestionContent(input)
+      },
+    }
+    try {
+      const service = new AgentPlanningService(repository, provider, { modelName: 'test-model', plannerAssessmentV2Enabled: true })
+      const learnerId = 'recovery-learner'
+      const session = service.createSession(learnerId, { message: '我想提升后端系统设计能力', clientRequestId: 'start' })
+      await completeBaseline(service, learnerId, session.id, session.goal, 'start')
+      await expect(service.prepareAssessment(learnerId, session.id, 'first-try')).rejects.toThrow('provider unavailable')
+      expect(service.phasedStatus(learnerId, session.id).assessment).toMatchObject({ status: 'failed' })
+
+      contentBroken = false
+      const recovered = await service.recoverFailedAssessment(learnerId, session.id)
+      expect(recovered).toMatchObject({ status: 'answering', recoveredFromFailure: true })
+      expect(recovered?.questions).toHaveLength(12)
+      expect(service.phasedStatus(learnerId, session.id).stage).toBe('assessment_answering')
+      const statuses = (repository.db.prepare('SELECT status FROM planning_assessments WHERE session_id = ? ORDER BY version ASC').all(session.id) as Array<{ status: string }>).map((row) => row.status)
+      expect(statuses).toEqual(['superseded', 'answering'])
+      // Nothing left to recover: the healed assessment is active.
+      await expect(service.recoverFailedAssessment(learnerId, session.id)).resolves.toBeNull()
+    } finally {
+      repository.close()
+      rmSync(directory, { recursive: true, force: true })
+    }
+  })
+
+  it('never auto-recovers a chain twice: a failed recovery keeps retries user-driven', async () => {
+    const directory = mkdtempSync(path.join(tmpdir(), 'zhixing-diagnostic-recovery-bound-'))
+    const database = path.join(directory, 'product.db')
+    applyProductMigrations(database)
+    const repository = new ProductRepository(database)
+    let contentBroken = true
+    const provider: PlanningProvider = {
+      providerName: 'still-broken-model', modelName: 'test-model',
+      async stream(_input, onDelta) { await onDelta('请补充一个真实项目经历。'); return '请补充一个真实项目经历。' },
+      async interpret() { return { coveredTopics: ['projects'], dimensions: [{ key: 'foundations', level: 'applied', confidence: 0.7, summary: '有概念证据', nextValidation: '解释边界' }, { key: 'experience', level: 'exposed', confidence: 0.5, summary: '有项目证据', nextValidation: '补充结果' }], evidence: [{ topicKey: 'projects', sourceType: 'user_message', sourceId: 'message', excerpt: '负责过一个上线服务的设计、交付和复盘。' }], supportedPracticeCandidates: [], followUpTopic: null } },
+      async generateAssessmentContent(input) {
+        if (contentBroken) throw new Error('provider unavailable')
+        return validQuestionContent(input)
+      },
+    }
+    try {
+      const service = new AgentPlanningService(repository, provider, { modelName: 'test-model', plannerAssessmentV2Enabled: true })
+      const learnerId = 'bounded-recovery-learner'
+      const session = service.createSession(learnerId, { message: '我想提升后端系统设计能力', clientRequestId: 'start' })
+      await completeBaseline(service, learnerId, session.id, session.goal, 'start')
+      await expect(service.prepareAssessment(learnerId, session.id, 'first-try')).rejects.toThrow('provider unavailable')
+      // The auto-recovery attempt itself fails while the provider is down.
+      await expect(service.recoverFailedAssessment(learnerId, session.id)).rejects.toThrow('provider unavailable')
+      // A second planner reopen must not burn another model call: the chain was
+      // already auto-recovered once, so further retries stay explicit.
+      contentBroken = false
+      await expect(service.recoverFailedAssessment(learnerId, session.id)).resolves.toBeNull()
+      const manual = await service.prepareAssessment(learnerId, session.id, 'manual-retry')
+      expect(manual).toMatchObject({ status: 'answering' })
+      expect(manual.recoveredFromFailure).toBe(false)
+    } finally {
+      repository.close()
+      rmSync(directory, { recursive: true, force: true })
+    }
+  })
+
   it('freezes a valid diagnostic, hides rubrics, batches answers idempotently, and reaches ready only after explicit brief confirmation', async () => serviceFor(async (service, repository) => {
     const session = service.createSession('diagnostic-learner', { message: '我要在六个月内提升后端系统设计能力', clientRequestId: 'start' })
     await completeBaseline(service, 'diagnostic-learner', session.id, session.goal, 'start')
