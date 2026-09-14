@@ -120,6 +120,7 @@ jobs:
           OAUTH_TOKEN_ENCRYPTION_KEY: ${{ secrets.OAUTH_TOKEN_ENCRYPTION_KEY }}
           SIGNED_DEVICE_SESSION_ENABLED: ${{ vars.SIGNED_DEVICE_SESSION_ENABLED || 'false' }}
           ZHIHU_OAUTH_ENABLED: ${{ vars.ZHIHU_OAUTH_ENABLED || 'false' }}
+          ZHIHU_LOGIN_REQUIRED: ${{ vars.ZHIHU_LOGIN_REQUIRED || 'false' }}
           ZHIHU_SOURCE_SYNC_ENABLED: ${{ vars.ZHIHU_SOURCE_SYNC_ENABLED || 'false' }}
           PLANNER_ASSESSMENT_V2_ENABLED: ${{ vars.PLANNER_ASSESSMENT_V2_ENABLED || 'false' }}
           PRACTICE_CARD_V2_ENABLED: ${{ vars.PRACTICE_CARD_V2_ENABLED || 'false' }}
@@ -141,7 +142,7 @@ jobs:
             test -n "${!required:-}" || { echo "Missing required secret: $required" >&2; exit 1; }
           done
           case "$CASE_BUILDER_ENABLED" in true|false) ;; *) echo 'CASE_BUILDER_ENABLED must be the repository variable true or false' >&2; exit 1 ;; esac
-          for flag in SIGNED_DEVICE_SESSION_ENABLED ZHIHU_OAUTH_ENABLED ZHIHU_SOURCE_SYNC_ENABLED PLANNER_ASSESSMENT_V2_ENABLED PRACTICE_CARD_V2_ENABLED MIXED_GYM_ENABLED LEGACY_CASE_FLOW_ENABLED; do
+          for flag in SIGNED_DEVICE_SESSION_ENABLED ZHIHU_OAUTH_ENABLED ZHIHU_LOGIN_REQUIRED ZHIHU_SOURCE_SYNC_ENABLED PLANNER_ASSESSMENT_V2_ENABLED PRACTICE_CARD_V2_ENABLED MIXED_GYM_ENABLED LEGACY_CASE_FLOW_ENABLED; do
             case "${!flag}" in true|false) ;; *) echo "$flag must be the repository variable true or false" >&2; exit 1 ;; esac
           done
           if [ "$ZHIHU_OAUTH_ENABLED" = true ]; then
@@ -150,6 +151,10 @@ jobs:
               test -n "${!required:-}" || { echo "Missing Zhihu OAuth secret: $required" >&2; exit 1; }
             done
             test "${#OAUTH_TOKEN_ENCRYPTION_KEY}" -ge 32 || { echo 'OAUTH_TOKEN_ENCRYPTION_KEY must contain at least 32 bytes' >&2; exit 1; }
+          fi
+          if [ "$ZHIHU_LOGIN_REQUIRED" = true ]; then
+            test "$SIGNED_DEVICE_SESSION_ENABLED" = true || { echo 'SIGNED_DEVICE_SESSION_ENABLED must be true when ZHIHU_LOGIN_REQUIRED=true' >&2; exit 1; }
+            test "$ZHIHU_OAUTH_ENABLED" = true || { echo 'ZHIHU_OAUTH_ENABLED must be true when ZHIHU_LOGIN_REQUIRED=true' >&2; exit 1; }
           fi
           test "$ZHIHU_SOURCE_SYNC_ENABLED" = false || test "$ZHIHU_OAUTH_ENABLED" = true || { echo 'ZHIHU_SOURCE_SYNC_ENABLED requires ZHIHU_OAUTH_ENABLED=true' >&2; exit 1; }
           test "$MIXED_GYM_ENABLED" = false || test "$PRACTICE_CARD_V2_ENABLED" = true || { echo 'MIXED_GYM_ENABLED requires PRACTICE_CARD_V2_ENABLED=true' >&2; exit 1; }
@@ -184,6 +189,7 @@ jobs:
             printf 'OAUTH_TOKEN_ENCRYPTION_KEY=%s\n' "$OAUTH_TOKEN_ENCRYPTION_KEY"
             printf 'SIGNED_DEVICE_SESSION_ENABLED=%s\n' "$SIGNED_DEVICE_SESSION_ENABLED"
             printf 'ZHIHU_OAUTH_ENABLED=%s\n' "$ZHIHU_OAUTH_ENABLED"
+            printf 'ZHIHU_LOGIN_REQUIRED=%s\n' "$ZHIHU_LOGIN_REQUIRED"
             printf 'ZHIHU_SOURCE_SYNC_ENABLED=%s\n' "$ZHIHU_SOURCE_SYNC_ENABLED"
             printf 'PLANNER_ASSESSMENT_V2_ENABLED=%s\n' "$PLANNER_ASSESSMENT_V2_ENABLED"
             printf 'PRACTICE_CARD_V2_ENABLED=%s\n' "$PRACTICE_CARD_V2_ENABLED"

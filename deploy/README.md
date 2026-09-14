@@ -33,8 +33,9 @@ value in the Zhihu application; the frontend never supplies a redirect URI.
 Add `ZHIHU_OAUTH_APP_ID`, `ZHIHU_OAUTH_APP_KEY`,
 `OAUTH_TOKEN_ENCRYPTION_KEY`, and the application-approved
 `ZHIHU_OAUTH_SCOPES` as Actions secrets. Then enable the repository variables
-`SIGNED_DEVICE_SESSION_ENABLED`, `ZHIHU_OAUTH_ENABLED`, and
-`ZHIHU_SOURCE_SYNC_ENABLED` in that order.
+`SIGNED_DEVICE_SESSION_ENABLED` and `ZHIHU_OAUTH_ENABLED` first. After both
+are verified, set `ZHIHU_LOGIN_REQUIRED=true` to enforce the login gate; enable
+`ZHIHU_SOURCE_SYNC_ENABLED` only when source sync is ready.
 
 OAuth remains disabled by default. Because this callback is intentionally HTTP,
 the backend additionally requires `ALLOW_INSECURE_OAUTH_CALLBACK=true`; session
