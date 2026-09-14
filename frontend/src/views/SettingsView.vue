@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ChevronDown, Database, Download, Link2, LockKeyhole, RefreshCw, Search } from 'lucide-vue-next'
 import { onMounted, ref } from 'vue'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import PageHeader from '@/components/shared/PageHeader.vue'
 import AsyncState from '@/components/shared/AsyncState.vue'
 import ConnectionCard from '@/components/settings/ConnectionCard.vue'
@@ -9,9 +9,11 @@ import { useAuthStore } from '@/stores/auth'
 import type { OAuthConnection } from '@/types/domain'
 import { getSourceCollections, getSourceItems, getSourceSyncs, saveSourceItem, searchSourceItems, startSourceSync } from '@/api/learningExperienceService'
 import type { SourceCollection, SourceItem, SourceSync } from '@/types/learningExperience'
+import { oauthFailureMessage } from '@/utils/auth-flow'
 
 const authStore = useAuthStore()
 const route = useRoute()
+const router = useRouter()
 const status = ref('')
 const syncing = ref(false)
 const sourceLoading = ref(false)
@@ -37,7 +39,20 @@ async function syncZhihu() { if (!sourceSyncEnabled) return; syncing.value = tru
 async function selectCollection(id?: string) { selectedCollection.value = id; await loadLibrary() }
 async function search() { if (!sourceQuery.value.trim()) return loadLibrary(); sourceLoading.value = true; try { items.value = (await searchSourceItems(sourceQuery.value.trim())).items } catch { items.value = import.meta.env.VITE_ENABLE_LEARNING_FIXTURES === 'true' ? sourceFixtures.filter((item) => `${item.title}${item.excerpt}`.includes(sourceQuery.value.trim())) : [] } finally { sourceLoading.value = false } }
 async function saveItem(item: SourceItem) { if (item.saved) return; try { await saveSourceItem(item.id); item.saved = true } catch { status.value = '保存内容失败，请稍后重试。' } }
-onMounted(async () => { await authStore.loadConnections(); const connection = String(route.query.connection ?? ''); const result = String(route.query.result ?? route.query.oauth ?? route.query.status ?? ''); const reason = String(route.query.reason ?? ''); if (connection === 'zhihu' && result) status.value = result === 'success' || result === 'connected' ? '知乎连接成功，内容库可以开始同步。' : `知乎授权失败${reason ? `：${reason}` : ''}`; await loadLibrary() })
+onMounted(async () => {
+  const connection = String(route.query.connection ?? '')
+  const result = String(route.query.result ?? route.query.oauth ?? route.query.status ?? '')
+  if (connection === 'zhihu' && (result === 'success' || result === 'connected')) {
+    status.value = '正在确认知乎登录状态…'
+    const session = await authStore.refreshAfterOAuth()
+    if (session?.auth.authenticated) { await router.replace({ name: 'overview' }); return }
+    status.value = '知乎授权已完成，但登录状态尚未确认，请重新检查。'
+  } else if (connection === 'zhihu' && result) {
+    status.value = `知乎授权失败：${oauthFailureMessage(route.query.reason)}`
+  }
+  await authStore.loadConnections()
+  await loadLibrary()
+})
 </script>
 
 <template>

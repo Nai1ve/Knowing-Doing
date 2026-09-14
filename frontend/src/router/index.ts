@@ -1,9 +1,13 @@
 import { createRouter, createWebHistory } from 'vue-router'
+import { useAuthStore } from '@/stores/auth'
+import { safeRedirectPath } from '@/utils/auth-flow'
 
-export const router = createRouter({
-  history: createWebHistory(import.meta.env.BASE_URL),
-  routes: [
+export function createAppRouter(history = createWebHistory(import.meta.env.BASE_URL)) {
+  const router = createRouter({
+    history,
+    routes: [
     { path: '/', redirect: '/overview' },
+    { path: '/auth', name: 'auth', component: () => import('@/views/AuthView.vue'), meta: { public: true } },
     { path: '/start', name: 'start', component: () => import('@/views/StartView.vue') },
     { path: '/planning/:sessionId', name: 'planning', component: () => import('@/views/PlanningView.vue') },
     { path: '/roadmap-preview/:roadmapId', name: 'roadmap-preview', component: () => import('@/views/RoadmapPreviewView.vue') },
@@ -24,7 +28,21 @@ export const router = createRouter({
     { path: '/writing/preview', redirect: (to) => ({ name: 'writing', query: to.query }) },
     { path: '/review', name: 'review', component: () => import('@/views/ReviewView.vue') },
     { path: '/profile', name: 'profile', component: () => import('@/views/ProfileView.vue') },
-    { path: '/settings', name: 'settings', component: () => import('@/views/SettingsView.vue') },
-  ],
-  scrollBehavior: () => ({ top: 0 }),
-})
+    { path: '/settings', name: 'settings', component: () => import('@/views/SettingsView.vue'), meta: { public: true } },
+    ],
+    scrollBehavior: () => ({ top: 0 }),
+  })
+  router.beforeEach(async (to) => {
+    const auth = useAuthStore()
+    const session = await auth.bootstrapSession()
+    if (to.meta.public) {
+      if (to.name === 'auth' && session && (!session.auth.required || session.auth.authenticated)) return { name: 'overview' }
+      return true
+    }
+    if (!session || (session.auth.required && !session.auth.authenticated)) return { name: 'auth', query: { redirect: safeRedirectPath(to.fullPath) }, replace: true }
+    return true
+  })
+  return router
+}
+
+export const router = createAppRouter()

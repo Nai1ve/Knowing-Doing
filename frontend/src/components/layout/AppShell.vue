@@ -6,6 +6,7 @@ import PageToc from './PageToc.vue'
 
 const route = useRoute()
 const currentPage = computed(() => String(route.name ?? 'overview'))
+const isAuthPage = computed(() => currentPage.value === 'auth')
 const isWorkspacePage = computed(() => currentPage.value === 'lesson' || currentPage.value === 'writing' || currentPage.value === 'planning' || currentPage.value === 'roadmap-preview' || currentPage.value === 'roadmap' || currentPage.value === 'roadmap-node' || currentPage.value === 'case-setup' || currentPage.value === 'code-workspace' || currentPage.value.startsWith('writing-'))
 const tocItems = computed(() => ({
   overview: [{ label: '总目标', href: '#goal' }, { label: '当前状况', href: '#status' }, { label: '整体路线', href: '#overview-route' }, { label: '当前节点', href: '#current-node' }],
@@ -26,12 +27,12 @@ const tocItems = computed(() => ({
 
 <template>
   <main class="app-window" aria-label="知行学习系统">
-    <div class="app-body" :class="{ 'lesson-body': isWorkspacePage }">
-      <AppSidebar />
+    <div class="app-body" :class="{ 'lesson-body': isWorkspacePage, 'auth-body': isAuthPage }">
+      <AppSidebar v-if="!isAuthPage" />
       <section class="main-content" :class="{ 'lesson-content': isWorkspacePage }">
         <RouterView />
       </section>
-      <PageToc v-if="!isWorkspacePage" :items="tocItems" />
+      <PageToc v-if="!isWorkspacePage && !isAuthPage" :items="tocItems" />
     </div>
   </main>
 </template>
@@ -39,6 +40,7 @@ const tocItems = computed(() => ({
 <style scoped>
 .app-window { width: 100%; min-height: 100dvh; background: var(--paper); }
 .app-body { display: grid; grid-template-columns: 210px minmax(0, 1fr) 190px; min-height: 100dvh; }
+.auth-body { grid-template-columns: minmax(0, 1fr); }
 .lesson-body { grid-template-columns: 210px minmax(0, 1fr); }
 .main-content { min-width: 0; padding: 32px 40px 52px; background: var(--paper); }
 .lesson-content { padding-inline: 34px; }
