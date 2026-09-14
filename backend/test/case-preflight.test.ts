@@ -8,7 +8,7 @@ import { CaseWorkspaceService } from '../src/case-workspace-service.js'
 import { applyProductMigrations } from '../src/product-migrate.js'
 import { ProductRepository } from '../src/product-repository.js'
 import { DockerWorkspaceRuntimeAdapter } from '../src/runtime-adapter.js'
-import { FakeWorkspaceRunnerClient, type RunnerExecutionResult } from '../src/workspace-runner-client.js'
+import { FakeWorkspaceRunnerClient, WorkspaceRunnerError, type RunnerExecutionResult } from '../src/workspace-runner-client.js'
 
 function setup() {
   const directory = mkdtempSync(path.join(tmpdir(), 'zhixing-case-preflight-'))
@@ -80,6 +80,33 @@ describe('CasePreflightService', () => {
       expect(builder.calls).toBe(2)
       expect(state.repository.db.prepare('SELECT COUNT(*) AS count FROM case_preflight_runs WHERE case_generation_job_id = ?').get(request.job.id)).toMatchObject({ count: 2 })
       expect(service.getCaseGenerationJob(state.learnerId, request.job.id).preflight.status).toBe('passed')
+    } finally { state.repository.close(); rmSync(state.directory, { recursive: true, force: true }) }
+  })
+
+  it('repairs once when the runner is lost during preflight, then fails transparently', async () => {
+    class CountingBuilder implements CaseBuilderProvider {
+      readonly providerName = 'fixture' as const
+      calls = 0
+      private readonly delegate = new FixtureCaseBuilder()
+      async build(input: CaseBuilderInput) { this.calls += 1; return this.delegate.build(input) }
+    }
+    class LostRunner extends FakeWorkspaceRunnerClient {
+      override create() { return Promise.reject(new WorkspaceRunnerError('runner_unavailable', 'runner down', false)) }
+    }
+    const state = setup()
+    try {
+      const builder = new CountingBuilder()
+      const service = new CaseWorkspaceService(state.repository, builder, new DockerWorkspaceRuntimeAdapter(new LostRunner()))
+      const request = service.createCaseRequest(state.learnerId, { roadmapNodeId: 'preflight-node', input: { kind: 'brief', brief: '我想学习 Python list。' }, clientRequestId: 'list-preflight-runner-loss' })
+      await vi.waitFor(() => expect(service.getCaseGenerationJob(state.learnerId, request.job.id).job.status).toBe('failed'))
+      const result = service.getCaseGenerationJob(state.learnerId, request.job.id)
+      // One bounded repair for a lost runner, never a fixture fallback that
+      // pretends the case was generated.
+      expect(builder.calls).toBe(2)
+      expect(result.case.status).toBe('failed')
+      expect(result.job.failureCode).toBe('runner_unavailable')
+      const preflightRuns = state.repository.db.prepare('SELECT failure_code FROM case_preflight_runs WHERE case_generation_job_id = ? ORDER BY attempt_number ASC').all(request.job.id) as Array<{ failure_code: string }>
+      expect(preflightRuns.every((run) => run.failure_code === 'runner_unavailable')).toBe(true)
     } finally { state.repository.close(); rmSync(state.directory, { recursive: true, force: true }) }
   })
 })

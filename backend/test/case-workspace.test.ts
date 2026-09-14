@@ -2,11 +2,12 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
-import { FixtureCaseBuilder } from '../src/case-builder.js'
+import { FixtureCaseBuilder, ModelCaseBuilder } from '../src/case-builder.js'
+import type { CaseBuilderProvider } from '../src/case-builder.js'
 import { CaseWorkspaceService } from '../src/case-workspace-service.js'
 import { applyProductMigrations } from '../src/product-migrate.js'
 import { ProductRepository } from '../src/product-repository.js'
-import { FakeWorkspaceRunnerClient } from '../src/workspace-runner-client.js'
+import { FakeWorkspaceRunnerClient, WorkspaceRunnerError } from '../src/workspace-runner-client.js'
 import { DockerWorkspaceRuntimeAdapter } from '../src/runtime-adapter.js'
 
 async function withService<T>(callback: (service: CaseWorkspaceService, repository: ProductRepository) => Promise<T> | T): Promise<T> {
@@ -23,6 +24,30 @@ function createWorkspaceNode(repository: ProductRepository, learnerId: string): 
   repository.db.prepare("INSERT INTO learner_profile_snapshots(id, learner_id, planning_session_id, version, status, input_fingerprint, summary_json, created_at) VALUES ('workspace-profile-1', ?, NULL, 1, 'current', 'profile-fingerprint', '{}', ?)").run(learnerId, now)
   repository.db.prepare("INSERT INTO learner_profile_dimensions(id, snapshot_id, dimension_key, level, confidence, summary, next_validation) VALUES ('workspace-dimension-1', 'workspace-profile-1', 'python.testing', 'exposed', 0.6, '接触过测试但需要实践验证。', '完成一次 pytest 修复案例。')").run()
   return nodeId
+}
+
+// The stock fake always reports active runs; the scripted subclass lets each
+// scenario control how the runner answers after a restart (ended, missing,
+// unreachable) without needing a real Docker daemon.
+class ScriptedWorkspaceRunnerClient extends FakeWorkspaceRunnerClient {
+  failStatusWith: WorkspaceRunnerError | null = null
+  override status(runnerRunId: string) {
+    if (this.failStatusWith) return Promise.reject(this.failStatusWith)
+    return super.status(runnerRunId)
+  }
+}
+
+async function withScriptedService<T>(callback: (service: CaseWorkspaceService, repository: ProductRepository, fake: ScriptedWorkspaceRunnerClient) => Promise<T> | T): Promise<T> {
+  const directory = mkdtempSync(path.join(tmpdir(), 'zhixing-case-resume-')); const dbPath = path.join(directory, 'product.db'); applyProductMigrations(dbPath); const repository = new ProductRepository(dbPath)
+  const fake = new ScriptedWorkspaceRunnerClient()
+  const service = new CaseWorkspaceService(repository, new FixtureCaseBuilder(), new DockerWorkspaceRuntimeAdapter(fake))
+  try { return await callback(service, repository, fake) } finally { if (repository.db.open) repository.close(); rmSync(directory, { recursive: true, force: true }) }
+}
+
+async function withBuilderService<T>(builder: CaseBuilderProvider, callback: (service: CaseWorkspaceService, repository: ProductRepository) => Promise<T> | T): Promise<T> {
+  const directory = mkdtempSync(path.join(tmpdir(), 'zhixing-case-retry-')); const dbPath = path.join(directory, 'product.db'); applyProductMigrations(dbPath); const repository = new ProductRepository(dbPath)
+  const service = new CaseWorkspaceService(repository, builder, new DockerWorkspaceRuntimeAdapter(new FakeWorkspaceRunnerClient()))
+  try { return await callback(service, repository) } finally { if (repository.db.open) repository.close(); rmSync(directory, { recursive: true, force: true }) }
 }
 
 describe('CaseWorkspaceService', () => {
@@ -82,5 +107,118 @@ describe('CaseWorkspaceService', () => {
     expect(environmentPlan.some((row) => row.detail.includes('idx_learning_cases_learner_environment_updated'))).toBe(true)
     const executionPlan = repository.db.prepare('EXPLAIN QUERY PLAN SELECT * FROM workspace_executions WHERE workspace_run_id = ? ORDER BY sequence DESC LIMIT ?').all(first.workspace.id, 20) as Array<{ detail: string }>
     expect(executionPlan.some((row) => row.detail.includes('idx_workspace_executions_run_sequence'))).toBe(true)
+  }))
+})
+
+describe('resumeWorkspaces', () => {
+  async function readyWorkspace(service: CaseWorkspaceService, repository: ProductRepository, learnerId: string): Promise<string> {
+    const nodeId = createWorkspaceNode(repository, learnerId)
+    const created = service.createCaseRequest(learnerId, { roadmapNodeId: nodeId, input: { kind: 'brief', brief: '练习测试修复并验证。' }, clientRequestId: `resume-${learnerId}` })
+    await vi.waitFor(() => expect(service.getCaseGenerationJob(learnerId, created.job.id).job.status).toBe('succeeded'))
+    const item = service.getCaseGenerationJob(learnerId, created.job.id).case
+    return (await service.startPractice(learnerId, item.id)).workspace.id
+  }
+
+  const workspaceState = (repository: ProductRepository, workspaceId: string): { status: string; ended_reason: string | null } =>
+    repository.db.prepare('SELECT status, ended_reason FROM workspace_runs WHERE id = ?').get(workspaceId) as { status: string; ended_reason: string | null }
+
+  const executionState = (repository: ProductRepository, workspaceId: string): Array<{ status: string; stderr: string }> =>
+    repository.db.prepare('SELECT status, stderr FROM workspace_executions WHERE workspace_run_id = ?').all(workspaceId) as Array<{ status: string; stderr: string }>
+
+  it('fails a provisioning workspace that lost its runner id after a service restart', async () => withScriptedService(async (service, repository) => {
+    const learnerId = 'resume-missing-run'; const workspaceId = await readyWorkspace(service, repository, learnerId)
+    repository.db.prepare("UPDATE workspace_runs SET runner_run_id = NULL, status = 'provisioning', updated_at = ? WHERE id = ?").run(new Date().toISOString(), workspaceId)
+    await service.resumeWorkspaces()
+    expect(workspaceState(repository, workspaceId)).toEqual({ status: 'failed', ended_reason: 'service_restarted' })
+  }))
+
+  it('fails an active workspace whose runner run has already ended', async () => withScriptedService(async (service, repository, fake) => {
+    const learnerId = 'resume-ended-run'; const workspaceId = await readyWorkspace(service, repository, learnerId)
+    const runnerRunId = repository.db.prepare('SELECT runner_run_id FROM workspace_runs WHERE id = ?').get(workspaceId) as { runner_run_id: string }
+    await fake.end(runnerRunId.runner_run_id)
+    await service.resumeWorkspaces()
+    expect(workspaceState(repository, workspaceId)).toEqual({ status: 'failed', ended_reason: 'runner_unavailable' })
+  }))
+
+  it('fails the in-flight execution and restores an executing workspace after a service restart', async () => withScriptedService(async (service, repository) => {
+    const learnerId = 'resume-executing'; const workspaceId = await readyWorkspace(service, repository, learnerId)
+    const now = new Date().toISOString()
+    repository.db.prepare("UPDATE workspace_runs SET status = 'executing', updated_at = ? WHERE id = ?").run(now, workspaceId)
+    repository.db.prepare("INSERT INTO workspace_executions(id, workspace_run_id, sequence, client_request_id, command, status, created_at) VALUES (?, ?, 1, 'resume-exec-1', 'pytest -q', 'running', ?)").run('resume-execution-1', workspaceId, now)
+    await service.resumeWorkspaces()
+    expect(workspaceState(repository, workspaceId)).toEqual({ status: 'active', ended_reason: null })
+    expect(executionState(repository, workspaceId)).toEqual([{ status: 'failed', stderr: '服务在执行完成前重启' }])
+  }))
+
+  it('fails an executing workspace and its running execution when the runner is unreachable', async () => withScriptedService(async (service, repository, fake) => {
+    const learnerId = 'resume-unreachable'; const workspaceId = await readyWorkspace(service, repository, learnerId)
+    const now = new Date().toISOString()
+    repository.db.prepare("UPDATE workspace_runs SET status = 'executing', updated_at = ? WHERE id = ?").run(now, workspaceId)
+    repository.db.prepare("INSERT INTO workspace_executions(id, workspace_run_id, sequence, client_request_id, command, status, created_at) VALUES (?, ?, 1, 'resume-exec-2', 'pytest -q', 'running', ?)").run('resume-execution-2', workspaceId, now)
+    fake.failStatusWith = new WorkspaceRunnerError('runner_unavailable', 'runner down')
+    await service.resumeWorkspaces()
+    expect(workspaceState(repository, workspaceId)).toEqual({ status: 'failed', ended_reason: 'runner_unavailable' })
+    expect(executionState(repository, workspaceId)).toEqual([{ status: 'failed', stderr: 'Runner 不可用' }])
+  }))
+})
+
+describe('resumeCaseJobs', () => {
+  async function readyCase(service: CaseWorkspaceService, repository: ProductRepository, learnerId: string): Promise<{ caseId: string; jobId: string }> {
+    const nodeId = createWorkspaceNode(repository, learnerId)
+    const created = service.createCaseRequest(learnerId, { roadmapNodeId: nodeId, input: { kind: 'brief', brief: '练习测试修复并验证。' }, clientRequestId: `resume-job-${learnerId}` })
+    await vi.waitFor(() => expect(service.getCaseGenerationJob(learnerId, created.job.id).job.status).toBe('succeeded'))
+    return { caseId: created.case.id, jobId: created.job.id }
+  }
+
+  it('requeues a running generation job interrupted by a service restart and finishes it on the next attempt', async () => withScriptedService(async (service, repository) => {
+    const learnerId = 'resume-job-restart'; const { caseId, jobId } = await readyCase(service, repository, learnerId)
+    const old = new Date(Date.now() - 120_000).toISOString()
+    // Simulate the worker being killed mid-generation: job stuck in 'running'
+    // before the 30s fence, case still 'generating' with no half-written spec.
+    repository.db.prepare("UPDATE case_generation_jobs SET status = 'running', updated_at = ? WHERE id = ?").run(old, jobId)
+    repository.db.prepare("UPDATE learning_cases SET status = 'generating', preflight_status = 'queued', failure_code = NULL, failure_message = NULL, updated_at = ? WHERE id = ?").run(old, caseId)
+    await service.resumeCaseJobs()
+    await vi.waitFor(() => expect(service.getCaseGenerationJob(learnerId, jobId).job.status).toBe('succeeded'))
+    expect(service.getCaseGenerationJob(learnerId, jobId).case.status).toBe('ready')
+    expect(service.getCaseGenerationJob(learnerId, jobId).case.spec?.environment.templateKey).toBe('python-pytest-v1')
+    const attempts = repository.db.prepare('SELECT attempt_number, phase, status FROM case_generation_attempts WHERE case_generation_job_id = ? ORDER BY attempt_number ASC').all(jobId) as Array<{ attempt_number: number; phase: string; status: string }>
+    expect(attempts).toHaveLength(2)
+    expect(attempts[1]).toMatchObject({ attempt_number: 2, phase: 'generate', status: 'succeeded' })
+  }))
+})
+
+describe('case generation retry', () => {
+  // A model provider without credentials fails every build deterministically,
+  // which exercises the retry path without a real network call.
+  const unconfiguredModel = new ModelCaseBuilder({ modelBaseUrl: '', modelApiKey: '', modelName: 'test-model', modelTimeoutMs: 1000 })
+
+  it('retries only failed jobs, reusing the same job and immutable input context on a new attempt', async () => withBuilderService(unconfiguredModel, async (service, repository) => {
+    const learnerId = 'retry-learner'; const nodeId = createWorkspaceNode(repository, learnerId)
+    const created = service.createCaseRequest(learnerId, { roadmapNodeId: nodeId, input: { kind: 'brief', brief: '练习测试修复。' }, clientRequestId: 'retry-1' })
+    await vi.waitFor(() => expect(service.getCaseGenerationJob(learnerId, created.job.id).job.status).toBe('failed'))
+    const failed = service.getCaseGenerationJob(learnerId, created.job.id)
+    expect(failed.job.failureCode).toBe('model_not_configured')
+    expect(failed.case.status).toBe('failed')
+
+    service.retryCaseGeneration(learnerId, created.job.id)
+    await vi.waitFor(() => {
+      const job = service.getCaseGenerationJob(learnerId, created.job.id).job
+      expect(job.status).toBe('failed'); expect(job.attemptCount).toBe(2)
+    })
+    const retried = service.getCaseGenerationJob(learnerId, created.job.id)
+    expect(retried.job.inputFingerprint).toBe(failed.job.inputFingerprint)
+    expect(retried.case.id).toBe(failed.case.id)
+    const attempts = repository.db.prepare('SELECT attempt_number, phase, status FROM case_generation_attempts WHERE case_generation_job_id = ? ORDER BY attempt_number ASC').all(created.job.id) as Array<{ attempt_number: number; phase: string; status: string }>
+    expect(attempts).toEqual([
+      { attempt_number: 1, phase: 'generate', status: 'failed' },
+      { attempt_number: 2, phase: 'generate', status: 'failed' },
+    ])
+  }))
+
+  it('refuses to retry a job that already succeeded', async () => withScriptedService(async (service, repository) => {
+    const learnerId = 'retry-succeeded'; const nodeId = createWorkspaceNode(repository, learnerId)
+    const created = service.createCaseRequest(learnerId, { roadmapNodeId: nodeId, input: { kind: 'brief', brief: '练习测试修复。' }, clientRequestId: 'retry-ok' })
+    await vi.waitFor(() => expect(service.getCaseGenerationJob(learnerId, created.job.id).job.status).toBe('succeeded'))
+    expect(() => service.retryCaseGeneration(learnerId, created.job.id)).toThrow(/不能重试/)
   }))
 })
