@@ -79,6 +79,25 @@ describe('ZhihuOpenApiClient Data Platform protocol', () => {
     await expect(client().search('HTTP 错误')).rejects.toMatchObject({ code, retryable })
   })
 
+  it.each([
+    [429, { Code: 30002, Message: 'raw quota payload' }, 'zhihu_rate_limited', true],
+    [503, { Code: 30001, Message: 'raw rate-limit payload' }, 'zhihu_upstream_unavailable', true],
+  ])('prioritizes HTTP status %i over a conflicting Data Platform business code', async (status, payload, code, retryable) => {
+    reply(payload, status)
+
+    await expect(client().search('HTTP 优先级')).rejects.toMatchObject({ code, retryable })
+  })
+
+  it.each([
+    [400, { Code: '30002', Message: 'raw quota payload' }, 'zhihu_quota_exhausted', false],
+    [401, { Code: 99999, Message: 'raw unknown payload' }, 'zhihu_business_error', false],
+    [404, { error: 'raw body without envelope' }, 'zhihu_http_error', false],
+  ])('classifies 4xx status %i with safe Data Platform fallback', async (status, payload, code, retryable) => {
+    reply(payload, status)
+
+    await expect(client().search('4xx 分类')).rejects.toMatchObject({ code, retryable })
+  })
+
   it('rejects invalid JSON without including the raw response', async () => {
     globalThis.fetch = vi.fn(async () => new Response('test-access-secret <invalid>', { status: 200, headers: { 'content-type': 'application/json' } })) as typeof fetch
 
