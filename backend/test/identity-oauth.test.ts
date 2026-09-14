@@ -193,6 +193,10 @@ describe('signed device identity and Zhihu OAuth', () => {
     const cookie = (Array.isArray(created.headers['set-cookie']) ? created.headers['set-cookie'][0] : created.headers['set-cookie'])!.split(';')[0]
     const createdBody = created.json<{ learnerId: string; csrfToken: string; auth: { required: boolean; authenticated: boolean } }>()
     expect(createdBody.auth).toEqual({ required: true, authenticated: false, provider: null, profile: null })
+    state.repository.db.prepare(`
+      INSERT INTO provider_connections(id, learner_id, provider, provider_user_id, token_ciphertext, token_iv, token_tag, scopes_json, status, profile_json, created_at, updated_at)
+      VALUES ('malformed-active-connection', ?, 'zhihu', NULL, 'ciphertext', 'iv', 'tag', '[]', 'active', '{}', ?, ?)
+    `).run(createdBody.learnerId, new Date().toISOString(), new Date().toISOString())
     expect((await app.inject({ method: 'GET', url: '/api/product/runtime-status', headers: { cookie } })).json()).toMatchObject({ error: { code: 'zhihu_auth_required' } })
 
     const unauthenticated = await app.inject({ method: 'GET', url: '/api/auth/session', headers: { cookie } })
@@ -207,7 +211,40 @@ describe('signed device identity and Zhihu OAuth', () => {
     const authenticated = await app.inject({ method: 'GET', url: '/api/auth/session', headers: { cookie } })
     expect(authenticated.json()).toMatchObject({ auth: { required: true, authenticated: true, provider: 'zhihu', profile: { displayName: '知乎用户', avatarUrl: 'https://img.zhihu.test/avatar.png', profileUrl: 'https://www.zhihu.com/people/profile-id' } } })
     expect(JSON.stringify(authenticated.json())).not.toContain('session-secret-token')
+    expect(state.repository.db.prepare("SELECT provider_user_id providerUserId FROM provider_connections WHERE learner_id=? AND provider='zhihu'").get(createdBody.learnerId)).toEqual({ providerUserId: 'session-user' })
     expect((await app.inject({ method: 'GET', url: '/api/product/runtime-status', headers: { cookie } })).statusCode).toBe(200)
+  })
+
+  it('does not treat empty active identities as connected and strips unsafe public profile URLs', () => {
+    const state = database(); cleanup.push(() => { state.repository.close(); rmSync(state.directory, { recursive: true, force: true }) })
+    state.repository.ensureLearner('empty-identity')
+    const now = new Date().toISOString()
+    state.repository.db.prepare(`
+      INSERT INTO provider_connections(id, learner_id, provider, provider_user_id, token_ciphertext, token_iv, token_tag, scopes_json, status, profile_json, created_at, updated_at)
+      VALUES ('empty-identity-connection', 'empty-identity', 'zhihu', '   ', 'ciphertext', 'iv', 'tag', '[]', 'active', ?, ?, ?)
+    `).run(JSON.stringify({ displayName: '普通昵称', avatarUrl: 'javascript:alert(1)', profileUrl: 'data:text/html,unsafe' }), now, now)
+    const client = gateway(state.repository)
+
+    expect(client.authentication('empty-identity', true)).toEqual({ required: true, authenticated: false, provider: null, profile: null })
+    expect(client.connections('empty-identity')).toEqual([{
+      provider: 'zhihu', status: 'pending', account: undefined, scopes: [], profile: { displayName: '普通昵称', avatarUrl: null, profileUrl: null },
+    }])
+  })
+
+  it('keeps token uid as the canonical identity while accepting only safe profile URLs', async () => {
+    const state = database(); cleanup.push(() => { state.repository.close(); rmSync(state.directory, { recursive: true, force: true }) })
+    state.repository.ensureLearner('profile-priority')
+    const fetchImpl = vi.fn(async (input: string | URL | Request) => {
+      const url = new URL(String(input))
+      if (url.pathname === '/access_token') return Response.json({ access_token: 'profile-priority-token', uid: 'token-uid-wins' })
+      if (url.pathname === '/user') return Response.json({ id: 'profile-id-loses', name: '公开昵称', avatar_url: 'file:///private/avatar.png', url: 'javascript:alert(1)' })
+      return new Response('', { status: 404 })
+    }) as typeof fetch
+    const client = gateway(state.repository, fetchImpl)
+    const stateValue = new URL(client.start('profile-priority').authorizationUrl).searchParams.get('state')!
+
+    await expect(client.callback('profile-priority', stateValue, 'profile-code')).resolves.toEqual({ learnerId: 'profile-priority', profile: { displayName: '公开昵称', avatarUrl: null, profileUrl: null } })
+    expect(state.repository.db.prepare("SELECT provider_user_id providerUserId FROM provider_connections WHERE learner_id='profile-priority'").get()).toEqual({ providerUserId: 'token-uid-wins' })
   })
 
   it('binds one-time state to the device, encrypts tokens, refreshes once, and resumes paged sync', async () => {

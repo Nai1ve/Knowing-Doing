@@ -88,6 +88,17 @@ function safeString(value: unknown, maximum = 1000): string | null {
   return typeof value === 'string' && value.trim() ? value.trim().slice(0, maximum) : null
 }
 
+function safeHttpUrl(value: unknown): string | null {
+  const candidate = safeString(value, 2048)
+  if (!candidate) return null
+  try {
+    const url = new URL(candidate)
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') return null
+    if (url.username || url.password) return null
+    return url.toString()
+  } catch { return null }
+}
+
 function stableProviderId(value: unknown): string | null {
   if (typeof value !== 'string' && typeof value !== 'number') return null
   const normalized = String(value).trim()
@@ -99,9 +110,9 @@ function publicProfile(value: unknown): { providerUserId: string | null; profile
   const record = value as Record<string, unknown>
   const providerUserId = stableProviderId(record.id) ?? stableProviderId(record.uid) ?? stableProviderId(record.url_token)
   const profile: ZhihuPublicProfile = {
-    displayName: safeString(record.name) ?? safeString(record.display_name) ?? safeString(record.displayName),
-    avatarUrl: safeString(record.avatar_url) ?? safeString(record.avatarUrl),
-    profileUrl: safeString(record.profile_url) ?? safeString(record.profileUrl) ?? safeString(record.url),
+    displayName: safeString(record.name, 512) ?? safeString(record.display_name, 512) ?? safeString(record.displayName, 512),
+    avatarUrl: safeHttpUrl(record.avatar_url) ?? safeHttpUrl(record.avatarUrl),
+    profileUrl: safeHttpUrl(record.profile_url) ?? safeHttpUrl(record.profileUrl) ?? safeHttpUrl(record.url),
   }
   return { providerUserId, profile: profile.displayName || profile.avatarUrl || profile.profileUrl ? profile : null }
 }
@@ -206,18 +217,22 @@ export class ZhihuGateway {
       "SELECT provider, provider_user_id providerUserId, status, scopes_json scopesJson, profile_json profileJson FROM provider_connections WHERE learner_id = ? AND provider = 'zhihu'",
     ).all(learnerId) as Array<Record<string, unknown>>
     if (rows.length === 0) return [{ provider: 'zhihu' as const, status: 'disconnected' as const, scopes: [] as string[] }]
-    return rows.map((row) => ({
-      provider: 'zhihu' as const,
-      status: row.status === 'active' ? 'connected' as const : 'pending' as const,
-      account: row.providerUserId == null ? undefined : String(row.providerUserId),
-      scopes: this.json<string[]>(row.scopesJson, []),
-      profile: storedPublicProfile(row.profileJson),
-    }))
+    return rows.map((row) => {
+      const providerUserId = typeof row.providerUserId === 'string' && row.providerUserId.trim() ? row.providerUserId.trim() : null
+      const connected = row.status === 'active' && providerUserId !== null
+      return {
+        provider: 'zhihu' as const,
+        status: connected ? 'connected' as const : 'pending' as const,
+        account: providerUserId ?? undefined,
+        scopes: this.json<string[]>(row.scopesJson, []),
+        profile: storedPublicProfile(row.profileJson),
+      }
+    })
   }
 
   authentication(learnerId: string, required: boolean) {
     const connection = this.repository.db.prepare(
-      "SELECT profile_json profileJson FROM provider_connections WHERE learner_id = ? AND provider = 'zhihu' AND status = 'active'",
+      "SELECT profile_json profileJson FROM provider_connections WHERE learner_id = ? AND provider = 'zhihu' AND status = 'active' AND provider_user_id IS NOT NULL AND LENGTH(TRIM(provider_user_id)) > 0",
     ).get(learnerId) as { profileJson: string } | undefined
     return {
       required,

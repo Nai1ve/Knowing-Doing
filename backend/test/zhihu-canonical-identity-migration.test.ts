@@ -27,13 +27,15 @@ describe('Zhihu canonical identity migration 060', () => {
       }
 
       const now = '2026-09-14T00:00:00.000Z'
-      database.prepare('INSERT INTO learners(id, created_at, updated_at) VALUES (?, ?, ?), (?, ?, ?)').run('learner-first', now, now, 'learner-second', now, now)
+      database.prepare('INSERT INTO learners(id, created_at, updated_at) VALUES (?, ?, ?), (?, ?, ?), (?, ?, ?), (?, ?, ?)').run('learner-first', now, now, 'learner-second', now, now, 'learner-legacy', now, now, 'learner-real-oauth-prefix', now, now)
       const insertConnection = database.prepare(`
         INSERT INTO provider_connections(id, learner_id, provider, provider_user_id, token_ciphertext, token_iv, token_tag, scopes_json, status, created_at, updated_at)
-        VALUES (?, ?, 'zhihu', 'same-account', 'ciphertext', 'iv', 'tag', '[]', 'active', ?, ?)
+        VALUES (?, ?, 'zhihu', ?, 'ciphertext', 'iv', 'tag', '[]', 'active', ?, ?)
       `)
-      insertConnection.run('connection-first', 'learner-first', '2026-01-01T00:00:00.000Z', now)
-      insertConnection.run('connection-second', 'learner-second', '2026-02-01T00:00:00.000Z', now)
+      insertConnection.run('connection-first', 'learner-first', 'same-account', '2026-01-01T00:00:00.000Z', now)
+      insertConnection.run('connection-second', 'learner-second', 'same-account', '2026-02-01T00:00:00.000Z', now)
+      insertConnection.run('connection-legacy-token-hash', 'learner-legacy', `oauth-${'a'.repeat(24)}`, '2026-03-01T00:00:00.000Z', now)
+      insertConnection.run('connection-real-oauth-prefix', 'learner-real-oauth-prefix', 'oauth-real-user', '2026-04-01T00:00:00.000Z', now)
       database.prepare(`
         INSERT INTO external_source_collections(id, learner_id, connection_id, provider, external_id, kind, title, metadata_json, created_at, updated_at)
         VALUES ('collection-second', 'learner-second', 'connection-second', 'zhihu', 'favorites', 'favorites', '保留的历史收藏', '{}', ?, ?)
@@ -49,6 +51,8 @@ describe('Zhihu canonical identity migration 060', () => {
         upgraded.pragma('foreign_keys = ON')
         expect(upgraded.prepare('SELECT provider_user_id providerUserId, status, profile_json profileJson FROM provider_connections WHERE id=?').get('connection-first')).toEqual({ providerUserId: 'same-account', status: 'active', profileJson: '{}' })
         expect(upgraded.prepare('SELECT provider_user_id providerUserId, status FROM provider_connections WHERE id=?').get('connection-second')).toEqual({ providerUserId: null, status: 'reauthorization_required' })
+        expect(upgraded.prepare('SELECT provider_user_id providerUserId, status FROM provider_connections WHERE id=?').get('connection-legacy-token-hash')).toEqual({ providerUserId: null, status: 'reauthorization_required' })
+        expect(upgraded.prepare('SELECT provider_user_id providerUserId, status FROM provider_connections WHERE id=?').get('connection-real-oauth-prefix')).toEqual({ providerUserId: 'oauth-real-user', status: 'active' })
         expect(upgraded.prepare('SELECT learner_id learnerId, connection_id connectionId, title FROM external_source_collections WHERE id=?').get('collection-second')).toEqual({ learnerId: 'learner-second', connectionId: 'connection-second', title: '保留的历史收藏' })
         expect(() => upgraded.prepare(`
           INSERT INTO provider_connections(id, learner_id, provider, provider_user_id, token_ciphertext, token_iv, token_tag, scopes_json, status, created_at, updated_at)

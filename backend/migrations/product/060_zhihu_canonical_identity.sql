@@ -4,6 +4,18 @@
 -- re-authorized before they can be used again.
 ALTER TABLE provider_connections ADD COLUMN profile_json TEXT NOT NULL DEFAULT '{}';
 
+-- Version 056 derived this value from the access token when the OAuth
+-- provider did not return an identity. It is not a stable account identifier.
+-- Match only the exact legacy prefix plus 24 hexadecimal characters so real
+-- provider IDs that merely start with "oauth-" are retained.
+UPDATE provider_connections
+SET provider_user_id = NULL,
+    status = 'reauthorization_required',
+    updated_at = CURRENT_TIMESTAMP
+WHERE LENGTH(provider_user_id) = 30
+  AND SUBSTR(provider_user_id, 1, 6) = 'oauth-'
+  AND SUBSTR(provider_user_id, 7) NOT GLOB '*[^0123456789abcdefABCDEF]*';
+
 WITH ambiguous_connections AS (
   SELECT candidate.id
   FROM provider_connections AS candidate
