@@ -34,6 +34,11 @@ describe('TutorEngine', () => {
     }
     await engine().generate(workspaceRun, workspaceContext, '我看到测试失败了', [])
     expect(requestBody?.messages?.[0]?.content).toContain('代码工作区 Tutor')
+    // The workspace prompt must keep the Tutor within its evidence role: it can
+    // explain code/test output but must not write files or declare mastery from
+    // a passing pytest run.
+    expect(requestBody?.messages?.[0]?.content).toContain('不要替用户写文件')
+    expect(requestBody?.messages?.[0]?.content).toContain('不要把测试通过直接宣布为能力掌握')
     expect(requestBody?.messages?.[1]?.content).toContain('pytest -q')
     expect(requestBody?.messages?.[1]?.content).not.toContain('dynamic-case-legacy-1')
     vi.unstubAllGlobals()
