@@ -1,5 +1,5 @@
 import { fileURLToPath, URL } from 'node:url'
-import { defineConfig } from 'vite'
+import { defineConfig } from 'vitest/config'
 import vue from '@vitejs/plugin-vue'
 
 export default defineConfig({
@@ -30,5 +30,8 @@ export default defineConfig({
         changeOrigin: true,
       },
     },
+  },
+  test: {
+    setupFiles: ['src/test/setup.ts'],
   },
 })
