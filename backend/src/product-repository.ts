@@ -646,6 +646,36 @@ export class ProductRepository {
     return attachment
   }
 
+  createPendingResumeDocument(input: { id: string; learnerId: string; planningSessionId: string; clientRequestId: string; originalFilename: string; storedFilename: string; sizeBytes: number; sha256: string }): ResumeAttachment {
+    const replay = this.getPlanningResumeByRequest(input.planningSessionId, input.learnerId, input.clientRequestId)
+    if (replay) return replay
+    const now = new Date().toISOString()
+    this.db.transaction(() => {
+      const version = number(this.db.prepare('SELECT COALESCE(MAX(version), 0) + 1 AS version FROM learner_resume_documents WHERE learner_id=?').get(input.learnerId) as Row, 'version')
+      this.db.prepare('UPDATE learner_resume_documents SET is_current=0,updated_at=? WHERE learner_id=? AND is_current=1').run(now, input.learnerId)
+      this.db.prepare("INSERT INTO learner_resume_documents(id,learner_id,original_filename,stored_filename,mime_type,size_bytes,sha256,parse_status,page_count,text_length,extracted_text,parse_error,version,is_current,created_at,updated_at) VALUES(?,?,?,?,'application/pdf',?,?,'pending',0,0,'',NULL,?,1,?,?)").run(input.id,input.learnerId,input.originalFilename,input.storedFilename,input.sizeBytes,input.sha256,version,now,now)
+      this.db.prepare("UPDATE planning_session_resume_refs SET status='superseded' WHERE session_id=? AND learner_id=? AND status='current'").run(input.planningSessionId,input.learnerId)
+      this.db.prepare("INSERT INTO planning_session_resume_refs(id,learner_id,session_id,document_id,document_version,client_request_id,status,included_at,created_at) VALUES(?,?,?,?,?,?,'current',?,?)").run(randomUUID(),input.learnerId,input.planningSessionId,input.id,version,input.clientRequestId,now,now)
+    })()
+    return this.getPlanningResumeByRequest(input.planningSessionId,input.learnerId,input.clientRequestId)!
+  }
+
+  claimResumeParse(id: string, leaseMs = 5 * 60_000): Row | null {
+    const now = new Date(); const until = new Date(now.getTime() + leaseMs).toISOString()
+    const changed = this.db.prepare("UPDATE learner_resume_documents SET parse_status='processing',parse_lease_until=?,updated_at=? WHERE id=? AND (parse_status='pending' OR (parse_status='processing' AND (parse_lease_until IS NULL OR parse_lease_until<?)))").run(until, now.toISOString(), id, now.toISOString())
+    return changed.changes ? this.db.prepare('SELECT * FROM learner_resume_documents WHERE id=?').get(id) as Row : null
+  }
+
+  finishResumeParse(id: string, result: { pageCount: number; text: string; provider: 'zhihu' | 'local'; errorCode?: string | null }): void {
+    const now = new Date().toISOString(); this.db.transaction(() => {
+      this.db.prepare("UPDATE learner_resume_documents SET parse_status='ready',page_count=?,text_length=?,extracted_text=?,parse_error=NULL,parse_error_code=?,parse_provider=?,parse_lease_until=NULL,updated_at=? WHERE id=?").run(result.pageCount,result.text.length,result.text,result.errorCode ?? null,result.provider,now,id)
+      const row = this.db.prepare('SELECT learner_id FROM learner_resume_documents WHERE id=?').get(id) as Row; this.ensureResumeChunks(id,text(row,'learner_id'))
+    })()
+  }
+  recordResumeProviderTask(id: string, taskId: string): void { this.db.prepare("UPDATE learner_resume_documents SET parse_provider='zhihu',provider_task_id=?,updated_at=? WHERE id=? AND parse_status='processing'").run(taskId,new Date().toISOString(),id) }
+  failResumeParse(id: string, code: string): void { this.db.prepare("UPDATE learner_resume_documents SET parse_status='failed',parse_error='简历解析失败',parse_error_code=?,parse_lease_until=NULL,updated_at=? WHERE id=?").run(code,new Date().toISOString(),id) }
+  pendingResumeDocuments(): Row[] { return this.db.prepare("SELECT * FROM learner_resume_documents WHERE parse_status IN ('pending','processing') ORDER BY created_at LIMIT 20").all() as Row[] }
+
   // Compatibility for historical imports and tests. Runtime reads use learner_resume_documents.
   replacePlanningResumeAttachment(input: { id: string; learnerId: string; planningSessionId: string; originalFilename: string; storedFilename: string; sizeBytes: number; sha256: string; pageCount: number; extractedText: string }): { attachment: ResumeAttachment; previousStoredFilename: string | null } {
     const previous = this.getPlanningResumeAttachment(input.planningSessionId, input.learnerId)

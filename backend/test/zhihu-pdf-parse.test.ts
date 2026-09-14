@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { ZhihuPdfParseAdapter } from '../src/zhihu-pdf-parse.js'
 
 function adapter(fetchImpl: typeof fetch, maxPolls = 3) {
-  return new ZhihuPdfParseAdapter({ accessSecret: 'secret', baseUrl: 'https://developer.zhihu.com', timeoutMs: 1_000, maxPolls, maxDownloadBytes: 1024, fetchImpl, sleep: async () => undefined })
+  return new ZhihuPdfParseAdapter({ accessSecret: 'secret', baseUrl: 'https://developer.zhihu.com', timeoutMs: 1_000, maxPolls, maxDownloadBytes: 1024, fetchImpl, sleep: async () => undefined, lookup: async () => [{ address: '203.0.113.10', family: 4 }] })
 }
 
 describe('ZhihuPdfParseAdapter', () => {
@@ -32,5 +32,17 @@ describe('ZhihuPdfParseAdapter', () => {
   it('times out after bounded polling', async () => {
     const fetchImpl = vi.fn(async (input: string | URL) => String(input).endsWith('/resources/v1/files') ? Response.json({ Code: 0, Data: { file_id: 'private' } }) : String(input).endsWith('/api/v1/pdf-parse/tasks') ? Response.json({ Code: 0, Data: { task_id: 'private' } }) : Response.json({ Code: 0, Data: { task_status: 'running' } })) as typeof fetch
     await expect(adapter(fetchImpl, 1).parse(Buffer.from('%PDF-1.4'))).rejects.toMatchObject({ code: 'zhihu_timeout' })
+  })
+
+  it.each(['https://127.0.0.1/result.json', 'https://localhost/result.json'])('blocks private PDF download targets without fetching them', async (target) => {
+    const fetchImpl = vi.fn(async (input: string | URL) => String(input).endsWith('/resources/v1/files') ? Response.json({ Code: 0, Data: { file_id: 'private' } }) : String(input).endsWith('/api/v1/pdf-parse/tasks') ? Response.json({ Code: 0, Data: { task_id: 'private' } }) : String(input).includes('/api/v1/pdf-parse/tasks/') ? Response.json({ Code: 0, Data: { task_status: 'succeeded', result: { url: target } } }) : Response.json({})) as typeof fetch
+    await expect(adapter(fetchImpl).parse(Buffer.from('%PDF-1.4'))).rejects.toMatchObject({ code: 'zhihu_pdf_download_blocked' })
+    expect(fetchImpl.mock.calls.some(([input]) => String(input) === target)).toBe(false)
+  })
+
+  it('revalidates every redirect hop before download', async () => {
+    const fetchImpl = vi.fn(async (input: string | URL) => String(input).endsWith('/resources/v1/files') ? Response.json({ Code: 0, Data: { file_id: 'private' } }) : String(input).endsWith('/api/v1/pdf-parse/tasks') ? Response.json({ Code: 0, Data: { task_id: 'private' } }) : String(input).includes('/api/v1/pdf-parse/tasks/') ? Response.json({ Code: 0, Data: { task_status: 'succeeded', result: { url: 'https://safe.example/result.json' } } }) : String(input) === 'https://safe.example/result.json' ? new Response('', { status: 302, headers: { location: 'https://169.254.169.254/latest' } }) : Response.json({})) as typeof fetch
+    await expect(adapter(fetchImpl).parse(Buffer.from('%PDF-1.4'))).rejects.toMatchObject({ code: 'zhihu_pdf_download_blocked' })
+    expect(fetchImpl.mock.calls.some(([input]) => String(input).includes('169.254.169.254'))).toBe(false)
   })
 })

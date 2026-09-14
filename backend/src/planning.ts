@@ -135,20 +135,35 @@ export class PlanningService {
         output.end()
       })
       if (header.toString('ascii') !== '%PDF-') throw new LabError('resume_pdf_only', '文件内容不是有效的 PDF', 422)
-      let parsed: Awaited<ReturnType<typeof parseResumePdf>>
-      try {
-        parsed = await parseResumePdf(await readFile(temporaryPath), { remoteParser: this.remoteResumeParser })
-      } catch (error) {
-        if (error instanceof ResumeTextUnavailableError) throw new LabError('resume_text_unavailable', error.message, 422)
-        if (error instanceof ResumeParseError) throw new LabError('resume_parse_failed', error.message, 422)
-        throw error
-      }
       await rename(temporaryPath, storedPath)
-      return this.repository.replaceLearnerResumeDocument({ id, learnerId, planningSessionId: sessionId, clientRequestId, originalFilename: filename, storedFilename, sizeBytes, sha256: hash.digest('hex'), pageCount: parsed.pageCount, extractedText: parsed.text })
+      const attachment = this.repository.createPendingResumeDocument({ id, learnerId, planningSessionId: sessionId, clientRequestId, originalFilename: filename, storedFilename, sizeBytes, sha256: hash.digest('hex') })
+      queueMicrotask(() => { void this.parsePendingResume(id) })
+      return attachment
     } catch (error) {
       output.destroy()
       await Promise.all([rm(temporaryPath, { force: true }), rm(storedPath, { force: true })])
       throw error
+    }
+  }
+
+  resumePendingParses(): void { for (const row of this.repository.pendingResumeDocuments()) queueMicrotask(() => { void this.parsePendingResume(String(row.id)) }) }
+  private async parsePendingResume(id: string): Promise<void> {
+    const row = this.repository.claimResumeParse(id); if (!row) return
+    try {
+      const data = await readFile(path.join(this.resumeStoragePath, String(row.stored_filename)))
+      let provider: 'zhihu' | 'local' = 'zhihu'; let providerError: string | null = null
+      let parsed
+      try {
+        if (!this.remoteResumeParser) throw new Error('disabled')
+        parsed = await this.remoteResumeParser.parse(data, (taskId) => this.repository.recordResumeProviderTask(id, taskId))
+      } catch (error) {
+        provider = 'local'; providerError = error instanceof Error && 'code' in error ? String((error as { code: unknown }).code) : 'zhihu_pdf_fallback'
+        parsed = await parseResumePdf(data)
+      }
+      if (!parsed.text.trim()) throw new ResumeTextUnavailableError()
+      this.repository.finishResumeParse(id, { pageCount: parsed.pageCount, text: parsed.text, provider, errorCode: providerError })
+    } catch (error) {
+      try { this.repository.failResumeParse(id, error instanceof ResumeTextUnavailableError ? 'resume_text_unavailable' : 'resume_parse_failed') } catch { /* process shutdown may close the database; startup recovery retries it */ }
     }
   }
 

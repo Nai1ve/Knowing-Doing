@@ -434,7 +434,7 @@ export interface ResumeAttachment {
   mimeType: 'application/pdf'
   sizeBytes: number
   sha256: string
-  parseStatus: 'pending' | 'ready' | 'failed'
+  parseStatus: 'pending' | 'processing' | 'ready' | 'failed'
   pageCount: number
   textLength: number
   parseError: string | null

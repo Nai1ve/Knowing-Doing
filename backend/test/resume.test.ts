@@ -2,7 +2,7 @@ import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from 'node
 import { Readable } from 'node:stream'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { applyProductMigrations } from '../src/product-migrate.js'
 import { ProductRepository } from '../src/product-repository.js'
 import { PlanningService } from '../src/planning.js'
@@ -34,16 +34,20 @@ function textPdf(text: string): Buffer {
   const xref = `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n${offsets.slice(1).map((offset) => `${String(offset).padStart(10, '0')} 00000 n `).join('\n')}\n`
   return Buffer.from(`${body}${xref}trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xrefOffset}\n%%EOF\n`)
 }
+async function waitForStatus(repository: ProductRepository, id: string, status: string) {
+  await vi.waitFor(() => expect(repository.db.prepare('SELECT parse_status FROM learner_resume_documents WHERE id=?').get(id)).toMatchObject({ parse_status: status }), { timeout: 1_000, interval: 10 })
+}
 
 describe('PlanningService learner resume documents', () => {
   it('accepts PDF content, versions learner documents, and retains historical files', async () => withPlanning(async (service, repository, storagePath) => {
     const session = service.createSession('resume-learner', { goal: '学习后端系统', clientRequestId: 'resume-session' })
     const first = await service.uploadResume('resume-learner', session.id, { filename: 'resume.pdf', mimetype: 'application/pdf', file: Readable.from(textPdf('first resume')) })
     expect(first.mimeType).toBe('application/pdf')
-    expect(first.parseStatus).toBe('ready')
-    expect(first.pageCount).toBe(1)
+    expect(first.parseStatus).toBe('pending')
+    await waitForStatus(repository, first.id, 'ready')
     expect(readFileSync(path.join(storagePath, `${first.id}.pdf`), 'utf8')).toContain('%PDF-1.4')
     const second = await service.uploadResume('resume-learner', session.id, { filename: 'resume-v2.PDF', mimetype: 'application/pdf', file: Readable.from(textPdf('second resume')) })
+    await waitForStatus(repository, second.id, 'ready')
     expect(service.getSession('resume-learner', session.id).resume?.id).toBe(second.id)
     expect(repository.db.prepare('SELECT extracted_text, version, is_current FROM learner_resume_documents WHERE id = ?').get(second.id)).toMatchObject({ extracted_text: 'second resume', version: 2, is_current: 1 })
     expect(existsSync(path.join(storagePath, `${first.id}.pdf`))).toBe(true)
@@ -54,28 +58,30 @@ describe('PlanningService learner resume documents', () => {
     const first = service.createSession('resume-memory-learner', { goal: '学习后端系统', clientRequestId: 'resume-memory-first' })
     const uploaded = await service.uploadResume('resume-memory-learner', first.id, { filename: 'resume.pdf', mimetype: 'application/pdf', file: Readable.from(textPdf('payment service and MySQL performance')), clientRequestId: 'resume-upload-1' })
     const replay = await service.uploadResume('resume-memory-learner', first.id, { filename: 'resume.pdf', mimetype: 'application/pdf', file: Readable.from(textPdf('ignored by idempotency')), clientRequestId: 'resume-upload-1' })
+    await waitForStatus(repository, uploaded.id, 'ready')
     const next = service.createSession('resume-memory-learner', { goal: '重新规划后端路线', clientRequestId: 'resume-memory-next' })
     expect(replay.id).toBe(uploaded.id)
     expect(service.getSession('resume-memory-learner', next.id).resume?.id).toBe(uploaded.id)
     expect(repository.getPlanningResumeContext(next.id, 'resume-memory-learner')?.chunks[0]?.content).toContain('payment service')
   }))
 
-  it('rejects non-PDF names, MIME types, and file contents', async () => withPlanning(async (service) => {
+  it('rejects non-PDF names, MIME types, and file contents', async () => withPlanning(async (service, repository) => {
     const session = service.createSession('resume-validation', { goal: '学习后端系统', clientRequestId: 'resume-validation-session' })
     await expect(service.uploadResume('resume-validation', session.id, { filename: 'resume.docx', mimetype: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', file: Readable.from(Buffer.from('not pdf')) })).rejects.toMatchObject({ code: 'resume_pdf_only' })
     await expect(service.uploadResume('resume-validation', session.id, { filename: 'resume.pdf', mimetype: 'text/plain', file: Readable.from(Buffer.from('%PDF-1.7\nlooks like a pdf')) })).rejects.toMatchObject({ code: 'resume_pdf_only' })
     await expect(service.uploadResume('resume-validation', session.id, { filename: 'resume.pdf', mimetype: 'application/pdf', file: Readable.from(Buffer.from('plain text')) })).rejects.toMatchObject({ code: 'resume_pdf_only' })
-    await expect(service.uploadResume('resume-validation', session.id, { filename: 'broken.pdf', mimetype: 'application/pdf', file: Readable.from(Buffer.from('%PDF-1.7\nbroken')) })).rejects.toMatchObject({ code: 'resume_parse_failed' })
+    const broken = await service.uploadResume('resume-validation', session.id, { filename: 'broken.pdf', mimetype: 'application/pdf', file: Readable.from(Buffer.from('%PDF-1.7\nbroken')) })
+    await waitForStatus(repository, broken.id, 'failed')
   }))
 
   it('identifies a scanned PDF without persisting it as resume context', async () => withPlanning(async (service, repository, storagePath) => {
     const session = service.createSession('resume-scan', { goal: '学习后端系统', clientRequestId: 'resume-scan-session' })
 
-    await expect(service.uploadResume('resume-scan', session.id, { filename: 'scanned.pdf', mimetype: 'application/pdf', file: Readable.from(textPdf('')) })).rejects.toMatchObject({ code: 'resume_text_unavailable' })
-    expect(service.getSession('resume-scan', session.id).resume).toBeNull()
-    expect(repository.db.prepare('SELECT COUNT(*) AS count FROM learner_resume_documents WHERE learner_id = ?').get('resume-scan')).toMatchObject({ count: 0 })
+    const scanned = await service.uploadResume('resume-scan', session.id, { filename: 'scanned.pdf', mimetype: 'application/pdf', file: Readable.from(textPdf('')) })
+    await waitForStatus(repository, scanned.id, 'failed')
+    expect(service.getSession('resume-scan', session.id).resume?.parseStatus).toBe('failed')
+    expect(repository.db.prepare('SELECT COUNT(*) AS count FROM learner_resume_documents WHERE learner_id = ?').get('resume-scan')).toMatchObject({ count: 1 })
     expect(existsSync(storagePath)).toBe(true)
-    expect(readdirSync(storagePath)).toEqual([])
   }))
 
   it('enforces the configured size limit', async () => withPlanning(async (service, repository, storagePath) => {

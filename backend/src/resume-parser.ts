@@ -4,7 +4,7 @@ export interface ResumeParseResult {
   pageCount: number
   text: string
 }
-export interface RemoteResumePdfParser { parse(data: Buffer): Promise<ResumeParseResult> }
+export interface RemoteResumePdfParser { parse(data: Buffer, onTaskCreated?: (taskId: string) => void): Promise<ResumeParseResult> }
 
 export class ResumeParseError extends Error {
   constructor(message: string) {
