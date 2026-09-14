@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { AgentPlanningService, type PlanningProvider } from '../src/agent-planning.js'
+import { AgentPlanningService, type AssessmentContentGenerationInput, type PlanningProvider } from '../src/agent-planning.js'
 import { applyProductMigrations } from '../src/product-migrate.js'
 import { ProductRepository } from '../src/product-repository.js'
 
@@ -16,6 +16,18 @@ function serviceFor(test: (service: AgentPlanningService, repository: ProductRep
 async function completeBaseline(service: AgentPlanningService, learnerId: string, sessionId: string, initialMessage: string, initialRequestId: string): Promise<void> {
   await service.streamMessage(learnerId, sessionId, initialMessage, initialRequestId, async () => undefined)
   await service.streamMessage(learnerId, sessionId, '我负责过真实项目的方案设计、交付和复盘。', 'baseline-2', async () => undefined)
+}
+
+function validQuestionContent(input: AssessmentContentGenerationInput): { questions: Array<Record<string, unknown>> } {
+  return {
+    questions: input.slots.map((slot) => ({
+      slotId: slot.id,
+      prompt: `请结合真实场景说明你如何处理 ${slot.dimensionKey} 的关键判断（题位 ${slot.position}）。`,
+      options: ['single_choice', 'multiple_choice'].includes(slot.type) ? [{ value: 'evidence', label: '先收集证据并定义验证标准' }, { value: 'assume', label: '直接按未经验证的假设推进' }] : [],
+      rubric: { criteria: ['回答需要引用具体事实、判断或验证步骤。'], evidenceSignals: ['可观察的证据或取舍'] },
+      referenceAnswer: { expected: '仅供内部评估器使用。' },
+    })),
+  }
 }
 
 describe('Planner phased diagnostic flow', () => {
@@ -39,6 +51,75 @@ describe('Planner phased diagnostic flow', () => {
         await service.streamMessage(learnerId, session.id, `第 ${turn} 轮补充信息`, `baseline-${turn}`, async () => undefined)
       }
       expect(service.phasedStatus(learnerId, session.id)).toMatchObject({ baselineTurns: 6, stage: 'assessment_preparing' })
+    } finally {
+      repository.close()
+      rmSync(directory, { recursive: true, force: true })
+    }
+  })
+
+  it('uses normalized direction-specific dimensions while the server keeps twelve slots', async () => {
+    const directory = mkdtempSync(path.join(tmpdir(), 'zhixing-diagnostic-dimensions-'))
+    const database = path.join(directory, 'product.db')
+    applyProductMigrations(database)
+    const repository = new ProductRepository(database)
+    const provider: PlanningProvider = {
+      providerName: 'directional-dimensions', modelName: 'test-model',
+      async stream(_input, onDelta) { await onDelta('请补充一个真实项目经历。'); return '请补充一个真实项目经历。' },
+      async interpret() { return { coveredTopics: ['projects'], dimensions: [{ key: 'data', level: 'applied', confidence: 0.7, summary: '有实践线索', nextValidation: '解释设计取舍' }, { key: 'delivery', level: 'exposed', confidence: 0.5, summary: '有交付线索', nextValidation: '补充验证结果' }], evidence: [{ topicKey: 'projects', sourceType: 'user_message', sourceId: 'message', excerpt: '负责订单数据模型设计、上线和复盘。' }], supportedPracticeCandidates: [], followUpTopic: null } },
+      async generateAssessmentDimensions() {
+        return { dimensions: [
+          { key: 'SQL Schema', title: '数据模型设计', rationale: '验证关系建模、约束与演进能力。' },
+          { key: 'query-plans', title: '查询计划分析', rationale: '验证能否定位索引与执行计划问题。' },
+          { key: 'index-design', title: '索引设计', rationale: '验证能否根据访问模式选择索引。' },
+          { key: 'transaction-boundaries', title: '事务边界', rationale: '验证一致性与并发取舍。' },
+          { key: 'operational-observability', title: '运行观测', rationale: '验证能否用指标和日志完成验证。' },
+        ] }
+      },
+      async generateAssessmentContent(input) { return validQuestionContent(input) },
+    }
+    try {
+      const service = new AgentPlanningService(repository, provider, { modelName: 'test-model', plannerAssessmentV2Enabled: true })
+      const learnerId = 'dimension-learner'
+      const session = service.createSession(learnerId, { message: '我想提升 MySQL 数据模型和性能诊断能力', clientRequestId: 'start' })
+      await completeBaseline(service, learnerId, session.id, session.goal, 'start')
+      const assessment = await service.prepareAssessment(learnerId, session.id, 'dynamic-dimensions')
+      expect(assessment.dimensions.map((dimension) => dimension.key)).toEqual(['sql-schema', 'query-plans', 'index-design', 'transaction-boundaries', 'operational-observability'])
+      expect(assessment.dimensions.map((dimension) => dimension.title)).toContain('查询计划分析')
+      expect(assessment.questions).toHaveLength(12)
+      expect(new Set(assessment.questions.map((question) => question.dimensionKey))).toEqual(new Set(assessment.dimensions.map((dimension) => dimension.key)))
+    } finally {
+      repository.close()
+      rmSync(directory, { recursive: true, force: true })
+    }
+  })
+
+  it('falls back to generic dimensions when the directional proposal is malformed', async () => {
+    const directory = mkdtempSync(path.join(tmpdir(), 'zhixing-diagnostic-dimension-fallback-'))
+    const database = path.join(directory, 'product.db')
+    applyProductMigrations(database)
+    const repository = new ProductRepository(database)
+    const provider: PlanningProvider = {
+      providerName: 'malformed-dimensions', modelName: 'test-model',
+      async stream(_input, onDelta) { await onDelta('请补充一个真实项目经历。'); return '请补充一个真实项目经历。' },
+      async interpret() { return { coveredTopics: ['projects'], dimensions: [{ key: 'data', level: 'applied', confidence: 0.7, summary: '有实践线索', nextValidation: '解释设计取舍' }, { key: 'delivery', level: 'exposed', confidence: 0.5, summary: '有交付线索', nextValidation: '补充验证结果' }], evidence: [{ topicKey: 'projects', sourceType: 'user_message', sourceId: 'message', excerpt: '负责过数据服务的设计和交付。' }], supportedPracticeCandidates: [], followUpTopic: null } },
+      async generateAssessmentDimensions() {
+        return { dimensions: [
+          { key: 'duplicate', title: '重复维度一', rationale: '验证一。' },
+          { key: 'duplicate', title: '重复维度二', rationale: '验证二。' },
+          { key: 'third', title: '第三维度', rationale: '验证三。' },
+          { key: 'fourth', title: '第四维度', rationale: '验证四。' },
+        ] }
+      },
+      async generateAssessmentContent(input) { return validQuestionContent(input) },
+    }
+    try {
+      const service = new AgentPlanningService(repository, provider, { modelName: 'test-model', plannerAssessmentV2Enabled: true })
+      const learnerId = 'dimension-fallback-learner'
+      const session = service.createSession(learnerId, { message: '我想提升后端系统设计能力', clientRequestId: 'start' })
+      await completeBaseline(service, learnerId, session.id, session.goal, 'start')
+      const assessment = await service.prepareAssessment(learnerId, session.id, 'fallback-dimensions')
+      expect(assessment.dimensions.map((dimension) => dimension.key)).toEqual(['foundations', 'application', 'reasoning', 'experience'])
+      expect(assessment.questions).toHaveLength(12)
     } finally {
       repository.close()
       rmSync(directory, { recursive: true, force: true })

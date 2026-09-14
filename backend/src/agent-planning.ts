@@ -43,8 +43,9 @@ const AssessmentQuestionSchema = z.object({
   if (['single_choice', 'multiple_choice'].includes(value.type) && value.options.length < 2) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['options'], message: '选择题至少需要两个选项' })
   if (['short_text', 'scenario'].includes(value.type) && value.options.length > 0) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['options'], message: '文本和场景题不能包含选项' })
 })
+const AssessmentDimensionSchema = z.object({ key: z.string().trim().min(1).max(80), title: z.string().trim().min(1).max(120), rationale: z.string().trim().min(1).max(400) })
 const AssessmentSchema = z.object({
-  dimensions: z.array(z.object({ key: z.string().trim().min(1).max(80), title: z.string().trim().min(1).max(120), rationale: z.string().trim().min(1).max(400) })).min(4).max(6),
+  dimensions: z.array(AssessmentDimensionSchema).min(4).max(6),
   questions: z.array(AssessmentQuestionSchema).min(12).max(15),
 }).superRefine((value, ctx) => {
   const keys = new Set(value.dimensions.map((dimension) => dimension.key))
@@ -256,6 +257,13 @@ export interface AssessmentContentGenerationInput {
   repair?: { invalidSlotIds: string[]; previousOutput?: unknown }
 }
 
+export interface AssessmentDimensionGenerationInput {
+  goal: string
+  messages: AgentPlanningMessage[]
+  resumeText?: string | null
+  context: PlanningContextPacket | null
+}
+
 export interface PlanningProvider {
   readonly providerName: string
   readonly modelName: string
@@ -264,6 +272,7 @@ export interface PlanningProvider {
   generateRoadmap?(input: { goal: string; messages: AgentPlanningMessage[]; context: PlanningContextPacket | null; planningEvidence?: { assessment: z.infer<typeof AssessmentEvaluationSchema> | null; requirementBrief: z.infer<typeof RequirementBriefSchema> | null }; cached?: RoadmapGenerationCache; onPhase: RoadmapPhaseCallback; practiceEnvironments?: AgentPracticeEnvironment[] }): Promise<RoadmapPlan>
   adjustPlan?(input: { request: string; goal: string; currentUnitKey: string; planUnits: Array<{ nodeKey: string; title: string; status: string }>; candidateNodes: Array<{ nodeKey: string; title: string; nodeType: string }>; context: PlanningContextPacket | null }): Promise<PlanAdjustmentProposal>
   generateAssessment?(input: { goal: string; messages: AgentPlanningMessage[]; resumeText?: string | null; context: PlanningContextPacket | null }): Promise<z.infer<typeof AssessmentSchema>>
+  generateAssessmentDimensions?(input: AssessmentDimensionGenerationInput): Promise<unknown>
   generateAssessmentContent?(input: AssessmentContentGenerationInput): Promise<unknown>
   evaluateAssessment?(input: { goal: string; dimensions: z.infer<typeof AssessmentSchema>['dimensions']; questions: Array<z.infer<typeof AssessmentQuestionSchema> & { id: string }>; answers: Array<{ questionId: string; value: unknown }> }): Promise<z.infer<typeof AssessmentEvaluationSchema>>
   generateRequirementBrief?(input: { goal: string; assessment: DiagnosticAssessment | null; messages: string[]; previous: z.infer<typeof RequirementBriefSchema> | null }): Promise<z.infer<typeof RequirementBriefSchema>>
@@ -333,6 +342,45 @@ function stringList(value: unknown): string[] {
   return value.map((item) => valueText(item)).filter((item): item is string => Boolean(item))
 }
 
+function dimensionList(value: unknown): unknown[] {
+  if (Array.isArray(value)) return value
+  const object = record(value)
+  if (!object) return []
+  if (Array.isArray(object.dimensions)) return object.dimensions as unknown[]
+  const data = record(object.data) ?? record(object.Data)
+  return data && Array.isArray(data.dimensions) ? data.dimensions as unknown[] : []
+}
+
+function safeDimensionKey(value: unknown, index: number): string {
+  const supplied = valueText(value) ?? ''
+  const normalized = supplied.normalize('NFKD').toLocaleLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 80)
+  return normalized || `dimension-${index + 1}`
+}
+
+function normalizeAssessmentDimensions(output: unknown): AssessmentDimension[] | null {
+  const candidates = dimensionList(output)
+  if (candidates.length < 4 || candidates.length > 5) return null
+  const keys = new Set<string>()
+  const dimensions: AssessmentDimension[] = []
+  for (const [index, candidate] of candidates.entries()) {
+    const object = record(candidate)
+    if (!object) return null
+    const title = valueText(object.title) ?? valueText(object.name) ?? valueText(object.label)
+    const rationale = valueText(object.rationale) ?? valueText(object.reason) ?? valueText(object.description)
+    if (!title || !rationale) return null
+    const key = safeDimensionKey(object.key ?? object.id ?? title, index)
+    if (keys.has(key)) return null
+    keys.add(key)
+    const parsed = AssessmentDimensionSchema.safeParse({ key, title: title.slice(0, 120), rationale: rationale.slice(0, 400) })
+    if (!parsed.success) return null
+    dimensions.push(parsed.data)
+  }
+  return dimensions
+}
+
 function v2Dimensions(): AssessmentDimension[] {
   return [
     { key: 'foundations', title: '核心概念', rationale: '确认关键概念和边界是否清晰。' },
@@ -343,13 +391,20 @@ function v2Dimensions(): AssessmentDimension[] {
 }
 
 function v2Slots(dimensions: AssessmentDimension[]): AssessmentQuestionSlot[] {
-  const patterns: Array<Array<Pick<AssessmentQuestionSlot, 'type' | 'difficulty'>>> = [
+  const threeQuestionPatterns: Array<Array<Pick<AssessmentQuestionSlot, 'type' | 'difficulty'>>> = [
     [{ type: 'single_choice', difficulty: 'foundation' }, { type: 'short_text', difficulty: 'applied' }, { type: 'scenario', difficulty: 'advanced' }],
     [{ type: 'multiple_choice', difficulty: 'foundation' }, { type: 'scenario', difficulty: 'applied' }, { type: 'short_text', difficulty: 'advanced' }],
     [{ type: 'single_choice', difficulty: 'foundation' }, { type: 'short_text', difficulty: 'applied' }, { type: 'scenario', difficulty: 'advanced' }],
     [{ type: 'multiple_choice', difficulty: 'foundation' }, { type: 'scenario', difficulty: 'applied' }, { type: 'short_text', difficulty: 'advanced' }],
   ]
-  return dimensions.flatMap((dimension, dimensionIndex) => patterns[dimensionIndex]!.map((pattern, index) => ({ id: `slot-${String(dimensionIndex * 3 + index + 1).padStart(2, '0')}`, position: dimensionIndex * 3 + index + 1, dimensionKey: dimension.key, ...pattern })))
+  const patterns = dimensions.length === 5
+    ? [threeQuestionPatterns[0]!, threeQuestionPatterns[1]!, threeQuestionPatterns[2]!.slice(0, 2), threeQuestionPatterns[3]!.slice(0, 2), threeQuestionPatterns[0]!.slice(0, 2)]
+    : threeQuestionPatterns
+  let position = 0
+  return dimensions.flatMap((dimension, dimensionIndex) => patterns[dimensionIndex]!.map((pattern) => {
+    position += 1
+    return { id: `slot-${String(position).padStart(2, '0')}`, position, dimensionKey: dimension.key, ...pattern }
+  }))
 }
 
 function normalizedOptions(value: unknown): Array<{ value: string; label: string }> {
@@ -663,6 +718,15 @@ export class DeepSeekPlanningAgent implements PlanningProvider {
     return repaired.data
   }
 
+  async generateAssessmentDimensions(input: AssessmentDimensionGenerationInput): Promise<unknown> {
+    const contract = '{"dimensions":[{"key":"safe-lowercase-key","title":"方向相关能力维度","rationale":"说明为什么需要验证"}]}'
+    const response = await this.structured([
+      { role: 'system', content: `你是学习诊断维度设计器。只根据用户明确提供的目标、对话、简历和上下文，提出 4 或 5 个与学习方向直接相关的能力维度。每项必须有唯一的 lowercase-hyphen key、title 和 rationale；不要生成题目、答案、分数或对用户能力的结论。只返回 JSON。合约：${contract}` },
+      { role: 'user', content: JSON.stringify({ goal: input.goal, messages: input.messages.slice(-12), resume: input.resumeText ?? null, context: input.context }) },
+    ])
+    return response.value
+  }
+
   async generateAssessmentContent(input: AssessmentContentGenerationInput): Promise<unknown> {
     const contract = '{"questions":[{"slotId":"slot-01","prompt":"至少八个字符的问题","options":[{"value":"a","label":"选项 A"},{"value":"b","label":"选项 B"}],"rubric":{"criteria":["内部判定标准"],"evidenceSignals":["可观察证据"]},"referenceAnswer":{"expected":"仅供评估器"}}]}'
     const slots = input.repair
@@ -845,7 +909,16 @@ export class AgentPlanningService {
   }
 
   private async generateAssessmentV2(input: { goal: string; messages: AgentPlanningMessage[]; resumeText: string | null; context: PlanningContextPacket | null }): Promise<z.infer<typeof AssessmentSchema>> {
-    const dimensions = v2Dimensions()
+    let dimensions = v2Dimensions()
+    if (this.provider.generateAssessmentDimensions) {
+      try {
+        const proposed = await this.provider.generateAssessmentDimensions(input)
+        dimensions = normalizeAssessmentDimensions(proposed) ?? dimensions
+      } catch {
+        // Dimension design is advisory. A malformed or unavailable provider
+        // must not prevent the server-owned question contract from proceeding.
+      }
+    }
     const slots = v2Slots(dimensions)
     const valid = new Map<string, AssessmentDraftQuestion>()
     const prompts = new Set<string>()
