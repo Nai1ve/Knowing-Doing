@@ -13,6 +13,8 @@
 | [zhixing-mysql-case-pack.md](zhixing-mysql-case-pack.md) | 三个 MySQL 案例及其共同的讨论、Tutor 和尝试协议 | MVP 案例准备和案例引擎实现 |
 | [zhixing-post-mvp-capabilities.md](zhixing-post-mvp-capabilities.md) | MVP 之后的学习主线、画像、计划、反馈和案例扩展能力 | 后续产品规划和开发排期 |
 | [zhixing-weekly-case-agent-plan.md](zhixing-weekly-case-agent-plan.md) | 案例构建 Agent、Python Docker 实践底座和本周实现任务 | 本周开发、评审和验收 |
+| [zhixing-identity-planner-zhihu-contract.md](zhixing-identity-planner-zhihu-contract.md) | 登录身份、Planner 测评 v2 与知乎平台契约的第一个实施切片 | 切片开工前的契约冻结 |
+| [zhixing-identity-planner-zhihu-rollout.md](zhixing-identity-planner-zhihu-rollout.md) | 知乎登录闭环要做什么，以及当前代码做到哪一步 | 排期决策、阶段验收和进度复核 |
 | [../backend/README.md](../backend/README.md) | Docker Lab API、人工 migration、权限与验收边界 | 后端启动、部署和集成测试 |
 | [.design/zhixing-learning/DESIGN_BRIEF.md](../.design/zhixing-learning/DESIGN_BRIEF.md) | 体验原则和视觉方向 | 前端设计决策 |
 | [.design/zhixing-learning/INFORMATION_ARCHITECTURE.md](../.design/zhixing-learning/INFORMATION_ARCHITECTURE.md) | 页面、路由、信息和数据边界 | 信息架构与接口设计 |
