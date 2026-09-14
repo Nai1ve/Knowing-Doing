@@ -26,6 +26,7 @@ import { EnvironmentBoundMySqlStore } from './environment-bound-mysql-store.js'
 import { IdentityService } from './identity-service.js'
 import { ZhihuGateway } from './zhihu-gateway.js'
 import { MixedGymService } from './mixed-gym-service.js'
+import { DeepSeekPracticeCardGenerator } from './practice-card-generator.js'
 
 const config = loadConfig()
 const productRepository = new ProductRepository(config.productDbPath)
@@ -80,7 +81,7 @@ const { app, scheduler } = buildApp({
   }),
   identityService: config.signedDeviceSessionEnabled ? identityService : undefined,
   zhihuGateway: config.signedDeviceSessionEnabled ? zhihuGateway : undefined,
-  mixedGymServiceFactory: (build) => new MixedGymService(productRepository, build),
+  mixedGymServiceFactory: (build) => new MixedGymService(productRepository, build, new DeepSeekPracticeCardGenerator(config), zhihuOpenApi),
   runtimeStatus: async () => ({ model: { configured: Boolean(config.modelBaseUrl && config.modelApiKey), name: config.modelName }, caseBuilder: { enabled: config.caseBuilderEnabled, endpointConfigured: Boolean(config.caseBuilderUrl), model: config.caseBuilderLlmModel }, zhihu: { configured: Boolean(config.zhihuAccessSecret), executable: Boolean(config.zhihuAccessSecret), lastRetrieval: null } }),
 })
 

@@ -6,6 +6,7 @@ import { applyProductMigrations } from '../src/product-migrate.js'
 import { ProductRepository } from '../src/product-repository.js'
 import { MixedGymService } from '../src/mixed-gym-service.js'
 import type { EnvironmentBuildOrchestrator } from '../src/gym-build-service.js'
+import type { PracticeCardGenerator } from '../src/practice-card-generator.js'
 
 function setup(learningMode: 'knowledge' | 'lab' = 'knowledge') {
   const directory = mkdtempSync(path.join(tmpdir(), 'zhixing-mixed-gym-'))
@@ -26,7 +27,7 @@ function setup(learningMode: 'knowledge' | 'lab' = 'knowledge') {
     get() { throw new Error('build readiness must not be treated as user verification') },
     async start() { throw new Error('runtime should not be started by these tests') },
   } as unknown as EnvironmentBuildOrchestrator
-  return { directory, repository, learnerId, service: new MixedGymService(repository, builds) }
+  return { directory, repository, learnerId, builds, service: new MixedGymService(repository, builds) }
 }
 
 function answer(service: MixedGymService, learnerId: string, sessionId: string, activityId: string, value: string, key: string) {
@@ -35,15 +36,15 @@ function answer(service: MixedGymService, learnerId: string, sessionId: string, 
 }
 
 describe('Practice Card and mixed Gym contracts', () => {
-  it('keeps private answers out of public DTOs and reveals an explanation only after the second failed attempt', () => {
+  it('keeps private answers out of public DTOs and reveals an explanation only after the second failed attempt', async () => {
     const state = setup()
     try {
-      const card = state.service.createCard(state.learnerId, 'unit', 'card-1')
+      const card = await state.service.createCard(state.learnerId, 'unit', 'card-1')
       expect(card.activities).toHaveLength(5)
       expect(card.activities.filter((activity: { type: string }) => activity.type === 'knowledge_check')).toHaveLength(2)
       expect(JSON.stringify(card)).not.toMatch(/answerKey|rubric|references|可靠判断应先记录/)
       expect(card).toMatchObject({ mode: 'knowledge_only', sourceReferences: [] })
-      expect(state.service.createCard(state.learnerId, 'unit', 'card-1').id).toBe(card.id)
+      expect((await state.service.createCard(state.learnerId, 'unit', 'card-1')).id).toBe(card.id)
       const session = state.service.startSession(state.learnerId, card.id, 'session-1')
       state.service.draft(state.learnerId, session.id, 'knowledge-1', 'change-first', 'same-draft')
       expect(() => state.service.draft(state.learnerId, session.id, 'knowledge-1', 'evidence-first', 'same-draft')).toThrow(/幂等键/)
@@ -57,10 +58,10 @@ describe('Practice Card and mixed Gym contracts', () => {
     } finally { state.repository.close(); rmSync(state.directory, { recursive: true, force: true }) }
   })
 
-  it('marks a fully attempted knowledge card with wrong core knowledge as completed_with_gaps', () => {
+  it('marks a fully attempted knowledge card with wrong core knowledge as completed_with_gaps', async () => {
     const state = setup()
     try {
-      const card = state.service.createCard(state.learnerId, 'unit', 'card-gaps')
+      const card = await state.service.createCard(state.learnerId, 'unit', 'card-gaps')
       const session = state.service.startSession(state.learnerId, card.id, 'session-gaps')
       answer(state.service, state.learnerId, session.id, 'knowledge-1', 'change-first', 'g1')
       answer(state.service, state.learnerId, session.id, 'knowledge-2', 'boundary-first', 'g2')
@@ -73,10 +74,10 @@ describe('Practice Card and mixed Gym contracts', () => {
     } finally { state.repository.close(); rmSync(state.directory, { recursive: true, force: true }) }
   })
 
-  it('requires a server-resolved runtime practice before a mixed card can be verified', () => {
+  it('requires a server-resolved runtime practice before a mixed card can be verified', async () => {
     const state = setup('lab')
     try {
-      const card = state.service.createCard(state.learnerId, 'unit', 'mixed-card')
+      const card = await state.service.createCard(state.learnerId, 'unit', 'mixed-card')
       expect(card.mode).toBe('mixed')
       const session = state.service.startSession(state.learnerId, card.id, 'mixed-session')
       answer(state.service, state.learnerId, session.id, 'knowledge-1', 'evidence-first', 'm1')
@@ -85,6 +86,52 @@ describe('Practice Card and mixed Gym contracts', () => {
       const completed = state.service.complete(state.learnerId, session.id, '我会记录预测与实际结果的差异，并继续验证索引边界。', 'm-complete')
       expect(completed.outcome).toBe('incomplete')
       expect(state.repository.db.prepare("SELECT status FROM plan_units WHERE id='unit'").get()).toMatchObject({ status: 'current' })
+    } finally { state.repository.close(); rmSync(state.directory, { recursive: true, force: true }) }
+  })
+
+  it('generates from a safe full-content digest and supports model-defined activity ids', async () => {
+    const state = setup()
+    try {
+      const timestamp = new Date().toISOString()
+      state.repository.db.prepare(`
+        INSERT INTO learner_source_items(id,learner_id,provider,external_id,url,title,author,excerpt,content_json,visibility,content_hash,status,saved,tags_json,created_at,updated_at)
+        VALUES('source',?,'zhihu','article-1','https://www.zhihu.com/p/1','EXPLAIN 判断','作者','能用证据解释执行计划','{}','private','hash','active',1,'[]',?,?)
+      `).run(state.learnerId, timestamp, timestamp)
+      let generationInput: Parameters<PracticeCardGenerator['generate']>[0] | undefined
+      const generator: PracticeCardGenerator = { async generate(input) {
+        generationInput = input
+        return {
+          title: '模型生成卡', summary: '用来源摘要建立可验证判断。',
+          activities: [
+            { id: 'intro-x', type: 'concept', title: '概念', prompt: '建立框架。', required: true },
+            { id: 'check-a', type: 'knowledge_check', title: '证据', prompt: '先做什么？', options: [{ value: 'observe', label: '观察' }, { value: 'guess', label: '猜测' }], required: true, core: true },
+            { id: 'check-b', type: 'knowledge_check', title: '边界', prompt: '如何迁移？', options: [{ value: 'boundary', label: '说明边界' }, { value: 'copy', label: '照搬' }], required: true, core: true },
+            { id: 'predict-x', type: 'scenario_reasoning', title: '预测', prompt: '写下预测。', required: true },
+            { id: 'reflect-x', type: 'reflection', title: '反思', prompt: '记录反思。', required: true },
+          ],
+          answerKey: { 'check-a': 'observe', 'check-b': 'boundary' }, hints: { 'check-a': '看证据。', 'check-b': '看边界。' },
+          explanations: { 'check-a': '观察优先。', 'check-b': '边界保证迁移。' }, references: { 'check-a': 'observe', 'check-b': 'boundary' },
+        }
+      } }
+      const sourceContent = { async fetchArticle() { return `<p>${'完整正文 '.repeat(300)}</p><script>private-provider-payload</script>` } }
+      const service = new MixedGymService(state.repository, state.builds, generator, sourceContent)
+
+      const card = await service.createCard(state.learnerId, 'unit', 'model-card')
+      expect(card).toMatchObject({ title: '模型生成卡', mode: 'knowledge_only' })
+      expect(generationInput?.sources[0]?.summary).not.toContain('<p>')
+      expect(generationInput?.sources[0]?.summary).not.toContain('private-provider-payload')
+      expect(generationInput?.sources[0]?.summary.length).toBeLessThanOrEqual(1200)
+      expect(JSON.stringify(card)).not.toContain('private-provider-payload')
+      const storedDigest = state.repository.db.prepare("SELECT digest_json FROM source_digests WHERE source_item_id='source'").get() as { digest_json: string }
+      expect(storedDigest.digest_json).not.toContain('<script>')
+
+      const session = service.startSession(state.learnerId, card.id, 'model-session')
+      answer(service, state.learnerId, session.id, 'check-a', 'observe', 'model-a')
+      answer(service, state.learnerId, session.id, 'check-b', 'boundary', 'model-b')
+      answer(service, state.learnerId, session.id, 'predict-x', '我会先记录执行计划，再用实际访问行数验证预测。', 'model-predict')
+      const completed = service.complete(state.learnerId, session.id, '我会保留预测和证据差异，并在下一次数据分布变化时复验。', 'model-complete')
+      expect(completed.outcome).toBe('verified')
+      expect(completed.session.reflection).toContain('预测和证据差异')
     } finally { state.repository.close(); rmSync(state.directory, { recursive: true, force: true }) }
   })
 })

@@ -2,12 +2,14 @@ import { createHash, randomUUID } from 'node:crypto'
 import type { ProductRepository } from './product-repository.js'
 import type { EnvironmentBuildOrchestrator } from './gym-build-service.js'
 import { LabError } from './errors.js'
+import type { GeneratedPracticeCard, PracticeCardGenerationInput, PracticeCardGenerator } from './practice-card-generator.js'
 
 type Row = Record<string, unknown>
 type ActivityType = 'concept' | 'knowledge_check' | 'scenario_reasoning' | 'runtime_practice' | 'reflection'
 type Activity = { id: string; type: ActivityType; title: string; prompt: string; options?: Array<{ value: string; label: string }>; required: boolean; core?: boolean }
 type ActivityState = { answer: unknown; status: 'unanswered' | 'saved' | 'correct' | 'incorrect' | 'completed'; attempts: number; feedback?: string }
 type StateDocument = { activities: Record<string, ActivityState>; runtimePracticeRunId?: string }
+type SourceDigest = PracticeCardGenerationInput['sources'][number] & { sourceItemId: string; fetchedAt: string }
 type PublicCardDocument = {
   title: string
   objective: string
@@ -33,9 +35,14 @@ function terms(value: string): string[] {
 }
 
 export class MixedGymService {
-  constructor(private readonly repository: ProductRepository, private readonly builds: EnvironmentBuildOrchestrator) {}
+  constructor(
+    private readonly repository: ProductRepository,
+    private readonly builds: EnvironmentBuildOrchestrator,
+    private readonly generator?: PracticeCardGenerator,
+    private readonly sourceContent?: { fetchArticle(source: { externalId: string | null; url: string }): Promise<string> },
+  ) {}
 
-  createCard(learnerId: string, planUnitId: string, clientRequestId: string) {
+  async createCard(learnerId: string, planUnitId: string, clientRequestId: string) {
     const byRequest = this.repository.db.prepare(
       'SELECT * FROM practice_cards WHERE learner_id=? AND plan_unit_id=? AND client_request_id=?',
     ).get(learnerId, planUnitId, clientRequestId) as Row | undefined
@@ -44,19 +51,27 @@ export class MixedGymService {
     const unit = this.planUnit(learnerId, planUnitId)
     const intent = this.cardIntent(learnerId, unit)
     const selectedSources = this.rankSources(learnerId, intent.sourceQuery.concepts).slice(0, 2)
-    const activities = this.activitiesFor(intent.preferredRuntime as 'mysql_lab' | 'docker_workspace' | 'none')
+    const digests = await Promise.all(selectedSources.map((source) => this.digestFor(learnerId, source)))
+    let generated: GeneratedPracticeCard | null = null
+    if (this.generator) {
+      try { generated = await this.generator.generate({ intent, sources: digests }) }
+      catch { generated = null }
+    }
+    const activities = generated?.activities ?? this.activitiesFor(intent.preferredRuntime as 'mysql_lab' | 'docker_workspace' | 'none', intent.objective)
     const sourceReferences = selectedSources.map((source) => ({
       id: text(source, 'id'), title: text(source, 'title'), author: nullable(source, 'author'), canonicalUrl: text(source, 'url'),
     }))
     const publicDocument = {
-      title: text(unit, 'title'), objective: intent.objective,
-      summary: sourceReferences.length > 0 ? '结合路线目标与已筛选来源完成一次知行闭环。' : '未找到达到相关度阈值的来源，本卡按路线目标安全降级生成。',
+      title: generated?.title ?? text(unit, 'title'), objective: intent.objective,
+      summary: generated?.summary ?? (sourceReferences.length > 0 ? '结合路线目标与已筛选来源完成一次知行闭环。' : '未找到达到相关度阈值的来源，本卡按路线目标安全降级生成。'),
       mode: intent.preferredRuntime === 'none' ? 'knowledge_only' : 'mixed',
       activities,
       completionPolicy: { requiredActivityTypes: [...new Set(activities.filter((activity) => activity.required).map((activity) => activity.type))], maxAttemptsPerActivity: 2 },
       sourceReferences,
     }
-    const privateDocument = {
+    const privateDocument = generated ? {
+      answerKey: generated.answerKey, hints: generated.hints, explanations: generated.explanations, references: generated.references,
+    } : {
       answerKey: { 'knowledge-1': 'evidence-first', 'knowledge-2': 'boundary-first' },
       hints: {
         'knowledge-1': '先区分可观察证据与未经验证的推测。',
@@ -90,9 +105,8 @@ export class MixedGymService {
         this.repository.db.prepare(
           'INSERT INTO practice_card_sources(practice_card_id,source_item_id,relevance,position,created_at) VALUES(?,?,?,?,?)',
         ).run(id, text(source, 'id'), source.relevance, index + 1, createdAt)
-        this.upsertDigest(learnerId, source)
       })
-      this.appendCardEvent(id, learnerId, 'ready', { sourceCount: selectedSources.length, mode: publicDocument.mode }, clientRequestId)
+      this.appendCardEvent(id, learnerId, 'ready', { sourceCount: selectedSources.length, mode: publicDocument.mode, generatedBy: generated ? 'model' : 'safe_template' }, clientRequestId)
     })()
     return this.getCard(learnerId, id)
   }
@@ -107,7 +121,7 @@ export class MixedGymService {
 
   getCard(learnerId: string, id: string) { return this.publicCard(this.card(learnerId, id)) }
 
-  retryCard(learnerId: string, id: string, clientRequestId: string) {
+  async retryCard(learnerId: string, id: string, clientRequestId: string) {
     const row = this.card(learnerId, id)
     if (row.status !== 'failed') return this.publicCard(row)
     return this.createCard(learnerId, text(row, 'plan_unit_id'), clientRequestId)
@@ -153,13 +167,14 @@ export class MixedGymService {
     const activities = card.activities
     const activityStates = activities.map((activity) => ({ activityId: activity.id, ...(state.activities[activity.id] ?? { answer: null, status: 'unanswered', attempts: 0 }) }))
     const runtime = this.runtimeState(learnerId, row, activities)
+    const reflectionActivity = activities.find((activity) => activity.type === 'reflection')
     const completed = activityStates.filter((activity) => ['correct', 'completed'].includes(activity.status)).length
     const current = activities.find((activity) => !['correct', 'completed'].includes(state.activities[activity.id]?.status ?? 'unanswered'))
     return {
       id: text(row, 'id'), practiceCardId: text(row, 'practice_card_id'), stage: text(row, 'stage'), outcome: nullable(row, 'outcome'),
       activities, activityStates, currentActivityId: current?.id ?? null,
       attemptsRemaining: current ? Math.max(0, 2 - (state.activities[current.id]?.attempts ?? 0)) : 0,
-      runtime, reflection: state.activities.reflection?.answer == null ? null : String(state.activities.reflection.answer),
+      runtime, reflection: !reflectionActivity || state.activities[reflectionActivity.id]?.answer == null ? null : String(state.activities[reflectionActivity.id].answer),
       progress: { completed, total: activities.length }, createdAt: text(row, 'created_at'), updatedAt: text(row, 'updated_at'),
     }
   }
@@ -268,7 +283,9 @@ export class MixedGymService {
     const state = json<StateDocument>(row.activity_state_json, { activities: {} })
     const reflectionText = typeof reflection === 'string' ? reflection.trim() : ''
     const reflectionComplete = reflectionText.length >= 12
-    state.activities.reflection = { answer: reflectionText, attempts: reflectionComplete ? 1 : 0, status: reflectionComplete ? 'completed' : 'unanswered', feedback: reflectionComplete ? '反思已记录。' : '请补充具体判断与下一步验证。' }
+    const reflectionActivity = activities.find((activity) => activity.type === 'reflection')
+    if (!reflectionActivity) throw new LabError('practice_card_contract_invalid', 'Practice Card 缺少反思活动', 409)
+    state.activities[reflectionActivity.id] = { answer: reflectionText, attempts: reflectionComplete ? 1 : 0, status: reflectionComplete ? 'completed' : 'unanswered', feedback: reflectionComplete ? '反思已记录。' : '请补充具体判断与下一步验证。' }
     const knowledge = activities.filter((activity) => activity.type === 'knowledge_check' && activity.core !== false)
     const allKnowledgeAttempted = knowledge.every((activity) => (state.activities[activity.id]?.attempts ?? 0) > 0)
     const knowledgePassed = knowledge.every((activity) => state.activities[activity.id]?.status === 'correct')
@@ -301,7 +318,7 @@ export class MixedGymService {
       "SELECT summary_json FROM learner_profile_snapshots WHERE learner_id=? AND status='current' ORDER BY version DESC LIMIT 1",
     ).get(learnerId) as { summary_json: string } | undefined
     const profile = json<Record<string, unknown>>(summary?.summary_json, {})
-    const preferredRuntime = unit.learning_mode === 'lab' ? 'mysql_lab' : unit.learning_mode === 'workspace' ? 'docker_workspace' : 'none'
+    const preferredRuntime: 'mysql_lab' | 'docker_workspace' | 'none' = unit.learning_mode === 'lab' ? 'mysql_lab' : unit.learning_mode === 'workspace' ? 'docker_workspace' : 'none'
     return {
       planUnitId: text(unit, 'id'), objective: text(unit, 'objective'),
       capabilityIds: [nullable(unit, 'capability_key') ?? text(unit, 'title')],
@@ -313,9 +330,9 @@ export class MixedGymService {
     }
   }
 
-  private activitiesFor(runtime: 'mysql_lab' | 'docker_workspace' | 'none'): Activity[] {
+  private activitiesFor(runtime: 'mysql_lab' | 'docker_workspace' | 'none', objective: string): Activity[] {
     return [
-      { id: 'concept', type: 'concept', title: '建立判断框架', prompt: '先阅读目标，明确要观察的现象、证据与边界。', required: true },
+      { id: 'concept', type: 'concept', title: '建立判断框架', prompt: `围绕“${objective}”，先明确要观察的现象、证据与边界。`, required: true },
       { id: 'knowledge-1', type: 'knowledge_check', title: '证据优先', prompt: '面对异常时，哪种做法更可靠？', options: [{ value: 'evidence-first', label: '先收集可复现证据，再决定改动' }, { value: 'change-first', label: '先修改配置，再寻找解释' }], required: true, core: true },
       { id: 'knowledge-2', type: 'knowledge_check', title: '边界意识', prompt: '一个可迁移的结论首先需要什么？', options: [{ value: 'boundary-first', label: '明确成立条件、失效边界与验证方法' }, { value: 'memorize', label: '记住一次成功操作即可' }], required: true, core: true },
       { id: 'scenario', type: 'scenario_reasoning', title: '实践前预测', prompt: '写下你预计会观察到的证据，以及什么结果会推翻当前判断。', required: true },
@@ -343,9 +360,19 @@ export class MixedGymService {
     }).filter((row) => Number(row.relevance) >= 0.65).sort((a, b) => Number(b.relevance) - Number(a.relevance))
   }
 
-  private upsertDigest(learnerId: string, source: Row): void {
-    const excerpt = text(source, 'excerpt').replace(/\s+/g, ' ').trim().slice(0, 800)
-    const digest = {
+  private async digestFor(learnerId: string, source: Row): Promise<SourceDigest> {
+    let material = text(source, 'excerpt')
+    if (this.sourceContent) {
+      try { material = await this.sourceContent.fetchArticle({ externalId: nullable(source, 'external_id'), url: text(source, 'url') }) }
+      catch { /* A source fetch failure must not block a route-derived card. */ }
+    }
+    const excerpt = material
+      .replace(/<(script|style)[^>]*>[\s\S]*?<\/\1>/gi, ' ')
+      .replace(/<[^>]+>/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .slice(0, 1200)
+    const digest: SourceDigest = {
       sourceItemId: text(source, 'id'), title: text(source, 'title'), author: nullable(source, 'author'), canonicalUrl: text(source, 'url'),
       summary: excerpt, usefulClaims: excerpt ? [{ claim: excerpt.slice(0, 240), sourceAnchor: 'synced_excerpt' }] : [],
       practicalPatterns: [], cautions: ['知乎内容仅作为参考证据，需要通过知识题或运行时实践验证。'], fetchedAt: now(),
@@ -354,6 +381,7 @@ export class MixedGymService {
       INSERT INTO source_digests(id,learner_id,source_item_id,digest_json,quality,created_at,updated_at)
       VALUES(?,?,?,?,?,?,?) ON CONFLICT(learner_id,source_item_id) DO UPDATE SET digest_json=excluded.digest_json,quality=excluded.quality,updated_at=excluded.updated_at
     `).run(randomUUID(), learnerId, source.id, JSON.stringify(digest), source.relevance, now(), now())
+    return digest
   }
 
   private runtimeState(learnerId: string, row: Row, activities: Activity[]) {

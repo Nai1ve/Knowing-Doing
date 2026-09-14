@@ -37,6 +37,7 @@ const pageSchema = z.object({
 type Token = z.infer<typeof tokenSchema>
 type SourceItem = z.infer<typeof itemSchema>
 type ConnectionRow = Record<string, unknown>
+type SyncCursor = { phase: 'favorites' | 'own' | 'activities'; collectionIndex: number; next: string | null; imported: number; updated: number }
 type PublicSearchItem = {
   externalId: string | null
   title: string
@@ -165,7 +166,18 @@ export class ZhihuGateway {
     const existing = this.repository.db.prepare(
       'SELECT * FROM source_sync_jobs WHERE learner_id = ? AND provider = ? AND client_request_id = ?',
     ).get(learnerId, 'zhihu', clientRequestId) as ConnectionRow | undefined
-    if (existing) return this.publicJob(existing)
+    if (existing) {
+      if (existing.status === 'failed') {
+        const timestamp = new Date().toISOString()
+        this.repository.db.prepare(`
+          UPDATE source_sync_jobs SET status='queued',completed_at=NULL,error_code=NULL,error_message=NULL,updated_at=?
+          WHERE id=? AND learner_id=? AND status='failed'
+        `).run(timestamp, existing.id, learnerId)
+        queueMicrotask(() => { void this.runSync(String(existing.id)).catch(() => undefined) })
+        return this.publicJob(this.job(String(existing.id)))
+      }
+      return this.publicJob(existing)
+    }
     this.connection(learnerId)
     const id = randomUUID()
     const now = new Date().toISOString()
@@ -300,26 +312,43 @@ export class ZhihuGateway {
       "UPDATE source_sync_jobs SET status = 'running', started_at = COALESCE(started_at, ?), updated_at = ? WHERE id = ?",
     ).run(startedAt, startedAt, jobId)
     try {
-      let imported = 0
-      let updated = 0
+      const checkpoint = this.json<SyncCursor | null>(job.cursor, null)
+      let imported = checkpoint?.imported ?? Number(job.imported_count ?? 0)
+      let updated = checkpoint?.updated ?? Number(job.updated_count ?? 0)
       const collections = await this.fetchAll(connection, this.options.collectionsPath, 5000)
-      for (const collection of collections) {
+      for (let index = 0; index < collections.length; index += 1) {
+        if (checkpoint && checkpoint.phase !== 'favorites') break
+        if (checkpoint?.phase === 'favorites' && index < checkpoint.collectionIndex) continue
+        const collection = collections[index]
         const collectionId = this.upsertCollection(learnerId, connection, collection, 'favorites')
         const path = this.options.collectionItemsPath.replace('{collection_id}', encodeURIComponent(collection.id))
-        const result = await this.syncItems(learnerId, connection, collectionId, path, 5000 - imported)
+        const resumePath = checkpoint?.phase === 'favorites' && checkpoint.collectionIndex === index ? checkpoint.next : path
+        const result = await this.syncItems(jobId, learnerId, connection, collectionId, resumePath, Math.max(0, 5000 - imported - updated), {
+          phase: 'favorites', collectionIndex: index, imported, updated,
+        }, resumePath === path)
         imported += result.imported
         updated += result.updated
-        if (imported >= 5000) break
+        if (imported + updated >= 5000) break
       }
-      for (const [kind, path, limit] of [
-        ['own', this.options.contentPath, 200],
-        ['activities', this.options.momentsPath, 200],
+      for (const [phase, kind, path, limit] of [
+        ['own', 'own', this.options.contentPath, 200],
+        ['activities', 'activities', this.options.momentsPath, 200],
       ] as const) {
+        if (checkpoint?.phase === 'activities' && phase === 'own') continue
         const collectionId = this.upsertSyntheticCollection(learnerId, connection, kind)
-        const result = await this.syncItems(learnerId, connection, collectionId, path, limit)
+        const resumePath = checkpoint?.phase === phase ? checkpoint.next : path
+        const result = await this.syncItems(jobId, learnerId, connection, collectionId, resumePath, limit, {
+          phase, collectionIndex: 0, imported, updated,
+        }, resumePath === path)
         imported += result.imported
         updated += result.updated
       }
+      this.repository.db.prepare(`
+        UPDATE learner_source_items SET status='removed',removed_at=?,updated_at=?
+        WHERE learner_id=? AND provider='zhihu' AND visibility='private' AND status='active'
+          AND NOT EXISTS (SELECT 1 FROM external_source_collection_items ci WHERE ci.source_item_id=learner_source_items.id)
+          AND NOT EXISTS (SELECT 1 FROM practice_card_sources pcs WHERE pcs.source_item_id=learner_source_items.id)
+      `).run(new Date().toISOString(), new Date().toISOString(), learnerId)
       const completedAt = new Date().toISOString()
       this.repository.db.prepare(`
         UPDATE source_sync_jobs SET status='completed', imported_count=?, updated_count=?, cursor=NULL,
@@ -334,48 +363,54 @@ export class ZhihuGateway {
     }
   }
 
-  private async syncItems(learnerId: string, connection: ConnectionRow, collectionId: string, path: string, limit: number) {
-    const seen = new Set<string>()
+  private async syncItems(jobId: string, learnerId: string, connection: ConnectionRow, collectionId: string, initialPath: string | null, limit: number, base: Omit<SyncCursor, 'next'>, fresh: boolean) {
     let imported = 0
     let updated = 0
-    const items = await this.fetchAll(connection, path, Math.max(0, limit))
-    const now = new Date().toISOString()
-    for (const item of items) {
-      seen.add(item.id)
-      const exists = this.repository.db.prepare(
-        "SELECT id FROM learner_source_items WHERE learner_id=? AND provider='zhihu' AND external_id=?",
-      ).get(learnerId, item.id) as { id: string } | undefined
-      const sourceId = exists?.id ?? randomUUID()
-      const title = item.title ?? item.name ?? '知乎内容'
-      const url = item.url ?? item.link ?? `https://www.zhihu.com/content/${encodeURIComponent(item.id)}`
-      const author = typeof item.author === 'string' ? item.author : item.author?.name ?? null
-      const excerpt = (item.excerpt ?? item.summary ?? item.content ?? '').slice(0, 4000)
-      this.repository.db.prepare(`
-        INSERT INTO learner_source_items(
-          id, learner_id, provider, external_id, url, title, author, excerpt, content_json,
-          visibility, content_hash, status, saved, tags_json, published_at, removed_at, created_at, updated_at
-        ) VALUES (?, ?, 'zhihu', ?, ?, ?, ?, ?, ?, 'private', ?, 'active', 1, '[]', ?, NULL, ?, ?)
-        ON CONFLICT(learner_id, provider, external_id) DO UPDATE SET
-          url=excluded.url, title=excluded.title, author=excluded.author, excerpt=excluded.excerpt,
-          content_json=excluded.content_json, content_hash=excluded.content_hash,
-          status='active', removed_at=NULL, published_at=excluded.published_at, updated_at=excluded.updated_at
-      `).run(sourceId, learnerId, item.id, url, title, author, excerpt, JSON.stringify(item), this.hash(JSON.stringify(item)), asIso(item.published_at), now, now)
-      this.repository.db.prepare(
-        'INSERT OR IGNORE INTO external_source_collection_items(collection_id, source_item_id, position, created_at) VALUES (?, ?, ?, ?)',
-      ).run(collectionId, sourceId, imported + updated, now)
-      if (exists) updated += 1
-      else imported += 1
+    let next = initialPath
+    let firstPage = true
+    while (next && imported + updated < limit) {
+      const parsed = pageSchema.parse(await this.authorizedPage(connection, next))
+      const items = (parsed.data ?? parsed.items ?? parsed.results ?? []).slice(0, limit - imported - updated)
+      const nextCursor = parsed.cursor ?? parsed.paging?.next ?? null
+      const pageResult = this.persistSourcePage(jobId, learnerId, collectionId, items, imported, updated, base, nextCursor, fresh && firstPage)
+      imported += pageResult.imported
+      updated += pageResult.updated
+      next = nextCursor
+      firstPage = false
     }
-    if (items.length < limit) {
-      const stale = this.repository.db.prepare(`
-        SELECT i.id, i.external_id FROM learner_source_items i
-        JOIN external_source_collection_items ci ON ci.source_item_id=i.id
-        WHERE ci.collection_id=? AND i.learner_id=? AND i.provider='zhihu'
-      `).all(collectionId, learnerId) as Array<{ id: string; external_id: string }>
-      for (const item of stale) if (!seen.has(item.external_id)) this.repository.db.prepare(
-        "UPDATE learner_source_items SET status='removed', removed_at=?, updated_at=? WHERE id=? AND NOT EXISTS (SELECT 1 FROM practice_card_sources WHERE source_item_id=?)",
-      ).run(now, now, item.id, item.id)
-    }
+    return { imported, updated }
+  }
+
+  private persistSourcePage(jobId: string, learnerId: string, collectionId: string, items: SourceItem[], priorImported: number, priorUpdated: number, base: Omit<SyncCursor, 'next'>, next: string | null, clearCollection: boolean) {
+    let imported = 0
+    let updated = 0
+    const timestamp = new Date().toISOString()
+    this.repository.db.transaction(() => {
+      if (clearCollection) this.repository.db.prepare('DELETE FROM external_source_collection_items WHERE collection_id=?').run(collectionId)
+      for (const item of items) {
+        const exists = this.repository.db.prepare("SELECT id FROM learner_source_items WHERE learner_id=? AND provider='zhihu' AND external_id=?").get(learnerId, item.id) as { id: string } | undefined
+        const sourceId = exists?.id ?? randomUUID()
+        const title = item.title ?? item.name ?? '知乎内容'
+        const url = item.url ?? item.link ?? `https://www.zhihu.com/content/${encodeURIComponent(item.id)}`
+        const author = typeof item.author === 'string' ? item.author : item.author?.name ?? null
+        const excerpt = (item.excerpt ?? item.summary ?? '').slice(0, 4000)
+        const metadata = JSON.stringify({ externalId: item.id, sourceKind: 'oauth_sync', publishedAt: asIso(item.published_at) })
+        this.repository.db.prepare(`
+          INSERT INTO learner_source_items(id,learner_id,provider,external_id,url,title,author,excerpt,content_json,visibility,content_hash,status,saved,tags_json,published_at,removed_at,created_at,updated_at)
+          VALUES(?,?,'zhihu',?,?,?,?,?,?,'private',?,'active',1,'[]',?,NULL,?,?)
+          ON CONFLICT(learner_id,provider,external_id) DO UPDATE SET url=excluded.url,title=excluded.title,author=excluded.author,
+            excerpt=excluded.excerpt,content_json=excluded.content_json,content_hash=excluded.content_hash,visibility='private',status='active',
+            removed_at=NULL,published_at=excluded.published_at,updated_at=excluded.updated_at
+        `).run(sourceId, learnerId, item.id, url, title, author, excerpt, metadata, this.hash(`${url}\n${title}\n${excerpt}`), asIso(item.published_at), timestamp, timestamp)
+        this.repository.db.prepare('INSERT OR IGNORE INTO external_source_collection_items(collection_id,source_item_id,position,created_at) VALUES(?,?,?,?)').run(collectionId, sourceId, priorImported + priorUpdated + imported + updated, timestamp)
+        if (exists) updated += 1
+        else imported += 1
+      }
+      const cursor: SyncCursor = { ...base, next, imported: base.imported + priorImported + imported, updated: base.updated + priorUpdated + updated }
+      this.repository.db.prepare('UPDATE source_sync_jobs SET cursor=?,imported_count=?,updated_count=?,updated_at=? WHERE id=?').run(
+        JSON.stringify(cursor), cursor.imported, cursor.updated, timestamp, jobId,
+      )
+    })()
     return { imported, updated }
   }
 

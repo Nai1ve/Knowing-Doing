@@ -129,6 +129,45 @@ describe('signed device identity and Zhihu OAuth', () => {
     expect(sleeps).toHaveLength(1)
   })
 
+  it('retries a failed sync from its committed page cursor without importing the first page twice', async () => {
+    const state = database(); cleanup.push(() => { state.repository.close(); rmSync(state.directory, { recursive: true, force: true }) })
+    state.repository.ensureLearner('learner-a')
+    let firstPageCalls = 0
+    let secondPageCalls = 0
+    const fetchImpl = vi.fn(async (input: string | URL | Request) => {
+      const url = new URL(String(input))
+      if (url.pathname === '/access_token') return Response.json({ access_token: 'token', refresh_token: 'refresh', expires_in: 3600 })
+      if (url.pathname === '/user') return Response.json({ id: 'zhihu-user-1' })
+      if (url.pathname === '/user/collections') return Response.json({ data: [{ id: 'collection-1', title: '收藏夹' }] })
+      if (url.pathname === '/user/collection/collection-1') {
+        firstPageCalls += 1
+        return Response.json({ data: [{ id: 'answer-1', title: '第一页', excerpt: '第一页摘要' }], paging: { next: '/favorite-page-2' } })
+      }
+      if (url.pathname === '/favorite-page-2') {
+        secondPageCalls += 1
+        if (secondPageCalls === 1) return new Response('', { status: 500 })
+        return Response.json({ data: [{ id: 'answer-2', title: '第二页', excerpt: '第二页摘要' }], paging: { next: null } })
+      }
+      if (url.pathname === '/user/content' || url.pathname === '/user/moments') return Response.json({ data: [] })
+      return new Response('', { status: 404 })
+    }) as typeof fetch
+    const client = gateway(state.repository, fetchImpl)
+    const authorization = client.start('learner-a')
+    await client.callback('learner-a', new URL(authorization.authorizationUrl).searchParams.get('state')!, 'code')
+
+    client.syncAll('learner-a', 'resume-sync')
+    await vi.waitFor(() => expect(client.syncJobs('learner-a')[0]?.status).toBe('failed'))
+    const failedRow = state.repository.db.prepare('SELECT cursor FROM source_sync_jobs WHERE learner_id=?').get('learner-a') as { cursor: string }
+    expect(JSON.parse(failedRow.cursor)).toMatchObject({ phase: 'favorites', next: '/favorite-page-2', imported: 1 })
+
+    expect(client.syncAll('learner-a', 'resume-sync').status).toBe('queued')
+    await vi.waitFor(() => expect(client.syncJobs('learner-a')[0]?.status).toBe('completed'))
+    expect(client.syncJobs('learner-a')[0]).toMatchObject({ importedCount: 2, updatedCount: 0 })
+    expect(client.items('learner-a').items).toHaveLength(2)
+    expect(firstPageCalls).toBe(1)
+    expect(secondPageCalls).toBe(2)
+  })
+
   it('imports public search results into only the requesting learner library', async () => {
     const state = database(); cleanup.push(() => { state.repository.close(); rmSync(state.directory, { recursive: true, force: true }) })
     state.repository.ensureLearner('learner-a'); state.repository.ensureLearner('learner-b')

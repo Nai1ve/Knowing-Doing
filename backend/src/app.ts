@@ -322,10 +322,10 @@ function registerIdentityRoutes(app: FastifyInstance, identity: IdentityService,
 }
 
 function registerPracticeCardRoutes(app: FastifyInstance, service: MixedGymService): void {
-  app.post('/api/product/plan-units/:id/practice-card', async (request, reply) => { const body=productBody(request); reply.code(201).send(service.createCard(learnerId(request), String((request.params as {id:string}).id), idempotencyKey(request, body))) })
+  app.post('/api/product/plan-units/:id/practice-card', async (request, reply) => { const body=productBody(request); reply.code(201).send(await service.createCard(learnerId(request), String((request.params as {id:string}).id), idempotencyKey(request, body))) })
   app.get('/api/product/plan-units/:id/practice-card', async (request, reply) => reply.send(service.cardForUnit(learnerId(request), String((request.params as {id:string}).id))))
   app.get('/api/product/practice-cards/:id', async (request, reply) => reply.send(service.getCard(learnerId(request), String((request.params as {id:string}).id))))
-  app.post('/api/product/practice-cards/:id/retry', async (request, reply) => { const body=productBody(request); reply.code(201).send(service.retryCard(learnerId(request), String((request.params as {id:string}).id), idempotencyKey(request, body))) })
+  app.post('/api/product/practice-cards/:id/retry', async (request, reply) => { const body=productBody(request); reply.code(201).send(await service.retryCard(learnerId(request), String((request.params as {id:string}).id), idempotencyKey(request, body))) })
   app.get('/api/product/practice-cards/:id/events', async (request, reply) => { const after=Number((request.query as {afterSequence?:string}).afterSequence ?? 0); if (!Number.isInteger(after) || after < 0) throw new LabError('invalid_request', 'afterSequence 必须是非负整数', 400); reply.send(service.cardEvents(learnerId(request), String((request.params as {id:string}).id), after)) })
 }
 
