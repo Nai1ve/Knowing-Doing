@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia'
 import { computed, getCurrentInstance, onBeforeUnmount, ref } from 'vue'
-import { confirmPlanningRequirementBrief, createAgentPlanningSession, createAgentPlanningSessionDraft, createAgentRoadmap, createPlanningAssessment, finalizePlanningAssessment, getAgentPlanningSession, getAgentPlanningState, getAgentRoadmapGeneration, getPlanningAssessment, getPlanningAssessmentReview, retryAgentInvocation, retryAgentRoadmap, savePlanningAssessmentAnswers, sendAgentPlanningMessage, sendPlanningRequirementsMessage, uploadPlanningResume } from '@/api/planningService'
+import { confirmPlanningRequirementBrief, createAgentPlanningSession, createAgentPlanningSessionDraft, createAgentRoadmap, createPlanningAssessment, finalizePlanningAssessment, getAgentPlanningSession, getAgentPlanningState, getAgentRoadmapGeneration, getPlanningAssessment, getPlanningAssessmentReview, getPlanningResume, retryAgentInvocation, retryAgentRoadmap, savePlanningAssessmentAnswers, sendAgentPlanningMessage, sendPlanningRequirementsMessage, uploadPlanningResume } from '@/api/planningService'
 import type { AgentPlanningSession, AgentPlanningState, AgentRoadmapGeneration, PlanningAssessment, PlanningAssessmentAnswer, PlanningAssessmentReview, PlanningReadiness, PlanningRequirementBrief, PlanningStreamEvent } from '@/types/product'
 import { createClientId } from '@/utils/client-id'
 import { hasApiErrorCode } from '@/api/client'
@@ -8,16 +8,21 @@ import { hasApiErrorCode } from '@/api/client'
 export const usePlanningAgentStore = defineStore('planningAgent', () => {
   const session = ref<AgentPlanningSession | null>(null); const state = ref<AgentPlanningState | null>(null); const stateLoading = ref(false); const streaming = ref(false); const generating = ref(false); const generation = ref<AgentRoadmapGeneration | null>(null); const streamingAssistant = ref(''); const question = ref(''); const canGenerateRoadmap = ref(false); const error = ref<string | null>(null); const loadError = ref<string | null>(null); const resumeNotice = ref<string | null>(null); const failedInvocationId = ref<string | null>(null)
   const assessment = ref<PlanningAssessment | null>(null); const assessmentLoading = ref(false); const assessmentSaving = ref(false); const assessmentError = ref<string | null>(null); const assessmentReview = ref<PlanningAssessmentReview | null>(null); const reviewLoading = ref(false); const requirementSaving = ref(false)
+  const resumeParsing = ref(false); const resumePollExhausted = ref(false); const resumePollError = ref<string | null>(null)
   const assessmentRequestIds = new Map<string, string>()
   let pollingToken = 0
   let pollingPromise: Promise<void> | null = null
   let assessmentPollingToken = 0
   let assessmentPollingPromise: Promise<void> | null = null
+  let resumePollingToken = 0
+  let resumePollingPromise: Promise<void> | null = null
   const terminalStatuses = new Set<AgentRoadmapGeneration['status']>(['succeeded', 'failed', 'interrupted'])
+  const resumePendingStatuses = new Set(['pending', 'processing'])
+  const resumePollMaximum = 8
   const sleep = (milliseconds: number) => new Promise<void>((resolve) => window.setTimeout(resolve, milliseconds))
-  function stopPolling() { pollingToken += 1; pollingPromise = null; generating.value = false; assessmentPollingToken += 1; assessmentPollingPromise = null; assessmentLoading.value = false }
+  function stopPolling() { pollingToken += 1; pollingPromise = null; generating.value = false; assessmentPollingToken += 1; assessmentPollingPromise = null; assessmentLoading.value = false; resumePollingToken += 1; resumePollingPromise = null; resumeParsing.value = false }
   function applyReadiness(value: PlanningReadiness | null | undefined) { if (!value) return; if (session.value) session.value.readiness = value; canGenerateRoadmap.value = value.canGenerateRoadmap }
-  function applySession(value: AgentPlanningSession) { session.value = value; applyReadiness(value.readiness); question.value = value.readiness?.nextAction ?? question.value; if (value.assessment) { applyAssessment(value.assessment); resumeAssessmentPolling(value.assessment) } }
+  function applySession(value: AgentPlanningSession) { session.value = value; if (!value.resume || !resumePendingStatuses.has(value.resume.parseStatus)) { resumePollExhausted.value = false; resumePollError.value = null }; applyReadiness(value.readiness); question.value = value.readiness?.nextAction ?? question.value; if (value.assessment) { applyAssessment(value.assessment); resumeAssessmentPolling(value.assessment) } }
   function safeAssessmentMessage(message: string | null | undefined): string | null {
     if (!message) return null
     if (/校验|验证|rubric|reference|参考答案|schema|validation|zod|json/i.test(message)) return '评估题目暂时没有准备好，但已保存的对话和画像仍然保留，可以安全重试。'
@@ -73,6 +78,37 @@ export const usePlanningAgentStore = defineStore('planningAgent', () => {
         if (token === assessmentPollingToken) { assessmentPollingPromise = null; assessmentLoading.value = false }
       }
     })()
+  }
+  function pollResumeStatus(sessionId: string): Promise<void> {
+    resumePollExhausted.value = false
+    resumePollError.value = null
+    const currentResume = session.value?.id === sessionId ? session.value.resume : null
+    if (!currentResume || !resumePendingStatuses.has(currentResume.parseStatus)) return Promise.resolve()
+    if (resumePollingPromise) return resumePollingPromise
+    const token = ++resumePollingToken
+    resumeParsing.value = true
+    resumePollExhausted.value = false
+    resumePollError.value = null
+    resumePollingPromise = (async () => {
+      let delay = 700
+      try {
+        for (let attempt = 0; attempt < resumePollMaximum && token === resumePollingToken; attempt += 1) {
+          await sleep(delay)
+          if (token !== resumePollingToken) return
+          const next = await getPlanningResume(sessionId)
+          if (token !== resumePollingToken) return
+          if (session.value?.id === sessionId) session.value.resume = next
+          if (!next || !resumePendingStatuses.has(next.parseStatus)) return
+          delay = Math.min(2000, delay + 300)
+        }
+        if (token === resumePollingToken && session.value?.id === sessionId && session.value.resume && resumePendingStatuses.has(session.value.resume.parseStatus)) resumePollExhausted.value = true
+      } catch {
+        if (token === resumePollingToken) resumePollError.value = '解析状态暂时无法确认，请稍后刷新重试。'
+      } finally {
+        if (token === resumePollingToken) { resumePollingPromise = null; resumeParsing.value = false }
+      }
+    })()
+    return resumePollingPromise
   }
   function hydrateGeneration(value: AgentRoadmapGeneration | null) {
     generation.value = value
@@ -159,7 +195,7 @@ export const usePlanningAgentStore = defineStore('planningAgent', () => {
     stopPolling(); streaming.value = true; error.value = null; loadError.value = null; assessmentError.value = null; assessmentReview.value = null
     if (assessment.value && assessment.value.planningSessionId !== id) assessment.value = null
     try {
-      const loadedSession = await getAgentPlanningSession(id); applySession(loadedSession); resumeGeneration(loadedSession.roadmapGeneration)
+      const loadedSession = await getAgentPlanningSession(id); applySession(loadedSession); resumeGeneration(loadedSession.roadmapGeneration); void pollResumeStatus(id)
       if (loadedSession.stage === 'assessment_preparing') await ensureAssessment().catch(() => null)
       else if (loadedSession.assessment?.id) await loadAssessment(loadedSession.assessment.id).catch(() => null)
       return loadedSession
@@ -233,5 +269,5 @@ export const usePlanningAgentStore = defineStore('planningAgent', () => {
   async function generate() { if (!session.value) throw new Error('规划会话尚未加载'); if (!session.value.readiness?.canGenerateRoadmap) throw new Error(session.value.readiness?.blockers?.join('；') || session.value.readiness?.nextAction || '当前信息还不足以生成路线'); if (generating.value && generation.value) return generation.value; stopPolling(); error.value = null; generating.value = true; session.value.stage = 'generating'; try { const created = await createAgentRoadmap(session.value.id, createClientId()); hydrateGeneration(created); if (!terminalStatuses.has(created.status)) await pollGeneration(created.id); if (generation.value?.status === 'failed' || generation.value?.status === 'interrupted') throw new Error(generation.value.failureMessage ?? '路线生成失败'); return generation.value } catch (cause) { error.value = cause instanceof Error ? cause.message : '路线生成失败'; throw cause } finally { if (!pollingPromise) generating.value = false } }
   async function retryGeneration() { if (!generation.value || !['failed', 'interrupted'].includes(generation.value.status)) return generation.value; stopPolling(); error.value = null; generating.value = true; try { const retried = await retryAgentRoadmap(generation.value.id); hydrateGeneration(retried); if (!terminalStatuses.has(retried.status)) await pollGeneration(retried.id); if (generation.value?.status === 'failed' || generation.value?.status === 'interrupted') throw new Error(generation.value.failureMessage ?? '路线生成失败'); return generation.value } catch (cause) { error.value = cause instanceof Error ? cause.message : '路线生成失败'; throw cause } finally { if (!pollingPromise) generating.value = false } }
   if (getCurrentInstance()) onBeforeUnmount(stopPolling)
-  return { session, state, stateLoading, streaming, generating, generation, streamingAssistant, question, canGenerateRoadmap, error, loadError, resumeNotice, failedInvocationId, assessment, assessmentLoading, assessmentSaving, assessmentError, assessmentReview, reviewLoading, requirementSaving, start, load, loadState, send, retry, ensureAssessment, loadAssessment, retryAssessment, saveAssessmentAnswers, finalizeAssessment, loadAssessmentReview, confirmRequirementBrief, generate, retryGeneration, clearResumeNotice, stopPolling }
+  return { session, state, stateLoading, streaming, generating, generation, streamingAssistant, question, canGenerateRoadmap, error, loadError, resumeNotice, failedInvocationId, assessment, assessmentLoading, assessmentSaving, assessmentError, assessmentReview, reviewLoading, requirementSaving, resumeParsing, resumePollExhausted, resumePollError, start, load, loadState, send, retry, ensureAssessment, loadAssessment, retryAssessment, saveAssessmentAnswers, finalizeAssessment, loadAssessmentReview, confirmRequirementBrief, generate, retryGeneration, clearResumeNotice, pollResumeStatus, stopPolling }
 })

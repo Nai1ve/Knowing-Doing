@@ -9,7 +9,7 @@ import { useAuthStore } from '@/stores/auth'
 import type { OAuthConnection } from '@/types/domain'
 import { getSourceCollections, getSourceItems, getSourceSyncs, saveSourceItem, searchSourceItems, startSourceSync } from '@/api/learningExperienceService'
 import type { SourceCollection, SourceItem, SourceSync } from '@/types/learningExperience'
-import { oauthFailureMessage } from '@/utils/auth-flow'
+import { clearOAuthReturnPath, oauthFailureMessage, readOAuthReturnPath } from '@/utils/auth-flow'
 
 const authStore = useAuthStore()
 const route = useRoute()
@@ -45,9 +45,10 @@ onMounted(async () => {
   if (connection === 'zhihu' && (result === 'success' || result === 'connected')) {
     status.value = '正在确认知乎登录状态…'
     const session = await authStore.refreshAfterOAuth()
-    if (session?.auth.authenticated) { await router.replace({ name: 'overview' }); return }
+    if (session?.auth.authenticated) { const destination = readOAuthReturnPath(); clearOAuthReturnPath(); await router.replace(destination); return }
     status.value = '知乎授权已完成，但登录状态尚未确认，请重新检查。'
   } else if (connection === 'zhihu' && result) {
+    clearOAuthReturnPath()
     status.value = `知乎授权失败：${oauthFailureMessage(route.query.reason)}`
   }
   await authStore.loadConnections()

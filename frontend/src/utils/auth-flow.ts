@@ -13,8 +13,24 @@ const oauthReasonLabels: Record<string, string> = {
 }
 
 export function safeRedirectPath(value: unknown, fallback = '/overview'): string {
-  if (typeof value !== 'string' || !value.startsWith('/') || value.startsWith('//')) return fallback
+  if (typeof value !== 'string' || !value.startsWith('/') || value.startsWith('//') || value.includes('://') || value.includes('\\') || /[\u0000-\u001f]/.test(value)) return fallback
   return value
+}
+
+const oauthReturnPathKey = 'zhixing.oauth.return-path'
+
+export function saveOAuthReturnPath(value: unknown): string {
+  const safePath = safeRedirectPath(value)
+  try { sessionStorage.setItem(oauthReturnPathKey, safePath) } catch { /* storage may be unavailable */ }
+  return safePath
+}
+
+export function readOAuthReturnPath(): string {
+  try { return safeRedirectPath(sessionStorage.getItem(oauthReturnPathKey)) } catch { return '/overview' }
+}
+
+export function clearOAuthReturnPath(): void {
+  try { sessionStorage.removeItem(oauthReturnPathKey) } catch { /* storage may be unavailable */ }
 }
 
 export function safeAvatarUrl(value: unknown): string | null {

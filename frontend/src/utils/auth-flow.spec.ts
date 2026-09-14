@@ -1,5 +1,6 @@
+// @vitest-environment jsdom
 import { describe, expect, it } from 'vitest'
-import { oauthFailureMessage, safeAvatarUrl } from './auth-flow'
+import { clearOAuthReturnPath, oauthFailureMessage, readOAuthReturnPath, safeAvatarUrl, safeRedirectPath, saveOAuthReturnPath } from './auth-flow'
 
 describe('auth flow safety helpers', () => {
   it.each([
@@ -25,5 +26,20 @@ describe('auth flow safety helpers', () => {
     expect(safeAvatarUrl('data:image/svg+xml,<svg></svg>')).toBeNull()
     expect(safeAvatarUrl('javascript:alert(1)')).toBeNull()
     expect(safeAvatarUrl(null)).toBeNull()
+  })
+
+  it('only preserves safe internal OAuth return paths', () => {
+    expect(safeRedirectPath('/planning/session-1?step=resume')).toBe('/planning/session-1?step=resume')
+    expect(safeRedirectPath('//evil.example')).toBe('/overview')
+    expect(safeRedirectPath('https://evil.example')).toBe('/overview')
+    expect(safeRedirectPath('/https://evil.example')).toBe('/overview')
+    expect(safeRedirectPath('/planning\\session-1')).toBe('/overview')
+  })
+
+  it('stores and consumes only the sanitized OAuth return path', () => {
+    saveOAuthReturnPath('/roadmap/node-1')
+    expect(readOAuthReturnPath()).toBe('/roadmap/node-1')
+    clearOAuthReturnPath()
+    expect(readOAuthReturnPath()).toBe('/overview')
   })
 })

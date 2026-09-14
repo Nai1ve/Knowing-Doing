@@ -31,6 +31,7 @@ describe('SettingsView OAuth callback handling', () => {
   beforeEach(() => {
     pinia = createPinia()
     setActivePinia(pinia)
+    sessionStorage.clear()
     request.mockResolvedValue({
       learnerId: 'server-only-learner-id',
       expiresAt: '2026-09-15T00:00:00.000Z',
@@ -52,6 +53,7 @@ describe('SettingsView OAuth callback handling', () => {
       routes: [
         { path: '/settings', name: 'settings', component: SettingsView },
         { path: '/overview', name: 'overview', component: { template: '<div>overview</div>' } },
+        { path: '/planning/:sessionId', name: 'planning', component: { template: '<div>planning</div>' } },
       ],
     })
     await router.push(path)
@@ -67,6 +69,15 @@ describe('SettingsView OAuth callback handling', () => {
 
     expect(request).toHaveBeenCalledWith('/auth/session', { method: 'POST' })
     expect(router.currentRoute.value.name).toBe('overview')
+    app.unmount()
+  })
+
+  it('returns to the sanitized internal route saved before OAuth', async () => {
+    sessionStorage.setItem('zhixing.oauth.return-path', '/planning/session-1?resume=1')
+    const { app, router } = await mountAt('/settings?connection=zhihu&result=success')
+
+    expect(router.currentRoute.value.fullPath).toBe('/planning/session-1?resume=1')
+    expect(sessionStorage.getItem('zhixing.oauth.return-path')).toBeNull()
     app.unmount()
   })
 

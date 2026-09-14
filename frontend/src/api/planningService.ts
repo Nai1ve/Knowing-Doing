@@ -35,6 +35,7 @@ export function createAgentPlanningSession(message: string, clientRequestId: str
 export function createAgentPlanningSessionDraft(message: string, clientRequestId: string): Promise<AgentPlanningSession> { return request<AgentPlanningSession>('/product/planning-sessions/agent', { method: 'POST', body: JSON.stringify({ message, clientRequestId }) }) }
 export function sendAgentPlanningMessage(sessionId: string, message: string, clientRequestId: string, onEvent: (event: PlanningStreamEvent) => void): Promise<void> { return streamRequest(`/product/planning-sessions/${sessionId}/messages/stream`, { message, clientRequestId }, onEvent) }
 export function getAgentPlanningSession(sessionId: string): Promise<AgentPlanningSession> { return request<AgentPlanningSession>(`/product/planning-sessions/${sessionId}`) }
+export async function getPlanningResume(sessionId: string): Promise<ProductResumeAttachment | null> { return (await getAgentPlanningSession(sessionId)).resume }
 export function getAgentPlanningState(): Promise<AgentPlanningState> { return request<AgentPlanningState>('/product/planning/state') }
 export function createAgentRoadmap(sessionId: string, clientRequestId: string): Promise<AgentRoadmapGeneration> { return request<AgentRoadmapGeneration>(`/product/planning-sessions/${sessionId}/roadmap-generations`, { method: 'POST', body: JSON.stringify({ clientRequestId }) }) }
 export function getAgentRoadmapGeneration(id: string): Promise<AgentRoadmapGeneration> { return request<AgentRoadmapGeneration>(`/product/roadmap-generation-runs/${id}`) }

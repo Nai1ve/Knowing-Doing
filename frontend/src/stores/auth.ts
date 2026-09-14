@@ -3,6 +3,7 @@ import { defineStore } from 'pinia'
 import { disconnectOAuth, getConnections, startZhihuOAuth } from '@/api/oauthService'
 import type { OAuthConnection } from '@/types/domain'
 import { apiClient } from '@/api/client'
+import { saveOAuthReturnPath } from '@/utils/auth-flow'
 
 export interface AuthSession {
   learnerId: string
@@ -81,10 +82,11 @@ export const useAuthStore = defineStore('auth', () => {
     try { connections.value = await getConnections() } catch { connections.value = session.value?.auth.required === false && import.meta.env.VITE_ENABLE_LEARNING_FIXTURES === 'true' ? fixtureConnections() : [] } finally { loading.value = false }
   }
 
-  async function authorize(provider: OAuthConnection['provider']): Promise<boolean> {
+  async function authorize(provider: OAuthConnection['provider'], redirectPath?: unknown): Promise<boolean> {
     if (provider !== 'zhihu') return false
     try {
       if (!await bootstrapSession()) return false
+      saveOAuthReturnPath(redirectPath)
       const { authorizationUrl } = await startZhihuOAuth()
       window.location.href = authorizationUrl
       return true

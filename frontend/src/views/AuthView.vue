@@ -16,7 +16,7 @@ const avatarUrl = computed(() => safeAvatarUrl(profile.value?.avatarUrl))
 async function continueWithZhihu() {
   pending.value = true
   try {
-    const redirected = await auth.authorize('zhihu')
+    const redirected = await auth.authorize('zhihu', redirectPath.value)
     if (!redirected) pending.value = false
   } catch { pending.value = false }
 }

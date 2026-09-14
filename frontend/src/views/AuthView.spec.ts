@@ -49,7 +49,7 @@ describe('AuthView', () => {
     const button = host.querySelector('button.auth-primary') as HTMLButtonElement
     button.click()
     await nextTick()
-    expect(authorize).toHaveBeenCalledWith('zhihu')
+    expect(authorize).toHaveBeenCalledWith('zhihu', '/overview')
 
     app.unmount()
   })

@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { createPinia, setActivePinia } from 'pinia'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { getAgentPlanningSession, createPlanningAssessment, getPlanningAssessment } from '@/api/planningService'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { getAgentPlanningSession, createPlanningAssessment, getPlanningAssessment, getPlanningResume } from '@/api/planningService'
 import type { AgentPlanningSession, PlanningAssessment } from '@/types/product'
 import { usePlanningAgentStore } from './planningAgent'
 
@@ -13,6 +13,7 @@ vi.mock('@/api/planningService', () => ({
   createPlanningAssessment: vi.fn(),
   finalizePlanningAssessment: vi.fn(),
   getAgentPlanningSession: vi.fn(),
+  getPlanningResume: vi.fn(),
   getAgentPlanningState: vi.fn(),
   getAgentRoadmapGeneration: vi.fn(),
   getPlanningAssessment: vi.fn(),
@@ -69,6 +70,10 @@ describe('planningAgent assessment recovery', () => {
     setActivePinia(createPinia())
     vi.clearAllMocks()
     sessionStorage.clear()
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
   })
 
   it('keeps six-turn baseline progress from the server session DTO', async () => {
@@ -133,5 +138,37 @@ describe('planningAgent assessment recovery', () => {
     expect(getPlanningAssessment).toHaveBeenCalledWith('assessment-failed')
     expect(store.assessment?.status).toBe('answering')
     expect(store.assessmentLoading).toBe(false)
+  })
+
+  it('polls a pending PDF after refresh and stops when parsing is ready', async () => {
+    vi.useFakeTimers()
+    const pending = baseSession({ resume: { id: 'resume-1', learnerId: 'learner-1', planningSessionId: 'session-1', originalFilename: 'resume.pdf', mimeType: 'application/pdf', sizeBytes: 100, sha256: 'hash', parseStatus: 'pending', pageCount: 0, textLength: 0, parseError: null, version: 1, includedAt: '2026-09-14T00:00:00.000Z', includedInPlanningContext: false, createdAt: '2026-09-14T00:00:00.000Z', updatedAt: '2026-09-14T00:00:00.000Z' } })
+    const ready = { ...pending, resume: { ...pending.resume!, parseStatus: 'ready' as const, pageCount: 2, textLength: 640, includedInPlanningContext: true } }
+    vi.mocked(getAgentPlanningSession).mockResolvedValueOnce(pending)
+    vi.mocked(getPlanningResume).mockResolvedValueOnce(ready.resume)
+
+    const store = usePlanningAgentStore()
+    await store.load('session-1')
+    expect(store.resumeParsing).toBe(true)
+
+    await vi.advanceTimersByTimeAsync(700)
+    expect(getPlanningResume).toHaveBeenCalledWith('session-1')
+    expect(store.session?.resume?.parseStatus).toBe('ready')
+    expect(store.resumeParsing).toBe(false)
+  })
+
+  it('stops PDF polling at the maximum attempt count', async () => {
+    vi.useFakeTimers()
+    const pending = baseSession({ resume: { id: 'resume-1', learnerId: 'learner-1', planningSessionId: 'session-1', originalFilename: 'resume.pdf', mimeType: 'application/pdf', sizeBytes: 100, sha256: 'hash', parseStatus: 'processing', pageCount: 0, textLength: 0, parseError: null, version: 1, includedAt: '2026-09-14T00:00:00.000Z', includedInPlanningContext: false, createdAt: '2026-09-14T00:00:00.000Z', updatedAt: '2026-09-14T00:00:00.000Z' } })
+    vi.mocked(getAgentPlanningSession).mockResolvedValue(pending)
+    vi.mocked(getPlanningResume).mockResolvedValue(pending.resume)
+
+    const store = usePlanningAgentStore()
+    await store.load('session-1')
+    await vi.advanceTimersByTimeAsync(15000)
+
+    expect(getPlanningResume).toHaveBeenCalledTimes(8)
+    expect(store.resumeParsing).toBe(false)
+    expect(store.resumePollExhausted).toBe(true)
   })
 })
