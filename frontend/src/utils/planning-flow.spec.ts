@@ -16,11 +16,11 @@ describe('planning flow', () => {
     expect(isAssessmentStage('requirements')).toBe(false)
   })
 
-  it('keeps baseline progress adaptive through the six-turn ceiling', () => {
+  it('keeps baseline progress adaptive through the three-turn ceiling', () => {
     expect(baselineTurnMinimum).toBe(2)
-    expect(baselineTurnMaximum).toBe(6)
-    expect(baselineProgress({ completed: 5, total: 6, current: 6, label: '基础了解' })).toMatchObject({ completed: 5, total: 6, current: 6 })
-    expect(baselineProgress({ completed: 2, total: 3, current: 3 })).toMatchObject({ completed: 2, total: 6, current: 3 })
+    expect(baselineTurnMaximum).toBe(3)
+    expect(baselineProgress({ completed: 3, total: 3, current: 3, label: '基础了解' })).toMatchObject({ completed: 3, total: 3, current: 3 })
+    expect(baselineProgress({ completed: 2, total: 2, current: 3 })).toMatchObject({ completed: 2, total: 3, current: 3 })
   })
 
   it('labels server stages without assuming a fixed baseline count', () => {

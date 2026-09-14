@@ -84,6 +84,7 @@ export interface LabConfig {
   plannerAssessmentV2Enabled: boolean
   zhihuOauthEnabled: boolean
   zhihuSourceSyncEnabled: boolean
+  zhihuResearchEnabled: boolean
   practiceCardV2Enabled: boolean
   mixedGymEnabled: boolean
   legacyCaseFlowEnabled: boolean
@@ -118,6 +119,8 @@ export function loadConfig(): LabConfig {
   if (zhihuLoginRequired && !signedDeviceSessionEnabled) throw new Error('SIGNED_DEVICE_SESSION_ENABLED=true is required when ZHIHU_LOGIN_REQUIRED=true')
   if (zhihuLoginRequired && !zhihuOauthEnabled) throw new Error('ZHIHU_OAUTH_ENABLED=true is required when ZHIHU_LOGIN_REQUIRED=true')
   if (process.env.ZHIHU_SOURCE_SYNC_ENABLED === 'true' && !zhihuOauthEnabled) throw new Error('ZHIHU_OAUTH_ENABLED=true is required when ZHIHU_SOURCE_SYNC_ENABLED=true')
+  if (process.env.ZHIHU_RESEARCH_ENABLED === 'true' && !zhihuOauthEnabled) throw new Error('ZHIHU_OAUTH_ENABLED=true is required when ZHIHU_RESEARCH_ENABLED=true')
+  if (process.env.ZHIHU_RESEARCH_ENABLED === 'true' && process.env.ZHIHU_SOURCE_SYNC_ENABLED !== 'true') throw new Error('ZHIHU_SOURCE_SYNC_ENABLED=true is required when ZHIHU_RESEARCH_ENABLED=true')
   if (process.env.MIXED_GYM_ENABLED === 'true' && process.env.PRACTICE_CARD_V2_ENABLED !== 'true') throw new Error('PRACTICE_CARD_V2_ENABLED=true is required when MIXED_GYM_ENABLED=true')
   if (identityMode === 'shared_demo' && zhihuOauthEnabled) throw new Error('ZHIHU_OAUTH_ENABLED is not permitted in shared_demo identity mode')
   if (zhihuOauthEnabled && (!process.env.ZHIHU_OAUTH_APP_ID || !process.env.ZHIHU_OAUTH_APP_KEY)) throw new Error('ZHIHU_OAUTH_APP_ID and ZHIHU_OAUTH_APP_KEY are required when ZHIHU_OAUTH_ENABLED=true')
@@ -209,6 +212,7 @@ export function loadConfig(): LabConfig {
     plannerAssessmentV2Enabled: process.env.PLANNER_ASSESSMENT_V2_ENABLED === 'true',
     zhihuOauthEnabled,
     zhihuSourceSyncEnabled: process.env.ZHIHU_SOURCE_SYNC_ENABLED === 'true',
+    zhihuResearchEnabled: process.env.ZHIHU_RESEARCH_ENABLED === 'true',
     practiceCardV2Enabled: process.env.PRACTICE_CARD_V2_ENABLED === 'true',
     mixedGymEnabled: process.env.MIXED_GYM_ENABLED === 'true',
     legacyCaseFlowEnabled: process.env.LEGACY_CASE_FLOW_ENABLED !== 'false',

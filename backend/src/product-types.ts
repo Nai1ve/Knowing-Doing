@@ -622,6 +622,86 @@ export interface SourceItem {
   metadata: Record<string, unknown>
 }
 
+// Completion plan P0: frozen research object model. Research routing
+// (ZHIHU_RESEARCH_ENABLED) builds a bounded candidate set per CardIntent and
+// only the adopted digests are handed to the Practice Card Generator.
+// Credentials, raw provider responses, and private content never appear in
+// these public fields.
+
+export type ResearchProvider =
+  | 'user_source'
+  | 'zhihu_search'
+  | 'global_search'
+  | 'question_recommendation'
+  | 'direct_answer'
+
+export interface ResearchQuery {
+  id: string
+  learnerId: string
+  planningSessionId: string | null
+  roadmapNodeId: string | null
+  provider: ResearchProvider
+  query: string
+  status: 'queued' | 'running' | 'succeeded' | 'failed' | 'rate_limited'
+  requestedAt: string
+  completedAt: string | null
+  error: string | null
+}
+
+export interface ResearchCandidate {
+  id: string
+  queryId: string | null
+  provider: ResearchProvider
+  externalId: string | null
+  canonicalUrl: string
+  contentHash: string
+  title: string
+  author: string | null
+  excerpt: string
+  summary: string | null
+  fetchedAt: string
+  /** 0..1 quality/credibility score; below-threshold candidates never reach cards. */
+  credibility: number
+  /** 0..1 relevance to the route goal / capability gap. */
+  relevance: number
+  visibility: 'public' | 'private'
+  /** Retrieval evidence: matched query, provider source type, recency. */
+  retrievalEvidence: string[]
+  metadata: Record<string, unknown>
+}
+
+export interface ResearchCacheRecord {
+  id: string
+  provider: ResearchProvider
+  query: string
+  fingerprint: string
+  fetchedAt: string
+  expiresAt: string
+  candidateIds: string[]
+}
+
+/** Source digest handed to the Practice Card Generator; never contains full text. */
+export interface SourceDigestContract {
+  provider: ResearchProvider
+  title: string
+  author: string | null
+  url: string
+  excerpt: string
+  summary: string | null
+  fetchedAt: string
+  visibility: 'public' | 'private'
+}
+
+export interface CardSourceReference {
+  candidateId: string
+  sourceItemId: string | null
+  role: 'primary' | 'supplementary'
+  title: string
+  url: string
+  visibility: 'public' | 'private'
+  createdAt: string
+}
+
 export interface TutorSourceRef {
   sourceId: string
   reason: string

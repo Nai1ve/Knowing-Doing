@@ -12,12 +12,12 @@ function render(props: Record<string, unknown>) {
 }
 
 describe('PlanningProgress', () => {
-  it('shows the server-provided sixth baseline turn and adaptive copy', async () => {
-    const { host, app } = render({ stage: 'baseline', progress: { completed: 5, total: 6, current: 6, label: '基础了解' } })
+  it('shows the server-provided third baseline turn and adaptive copy', async () => {
+    const { host, app } = render({ stage: 'baseline', progress: { completed: 3, total: 3, current: 3, label: '基础了解' } })
     await nextTick()
 
-    expect(host.textContent).toContain('第 6 / 6 轮')
-    expect(host.textContent).toContain('至少 2 轮，最多 6 轮')
+    expect(host.textContent).toContain('第 3 / 3 轮')
+    expect(host.textContent).toContain('至少 2 轮，最多 3 轮')
     app.unmount()
     host.remove()
   })

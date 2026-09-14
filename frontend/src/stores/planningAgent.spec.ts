@@ -34,7 +34,7 @@ const baseSession = (overrides: Partial<AgentPlanningSession> = {}): AgentPlanni
   mode: 'agent',
   agentStatus: 'idle',
   stage: 'baseline',
-  progress: { completed: 0, total: 6, current: 1, label: '基础了解' },
+  progress: { completed: 0, total: 3, current: 1, label: '基础了解' },
   readiness: { canGenerateRoadmap: false, blockers: ['assessment_not_terminal'], nextAction: '补充一个具体经历' },
   assessment: null,
   requirementBrief: null,
@@ -76,16 +76,16 @@ describe('planningAgent assessment recovery', () => {
     vi.useRealTimers()
   })
 
-  it('keeps six-turn baseline progress from the server session DTO', async () => {
+  it('keeps three-turn baseline progress from the server session DTO', async () => {
     vi.mocked(getAgentPlanningSession).mockResolvedValue(baseSession({
-      messages: Array.from({ length: 5 }, (_, index) => ({ id: `message-${index}`, sequence: index + 1, role: 'user', content: '具体经历', metadata: {}, createdAt: '2026-09-14T00:00:00.000Z' })),
-      progress: { completed: 5, total: 6, current: 6, label: '基础了解' },
+      messages: Array.from({ length: 3 }, (_, index) => ({ id: `message-${index}`, sequence: index + 1, role: 'user', content: '具体经历', metadata: {}, createdAt: '2026-09-14T00:00:00.000Z' })),
+      progress: { completed: 3, total: 3, current: 3, label: '基础了解' },
     }))
 
     const store = usePlanningAgentStore()
     await store.load('session-1')
 
-    expect(store.session?.progress).toMatchObject({ completed: 5, total: 6, current: 6 })
+    expect(store.session?.progress).toMatchObject({ completed: 3, total: 3, current: 3 })
   })
 
   it('leaves a loaded failure to server-side recovery and retries once explicitly', async () => {

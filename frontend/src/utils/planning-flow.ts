@@ -1,7 +1,7 @@
 import type { PlanningProgress, PlanningStage } from '@/types/product'
 
 export const baselineTurnMinimum = 2
-export const baselineTurnMaximum = 6
+export const baselineTurnMaximum = 3
 
 export const planningSteps = [
   { key: 'baseline', label: '基线' },
@@ -32,9 +32,9 @@ export function isTerminalAssessmentStatus(status: string | undefined): boolean 
 }
 
 export function baselineProgress(progress: PlanningProgress | null | undefined): PlanningProgress {
-  // Older sessions may still report the retired three-turn total. Keep the
-  // server's completed/current values, but render the current contract's
-  // six-turn ceiling until those sessions are refreshed by the API.
+  // The confirmed planner contract is a three-turn baseline ceiling. Older
+  // sessions may still report a retired six-turn total; keep the server's
+  // completed/current values, but clamp rendering to the current ceiling.
   const total = Math.max(progress?.total ?? 0, baselineTurnMaximum)
   const completed = Math.max(0, Math.min(progress?.completed ?? 0, total))
   const current = Math.max(1, Math.min(progress?.current ?? completed + 1, total))

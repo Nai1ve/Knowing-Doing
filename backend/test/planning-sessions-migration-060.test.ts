@@ -5,9 +5,9 @@ import Database from 'better-sqlite3'
 import { describe, expect, it } from 'vitest'
 import { applyProductMigrations } from '../src/product-migrate.js'
 
-describe('planning_sessions migration 059', () => {
-  it('upgrades a fully migrated v058 database with foreign keys enabled and preserves child rows', () => {
-    const directory = mkdtempSync(path.join(tmpdir(), 'zhixing-planning-059-'))
+describe('planning_sessions migration 060', () => {
+  it('reverts the baseline turn ceiling to three and preserves child rows', () => {
+    const directory = mkdtempSync(path.join(tmpdir(), 'zhixing-planning-060-'))
     const databasePath = path.join(directory, 'product.db')
     const migrationDirectory = path.resolve(process.cwd(), 'migrations/product')
     const database = new Database(databasePath)
@@ -16,7 +16,7 @@ describe('planning_sessions migration 059', () => {
       database.exec('CREATE TABLE schema_migrations(version TEXT PRIMARY KEY, applied_at TEXT NOT NULL)')
       const files = readdirSync(migrationDirectory).filter((file) => /^\d+_.+\.sql$/.test(file)).sort()
       for (const file of files) {
-        if (file.startsWith('059_')) break
+        if (file.startsWith('060_')) break
         database.transaction(() => {
           database.exec(readFileSync(path.join(migrationDirectory, file), 'utf8'))
           database.prepare('INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)').run(file, new Date().toISOString())
@@ -24,12 +24,12 @@ describe('planning_sessions migration 059', () => {
       }
 
       const now = new Date().toISOString()
-      database.prepare('INSERT INTO learners(id, created_at, updated_at) VALUES (?, ?, ?)').run('migration-learner', now, now)
-      database.prepare("INSERT INTO planning_sessions(id, learner_id, template_key, goal, status, current_step, answers_json, revision, client_request_id, created_at, updated_at, mode, agent_status, stage, baseline_turn_count, requirements_turn_count) VALUES (?, ?, 'agent', '验证迁移', 'draft', 0, '{}', 1, 'migration-request', ?, ?, 'agent', 'idle', 'baseline', 3, 2)").run('migration-session', 'migration-learner', now, now)
+      database.prepare('INSERT INTO learners(id, created_at, updated_at) VALUES (?, ?, ?)').run('migration-learner-060', now, now)
+      database.prepare("INSERT INTO planning_sessions(id, learner_id, template_key, goal, status, current_step, answers_json, revision, client_request_id, created_at, updated_at, mode, agent_status, stage, baseline_turn_count, requirements_turn_count) VALUES (?, ?, 'agent', '验证迁移', 'draft', 0, '{}', 1, 'migration-request', ?, ?, 'agent', 'idle', 'baseline', 3, 2)").run('migration-session', 'migration-learner-060', now, now)
       database.prepare("INSERT INTO planning_messages(id, session_id, sequence, role, content, metadata_json, client_request_id, created_at) VALUES (?, ?, 1, 'user', '我有真实项目经验', '{}', 'message-request', ?)").run('migration-message', 'migration-session', now)
-      database.prepare("INSERT INTO planning_assessments(id, session_id, learner_id, version, status, direction, model, dimensions_json, client_request_id, created_at, updated_at) VALUES (?, ?, ?, 1, 'answering', '验证迁移', 'fixture', '[]', 'assessment-request', ?, ?)").run('migration-assessment', 'migration-session', 'migration-learner', now, now)
+      database.prepare("INSERT INTO planning_assessments(id, session_id, learner_id, version, status, direction, model, dimensions_json, client_request_id, created_at, updated_at) VALUES (?, ?, ?, 1, 'answering', '验证迁移', 'fixture', '[]', 'assessment-request', ?, ?)").run('migration-assessment', 'migration-session', 'migration-learner-060', now, now)
       database.prepare("INSERT INTO planning_assessment_questions(id, assessment_id, position, dimension_key, question_type, difficulty, prompt, options_json, rubric_json, reference_answer_json, created_at) VALUES (?, ?, 1, 'fundamentals', 'short_text', 'foundation', '解释一个概念及其边界', '[]', '{\"criteria\":[\"清晰\"]}', '{}', ?)").run('migration-question', 'migration-assessment', now)
-      database.prepare("INSERT INTO planning_requirement_briefs(id, session_id, learner_id, version, status, content_json, created_at, updated_at) VALUES (?, ?, ?, 1, 'draft', '{\"goal\":\"验证迁移\"}', ?, ?)").run('migration-brief', 'migration-session', 'migration-learner', now, now)
+      database.prepare("INSERT INTO planning_requirement_briefs(id, session_id, learner_id, version, status, content_json, created_at, updated_at) VALUES (?, ?, ?, 1, 'draft', '{\"goal\":\"验证迁移\"}', ?, ?)").run('migration-brief', 'migration-session', 'migration-learner-060', now, now)
       database.prepare("UPDATE planning_sessions SET active_assessment_id = ?, active_requirement_brief_id = ? WHERE id = ?").run('migration-assessment', 'migration-brief', 'migration-session')
     } finally {
       database.close()

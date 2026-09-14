@@ -46,20 +46,49 @@ full product rollout so backend and frontend work can proceed independently.
 ## Conversation limits
 
 - Baseline discovery has a minimum of two user turns, an evidence-driven early
-  exit, and a hard maximum of six user turns. The initial direction counts as
+  exit, and a hard maximum of three user turns. The initial direction counts as
   the first turn.
 - Early exit requires a clear direction, evidence across at least two distinct
   capability dimensions, and at least one concrete experience or resume
   signal.
 - Requirements calibration keeps its hard maximum of five turns.
 
+> The three-turn ceiling replaces the earlier six-turn contract frozen before
+> this slice. `planning_sessions.baseline_turn_count` CHECK constraint is
+> rebuilt to `0..3` (migration 060) and the agent planner clamps at three.
+
 ## First implementation slice
 
-- Backend: assessment v2 reliability, baseline 0-6 persistence, conservative
+- Backend: assessment v2 reliability, baseline 0-3 persistence, conservative
   evaluation fallback, official Zhihu envelope/search mapping, and tests.
-- Frontend: six-turn progress, clear automatic-recovery states, and tests.
+- Frontend: three-turn progress, clear automatic-recovery states, and tests.
 - Deferred behind separate follow-up slices: mandatory login gate, remote PDF
   parsing, favorites pagination, research routing, and production flag changes.
+
+## Logout contract (completion plan P2)
+
+- `POST /api/auth/logout` revokes the current `learner_sessions` row, clears
+  the device cookie, and makes the old cookie unusable: the next authenticated
+  request with that cookie returns `401`.
+- The response returns `200` with a success body on successful revocation, and
+  `200` (idempotent) when the session is already absent. It must never echo the
+  encrypted token or provider credentials.
+- Disconnecting a Zhihu provider deletes the encrypted access token but keeps a
+  de-identified snapshot for sources already referenced by Practice Cards.
+
+## Research object model (completion plan P0)
+
+- `ResearchProvider`: `user_source | zhihu_search | global_search |
+  question_recommendation | direct_answer`.
+- `ResearchQuery` is the persisted request record (provider, query, status,
+  timestamps). Cache records dedupe by `(provider, query fingerprint)`.
+- `ResearchCandidate` is the normalized candidate: canonical URL + content hash
+  for dedupe, provider, query id, fetched-at, summary, credibility, relevance,
+  and retrieval evidence. Private content stays private; only a de-identified
+  digest ever leaves the research boundary.
+- The Practice Card Generator receives at most two `SourceDigestContract`
+  values (no full text, no private fields). A card with no adopted sources is a
+  pure route card.
 
 ## Rollout flags
 

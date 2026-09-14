@@ -842,7 +842,7 @@ export class AgentPlanningService {
   private setStage(sessionId: string, stage: PlanningDiagnosticStage): void { this.db.prepare('UPDATE planning_sessions SET stage = ?, updated_at = ? WHERE id = ?').run(stage, new Date().toISOString(), sessionId) }
 
   private progressFor(sessionId: string, stage: PlanningDiagnosticStage, messages?: AgentPlanningMessage[], assessment?: DiagnosticAssessment | null): PlanningProgress {
-    if (stage === 'baseline') { const count = (messages ?? []).filter((message) => message.role === 'user').length; return { completed: Math.min(count, 6), total: 6, current: Math.min(count + 1, 6), label: '基础了解' } }
+    if (stage === 'baseline') { const count = (messages ?? []).filter((message) => message.role === 'user').length; return { completed: Math.min(count, 3), total: 3, current: Math.min(count + 1, 3), label: '基础了解' } }
     if (stage.startsWith('assessment_')) return assessment?.progress ?? { completed: 0, total: 12, current: 1, label: '水平测评' }
     if (stage === 'requirements' || stage === 'requirements_review') { const count = number(this.db.prepare('SELECT COUNT(*) AS count FROM planning_requirement_turns WHERE session_id = ?').get(sessionId) as Row, 'count'); return { completed: Math.min(count, 5), total: 5, current: Math.min(count + 1, 5), label: '要求确认' } }
     return { completed: stage === 'ready' ? 3 : 4, total: 4, current: stage === 'ready' ? 4 : 4, label: '路线生成' }
@@ -864,7 +864,7 @@ export class AgentPlanningService {
     const evidencedDimensions = new Set(evidence.filter((dimension) => dimension.level !== 'unknown' && dimension.confidence >= 0.35).map((dimension) => dimension.key))
     const concreteSignal = Boolean(session.resume) || Boolean(session.profile?.evidence.some((item) => item.sourceType === 'resume' || item.topicKey === 'projects' || item.topicKey === 'responsibility' || item.excerpt.trim().length >= 30))
     const directionClear = session.goal.trim().length >= 4
-    return userTurns >= 6 || (userTurns >= 2 && directionClear && evidencedDimensions.size >= 2 && concreteSignal)
+    return userTurns >= 3 || (userTurns >= 2 && directionClear && evidencedDimensions.size >= 2 && concreteSignal)
   }
 
   roadmapReadiness(learnerId: string, sessionId: string): PlanningReadiness {
@@ -962,7 +962,7 @@ export class AgentPlanningService {
   async prepareAssessment(learnerId: string, sessionId: string, clientRequestId: string): Promise<DiagnosticAssessment> {
     const session = this.getSession(learnerId, sessionId)
     if (!['baseline', 'assessment_preparing'].includes(session.diagnosticStage)) throw new LabError('invalid_planning_stage', '当前阶段不能创建诊断', 409)
-    if (!this.baselineReady(session)) throw new LabError('baseline_incomplete', '请先完成基础了解后再开始诊断', 409, false, { baselineTurns: session.messages.filter((message) => message.role === 'user').length, maximumTurns: 6 })
+    if (!this.baselineReady(session)) throw new LabError('baseline_incomplete', '请先完成基础了解后再开始诊断', 409, false, { baselineTurns: session.messages.filter((message) => message.role === 'user').length, maximumTurns: 3 })
     const existing = this.db.prepare('SELECT * FROM planning_assessments WHERE session_id = ? AND client_request_id = ?').get(sessionId, clientRequestId) as Row | undefined
     if (existing) return this.assessmentFrom(existing)!
     const active = this.currentAssessment(sessionId); if (active && ['preparing', 'answering', 'evaluating'].includes(text(active, 'status'))) return this.assessmentFrom(active)!
@@ -1220,7 +1220,7 @@ export class AgentPlanningService {
       for (const [key] of REQUIRED_TOPICS) if (completedTopics.has(key)) updateTopic.run('covered', JSON.stringify(delta.evidence.filter((item) => item.topicKey === key).map((item) => item.sourceId)), now, sessionId, key)
       const next = this.nextQuestion(sessionId, delta.followUpTopic ?? null); const sequence = this.db.prepare('SELECT COALESCE(MAX(sequence), 0) + 1 AS sequence FROM planning_messages WHERE session_id = ?').get(sessionId) as Row
       this.db.prepare('INSERT INTO planning_messages(id, session_id, sequence, role, content, metadata_json, created_at) VALUES (?, ?, ?, \'assistant\', ?, ?, ?)').run(randomUUID(), sessionId, number(sequence, 'sequence'), assistant, JSON.stringify({ profileSnapshotId: snapshotId }), now)
-      this.db.prepare("UPDATE planning_sessions SET agent_status = 'idle', profile_snapshot_id = ?, status = 'draft', baseline_turn_count = CASE WHEN stage = 'baseline' THEN MIN(6, (SELECT COUNT(*) FROM planning_messages WHERE session_id = ? AND role = 'user')) ELSE baseline_turn_count END, updated_at = ? WHERE id = ?").run(snapshotId, sessionId, now, sessionId)
+      this.db.prepare("UPDATE planning_sessions SET agent_status = 'idle', profile_snapshot_id = ?, status = 'draft', baseline_turn_count = CASE WHEN stage = 'baseline' THEN MIN(3, (SELECT COUNT(*) FROM planning_messages WHERE session_id = ? AND role = 'user')) ELSE baseline_turn_count END, updated_at = ? WHERE id = ?").run(snapshotId, sessionId, now, sessionId)
       const staged = this.getSession(learnerId, sessionId)
       if (staged.diagnosticStage === 'baseline' && this.baselineReady(staged)) this.setStage(sessionId, 'assessment_preparing')
       this.db.prepare("UPDATE planning_agent_invocations SET status = 'succeeded', latency_ms = ?, completed_at = ? WHERE id = ?").run(Date.now() - started, new Date().toISOString(), invocationId)

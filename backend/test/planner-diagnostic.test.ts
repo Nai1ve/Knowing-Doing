@@ -31,7 +31,7 @@ function validQuestionContent(input: AssessmentContentGenerationInput): { questi
 }
 
 describe('Planner phased diagnostic flow', () => {
-  it('keeps the baseline open for at least two turns and advances no later than turn six', async () => {
+  it('keeps the baseline open for at least two turns and advances no later than turn three', async () => {
     const directory = mkdtempSync(path.join(tmpdir(), 'zhixing-diagnostic-baseline-'))
     const database = path.join(directory, 'product.db')
     applyProductMigrations(database)
@@ -47,10 +47,10 @@ describe('Planner phased diagnostic flow', () => {
       const session = service.createSession(learnerId, { message: '我想学习后端架构设计', clientRequestId: 'baseline-start' })
       await service.streamMessage(learnerId, session.id, session.goal, 'baseline-start', async () => undefined)
       expect(service.phasedStatus(learnerId, session.id)).toMatchObject({ baselineTurns: 1, stage: 'baseline' })
-      for (let turn = 2; turn <= 6; turn += 1) {
+      for (let turn = 2; turn <= 3; turn += 1) {
         await service.streamMessage(learnerId, session.id, `第 ${turn} 轮补充信息`, `baseline-${turn}`, async () => undefined)
       }
-      expect(service.phasedStatus(learnerId, session.id)).toMatchObject({ baselineTurns: 6, stage: 'assessment_preparing' })
+      expect(service.phasedStatus(learnerId, session.id)).toMatchObject({ baselineTurns: 3, stage: 'assessment_preparing' })
     } finally {
       repository.close()
       rmSync(directory, { recursive: true, force: true })

@@ -122,6 +122,7 @@ jobs:
           ZHIHU_OAUTH_ENABLED: ${{ vars.ZHIHU_OAUTH_ENABLED || 'false' }}
           ZHIHU_LOGIN_REQUIRED: ${{ vars.ZHIHU_LOGIN_REQUIRED || 'false' }}
           ZHIHU_SOURCE_SYNC_ENABLED: ${{ vars.ZHIHU_SOURCE_SYNC_ENABLED || 'false' }}
+          ZHIHU_RESEARCH_ENABLED: ${{ vars.ZHIHU_RESEARCH_ENABLED || 'false' }}
           PLANNER_ASSESSMENT_V2_ENABLED: ${{ vars.PLANNER_ASSESSMENT_V2_ENABLED || 'false' }}
           PRACTICE_CARD_V2_ENABLED: ${{ vars.PRACTICE_CARD_V2_ENABLED || 'false' }}
           MIXED_GYM_ENABLED: ${{ vars.MIXED_GYM_ENABLED || 'false' }}
@@ -142,7 +143,7 @@ jobs:
             test -n "${!required:-}" || { echo "Missing required secret: $required" >&2; exit 1; }
           done
           case "$CASE_BUILDER_ENABLED" in true|false) ;; *) echo 'CASE_BUILDER_ENABLED must be the repository variable true or false' >&2; exit 1 ;; esac
-          for flag in SIGNED_DEVICE_SESSION_ENABLED ZHIHU_OAUTH_ENABLED ZHIHU_LOGIN_REQUIRED ZHIHU_SOURCE_SYNC_ENABLED PLANNER_ASSESSMENT_V2_ENABLED PRACTICE_CARD_V2_ENABLED MIXED_GYM_ENABLED LEGACY_CASE_FLOW_ENABLED; do
+          for flag in SIGNED_DEVICE_SESSION_ENABLED ZHIHU_OAUTH_ENABLED ZHIHU_LOGIN_REQUIRED ZHIHU_SOURCE_SYNC_ENABLED ZHIHU_RESEARCH_ENABLED PLANNER_ASSESSMENT_V2_ENABLED PRACTICE_CARD_V2_ENABLED MIXED_GYM_ENABLED LEGACY_CASE_FLOW_ENABLED; do
             case "${!flag}" in true|false) ;; *) echo "$flag must be the repository variable true or false" >&2; exit 1 ;; esac
           done
           if [ "$ZHIHU_OAUTH_ENABLED" = true ]; then
@@ -157,6 +158,8 @@ jobs:
             test "$ZHIHU_OAUTH_ENABLED" = true || { echo 'ZHIHU_OAUTH_ENABLED must be true when ZHIHU_LOGIN_REQUIRED=true' >&2; exit 1; }
           fi
           test "$ZHIHU_SOURCE_SYNC_ENABLED" = false || test "$ZHIHU_OAUTH_ENABLED" = true || { echo 'ZHIHU_SOURCE_SYNC_ENABLED requires ZHIHU_OAUTH_ENABLED=true' >&2; exit 1; }
+          test "$ZHIHU_RESEARCH_ENABLED" = false || test "$ZHIHU_OAUTH_ENABLED" = true || { echo 'ZHIHU_RESEARCH_ENABLED requires ZHIHU_OAUTH_ENABLED=true' >&2; exit 1; }
+          test "$ZHIHU_RESEARCH_ENABLED" = false || test "$ZHIHU_SOURCE_SYNC_ENABLED" = true || { echo 'ZHIHU_RESEARCH_ENABLED requires ZHIHU_SOURCE_SYNC_ENABLED=true' >&2; exit 1; }
           test "$MIXED_GYM_ENABLED" = false || test "$PRACTICE_CARD_V2_ENABLED" = true || { echo 'MIXED_GYM_ENABLED requires PRACTICE_CARD_V2_ENABLED=true' >&2; exit 1; }
           if [ "$CASE_BUILDER_ENABLED" = true ]; then
             for required in CASE_BUILDER_TOKEN CASE_BUILDER_LLM_API_KEY CASE_BUILDER_MYSQL_ROOT_PASSWORD ENVIRONMENT_RUNTIME_SIGNING_KEY; do
@@ -182,7 +185,7 @@ jobs:
             printf 'ZHIXING_ZHIHU_ACCESS_SECRET=%s\n' "$ZHIXING_ZHIHU_ACCESS_SECRET"
             printf '%s\n' 'ZHIXING_ZHIHU_API_BASE_URL=https://developer.zhihu.com' 'ZHIXING_RETRIEVAL_TIMEOUT_MS=15000' 'ZHIXING_RETRIEVAL_CACHE_TTL_MS=86400000'
             printf '%s\n' 'PUBLIC_ORIGIN=http://119.45.243.102' 'ZHIHU_OAUTH_REDIRECT_URI=http://119.45.243.102/api/auth/oauth/zhihu/callback'
-            printf '%s\n' 'ALLOW_INSECURE_OAUTH_CALLBACK=true' 'ZHIHU_OAUTH_BASE_URL=https://openapi.zhihu.com' 'ZHIHU_OAUTH_AUTHORIZE_PATH=/authorize' 'ZHIHU_OAUTH_TOKEN_PATH=/access_token' 'ZHIHU_OAUTH_USER_PATH=/user' 'ZHIHU_OAUTH_COLLECTIONS_PATH=/user/collections' 'ZHIHU_OAUTH_COLLECTION_ITEMS_PATH=/user/collection/{collection_id}' 'ZHIHU_OAUTH_CONTENT_PATH=/user/content' 'ZHIHU_OAUTH_MOMENTS_PATH=/user/moments'
+            printf '%s\n' 'ALLOW_INSECURE_OAUTH_CALLBACK=true' 'ZHIHU_OAUTH_BASE_URL=https://openapi.zhihu.com' 'ZHIHU_OAUTH_AUTHORIZE_PATH=/authorize' 'ZHIHU_OAUTH_TOKEN_PATH=/access_token'
             printf 'ZHIHU_OAUTH_APP_ID=%s\n' "$ZHIHU_OAUTH_APP_ID"
             printf 'ZHIHU_OAUTH_APP_KEY=%s\n' "$ZHIHU_OAUTH_APP_KEY"
             printf 'ZHIHU_OAUTH_SCOPES=%s\n' "$ZHIHU_OAUTH_SCOPES"
@@ -191,6 +194,7 @@ jobs:
             printf 'ZHIHU_OAUTH_ENABLED=%s\n' "$ZHIHU_OAUTH_ENABLED"
             printf 'ZHIHU_LOGIN_REQUIRED=%s\n' "$ZHIHU_LOGIN_REQUIRED"
             printf 'ZHIHU_SOURCE_SYNC_ENABLED=%s\n' "$ZHIHU_SOURCE_SYNC_ENABLED"
+            printf 'ZHIHU_RESEARCH_ENABLED=%s\n' "$ZHIHU_RESEARCH_ENABLED"
             printf 'PLANNER_ASSESSMENT_V2_ENABLED=%s\n' "$PLANNER_ASSESSMENT_V2_ENABLED"
             printf 'PRACTICE_CARD_V2_ENABLED=%s\n' "$PRACTICE_CARD_V2_ENABLED"
             printf 'MIXED_GYM_ENABLED=%s\n' "$MIXED_GYM_ENABLED"
