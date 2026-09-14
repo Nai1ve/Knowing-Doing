@@ -4,6 +4,7 @@ import { loadConfig } from '../src/config.js'
 const managedKeys = [
   'ZHIXING_IDENTITY_MODE', 'NODE_ENV', 'LAB_TOKEN_SECRET', 'SIGNED_DEVICE_SESSION_ENABLED',
   'ZHIHU_OAUTH_ENABLED', 'ZHIHU_SOURCE_SYNC_ENABLED', 'PRACTICE_CARD_V2_ENABLED',
+  'PLANNER_ASSESSMENT_V2_ENABLED',
   'MIXED_GYM_ENABLED', 'ZHIHU_OAUTH_APP_ID', 'ZHIHU_OAUTH_APP_KEY',
   'OAUTH_TOKEN_ENCRYPTION_KEY', 'ALLOW_INSECURE_OAUTH_CALLBACK', 'PUBLIC_ORIGIN',
   'ZHIHU_OAUTH_REDIRECT_URI',
@@ -19,6 +20,13 @@ afterEach(() => {
 })
 
 describe('identity mode configuration', () => {
+  it('keeps planner assessment v2 disabled until explicitly enabled', () => {
+    delete process.env.PLANNER_ASSESSMENT_V2_ENABLED
+    expect(loadConfig().plannerAssessmentV2Enabled).toBe(false)
+    process.env.PLANNER_ASSESSMENT_V2_ENABLED = 'true'
+    expect(loadConfig().plannerAssessmentV2Enabled).toBe(true)
+  })
+
   it('keeps browser learner identity when client mode is explicitly configured', () => {
     process.env.NODE_ENV = 'production'
     process.env.ZHIXING_IDENTITY_MODE = 'client'

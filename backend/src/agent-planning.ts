@@ -238,6 +238,24 @@ export interface DiagnosticAssessment { id: string; planningSessionId: string; v
 export interface RequirementBrief { id: string; version: number; status: 'draft' | 'confirmed' | 'superseded'; content: z.infer<typeof RequirementBriefSchema>; confirmedAt: string | null; createdAt: string; updatedAt: string }
 export interface PhasedPlanningStatus { sessionId: string; stage: PlanningDiagnosticStage; baselineTurns: number; assessment: DiagnosticAssessment | null; requirementBrief: RequirementBrief | null; readiness: PlanningReadiness }
 
+export interface AssessmentQuestionSlot {
+  id: string
+  position: number
+  dimensionKey: string
+  type: 'single_choice' | 'multiple_choice' | 'short_text' | 'scenario'
+  difficulty: 'foundation' | 'applied' | 'advanced'
+}
+
+export interface AssessmentContentGenerationInput {
+  goal: string
+  messages: AgentPlanningMessage[]
+  resumeText?: string | null
+  context: PlanningContextPacket | null
+  dimensions: z.infer<typeof AssessmentSchema>['dimensions']
+  slots: AssessmentQuestionSlot[]
+  repair?: { invalidSlotIds: string[]; previousOutput?: unknown }
+}
+
 export interface PlanningProvider {
   readonly providerName: string
   readonly modelName: string
@@ -246,6 +264,7 @@ export interface PlanningProvider {
   generateRoadmap?(input: { goal: string; messages: AgentPlanningMessage[]; context: PlanningContextPacket | null; planningEvidence?: { assessment: z.infer<typeof AssessmentEvaluationSchema> | null; requirementBrief: z.infer<typeof RequirementBriefSchema> | null }; cached?: RoadmapGenerationCache; onPhase: RoadmapPhaseCallback; practiceEnvironments?: AgentPracticeEnvironment[] }): Promise<RoadmapPlan>
   adjustPlan?(input: { request: string; goal: string; currentUnitKey: string; planUnits: Array<{ nodeKey: string; title: string; status: string }>; candidateNodes: Array<{ nodeKey: string; title: string; nodeType: string }>; context: PlanningContextPacket | null }): Promise<PlanAdjustmentProposal>
   generateAssessment?(input: { goal: string; messages: AgentPlanningMessage[]; resumeText?: string | null; context: PlanningContextPacket | null }): Promise<z.infer<typeof AssessmentSchema>>
+  generateAssessmentContent?(input: AssessmentContentGenerationInput): Promise<unknown>
   evaluateAssessment?(input: { goal: string; dimensions: z.infer<typeof AssessmentSchema>['dimensions']; questions: Array<z.infer<typeof AssessmentQuestionSchema> & { id: string }>; answers: Array<{ questionId: string; value: unknown }> }): Promise<z.infer<typeof AssessmentEvaluationSchema>>
   generateRequirementBrief?(input: { goal: string; assessment: DiagnosticAssessment | null; messages: string[]; previous: z.infer<typeof RequirementBriefSchema> | null }): Promise<z.infer<typeof RequirementBriefSchema>>
 }
@@ -285,6 +304,120 @@ function resumeEvidence(resume: LearnerResumeContext | null, focus: string): Pro
   if (!selected) return []
   const selectedPositions = new Set([...selected.matchAll(/\[简历片段 (\d+)\]/g)].map((match) => Number(match[1])))
   return resume.chunks.filter((chunk) => selectedPositions.has(chunk.position)).map((chunk) => ({ topicKey: null, sourceType: 'resume' as const, sourceId: chunk.id, excerpt: chunk.content }))
+}
+
+type AssessmentDraftQuestion = z.infer<typeof AssessmentQuestionSchema>
+type AssessmentDimension = z.infer<typeof AssessmentSchema>['dimensions'][number]
+
+function record(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : null
+}
+
+function valueText(value: unknown): string | null {
+  return typeof value === 'string' && value.trim() ? value.trim() : null
+}
+
+function list(value: unknown): unknown[] {
+  if (Array.isArray(value)) return value
+  const object = record(value)
+  if (!object) return []
+  for (const key of ['questions', 'Questions', 'items', 'Items', 'data', 'Data']) {
+    if (Array.isArray(object[key])) return object[key] as unknown[]
+  }
+  return []
+}
+
+function stringList(value: unknown): string[] {
+  if (typeof value === 'string' && value.trim()) return [value.trim()]
+  if (!Array.isArray(value)) return []
+  return value.map((item) => valueText(item)).filter((item): item is string => Boolean(item))
+}
+
+function v2Dimensions(): AssessmentDimension[] {
+  return [
+    { key: 'foundations', title: '核心概念', rationale: '确认关键概念和边界是否清晰。' },
+    { key: 'application', title: '应用与工具', rationale: '确认能否将概念用于实际任务。' },
+    { key: 'reasoning', title: '分析与取舍', rationale: '确认能否解释判断过程和权衡。' },
+    { key: 'experience', title: '经验与验证', rationale: '确认是否能用具体证据验证结论。' },
+  ]
+}
+
+function v2Slots(dimensions: AssessmentDimension[]): AssessmentQuestionSlot[] {
+  const patterns: Array<Array<Pick<AssessmentQuestionSlot, 'type' | 'difficulty'>>> = [
+    [{ type: 'single_choice', difficulty: 'foundation' }, { type: 'short_text', difficulty: 'applied' }, { type: 'scenario', difficulty: 'advanced' }],
+    [{ type: 'multiple_choice', difficulty: 'foundation' }, { type: 'scenario', difficulty: 'applied' }, { type: 'short_text', difficulty: 'advanced' }],
+    [{ type: 'single_choice', difficulty: 'foundation' }, { type: 'short_text', difficulty: 'applied' }, { type: 'scenario', difficulty: 'advanced' }],
+    [{ type: 'multiple_choice', difficulty: 'foundation' }, { type: 'scenario', difficulty: 'applied' }, { type: 'short_text', difficulty: 'advanced' }],
+  ]
+  return dimensions.flatMap((dimension, dimensionIndex) => patterns[dimensionIndex]!.map((pattern, index) => ({ id: `slot-${String(dimensionIndex * 3 + index + 1).padStart(2, '0')}`, position: dimensionIndex * 3 + index + 1, dimensionKey: dimension.key, ...pattern })))
+}
+
+function normalizedOptions(value: unknown): Array<{ value: string; label: string }> {
+  if (!Array.isArray(value)) return []
+  const used = new Set<string>()
+  return value.map((item, index) => {
+    const object = record(item)
+    const label = valueText(object?.label) ?? valueText(object?.text) ?? valueText(object?.content) ?? valueText(object?.value) ?? valueText(item)
+    let optionValue = valueText(object?.value) ?? valueText(object?.id) ?? valueText(object?.key) ?? `option-${index + 1}`
+    while (used.has(optionValue)) optionValue = `${optionValue}-${index + 1}`
+    used.add(optionValue)
+    return label ? { value: optionValue.slice(0, 120), label: label.slice(0, 240) } : null
+  }).filter((item): item is { value: string; label: string } => item !== null)
+}
+
+function questionCandidate(slot: AssessmentQuestionSlot, value: unknown): AssessmentDraftQuestion | null {
+  const object = record(value)
+  if (!object) return null
+  const prompt = valueText(object.prompt) ?? valueText(object.question) ?? valueText(object.title) ?? valueText(object.content)
+  const rubricValue = record(object.rubric)
+  const criteria = stringList(rubricValue?.criteria ?? object.criteria)
+  const evidenceSignals = stringList(rubricValue?.evidenceSignals ?? rubricValue?.evidence_signals ?? object.evidenceSignals ?? object.evidence_signals)
+  const hasReference = Object.prototype.hasOwnProperty.call(object, 'referenceAnswer') || Object.prototype.hasOwnProperty.call(object, 'reference_answer') || Object.prototype.hasOwnProperty.call(object, 'answer')
+  if (!prompt || criteria.length === 0 || !hasReference) return null
+  const parsed = AssessmentQuestionSchema.safeParse({
+    dimensionKey: slot.dimensionKey,
+    type: slot.type,
+    difficulty: slot.difficulty,
+    prompt: prompt.slice(0, 1200),
+    options: normalizedOptions(object.options ?? object.choices ?? object.Options),
+    rubric: { criteria: criteria.slice(0, 6).map((item) => item.slice(0, 400)), evidenceSignals: evidenceSignals.slice(0, 8).map((item) => item.slice(0, 300)) },
+    referenceAnswer: object.referenceAnswer ?? object.reference_answer ?? object.answer,
+  })
+  return parsed.success ? parsed.data : null
+}
+
+function normalizeSlotCandidates(output: unknown, slots: AssessmentQuestionSlot[]): Map<string, unknown> {
+  const normalized = new Map<string, unknown>()
+  const known = new Set(slots.map((slot) => slot.id))
+  for (const [index, item] of list(output).entries()) {
+    const object = record(item)
+    const specified = valueText(object?.slotId) ?? valueText(object?.slot_id) ?? valueText(object?.slot) ?? valueText(object?.id)
+    const slotId = specified && known.has(specified) ? specified : slots[index]?.id
+    if (slotId && !normalized.has(slotId)) normalized.set(slotId, item)
+  }
+  return normalized
+}
+
+function fallbackQuestion(slot: AssessmentQuestionSlot, goal: string): AssessmentDraftQuestion {
+  const focus = goal.trim().slice(0, 80) || '当前学习目标'
+  const promptByType: Record<AssessmentQuestionSlot['type'], string> = {
+    single_choice: `围绕“${focus}”，哪种做法最适合先确认问题边界与成功标准？`,
+    multiple_choice: `围绕“${focus}”，选择所有有助于验证结论的做法。`,
+    short_text: `请结合“${focus}”说明你会如何验证一个关键判断，并给出依据。`,
+    scenario: `场景：你需要推进“${focus}”，但现有信息不完整。请说明你的判断、取舍与下一步验证。`,
+  }
+  const options = slot.type === 'single_choice' || slot.type === 'multiple_choice'
+    ? [{ value: 'observe', label: '先收集事实并定义可验证标准' }, { value: 'assume', label: '直接按未经验证的假设推进' }, { value: 'review', label: '记录取舍并复核关键风险' }]
+    : []
+  return AssessmentQuestionSchema.parse({
+    dimensionKey: slot.dimensionKey,
+    type: slot.type,
+    difficulty: slot.difficulty,
+    prompt: `${promptByType[slot.type]}（题位 ${slot.position}）`,
+    options,
+    rubric: { criteria: ['回答应包含明确事实、判断或下一步验证。'], evidenceSignals: ['具体场景', '可观察的依据或取舍'] },
+    referenceAnswer: { expected: '仅用于内部保守评估，不向作答阶段公开。' },
+  })
 }
 function generationFrom(row: Row | undefined): AgentRoadmapGeneration | null {
   if (!row) return null
@@ -530,6 +663,20 @@ export class DeepSeekPlanningAgent implements PlanningProvider {
     return repaired.data
   }
 
+  async generateAssessmentContent(input: AssessmentContentGenerationInput): Promise<unknown> {
+    const contract = '{"questions":[{"slotId":"slot-01","prompt":"至少八个字符的问题","options":[{"value":"a","label":"选项 A"},{"value":"b","label":"选项 B"}],"rubric":{"criteria":["内部判定标准"],"evidenceSignals":["可观察证据"]},"referenceAnswer":{"expected":"仅供评估器"}}]}'
+    const slots = input.repair
+      ? input.slots.filter((slot) => input.repair!.invalidSlotIds.includes(slot.id))
+      : input.slots
+    const response = await this.structured([
+      { role: 'system', content: `你是学习诊断题内容设计器。服务端已经冻结了能力维度、题数、题型、难度和题号；只能为给定 slotId 填写题目内容，不能新增、删除或改写 slot。每题必须有 prompt、内部 rubric 与 referenceAnswer；参考答案不得出现在题干。选择题提供至少两个选项，文本/场景题 options 必须为空。仅返回 JSON。${input.repair ? '只修复以下题位，不要返回其他题位。' : ''} 合约：${contract}` },
+      { role: 'user', content: JSON.stringify({ goal: input.goal, messages: input.messages.slice(-12), resume: input.resumeText ?? null, context: input.context, dimensions: input.dimensions, slots, repair: input.repair ? { invalidSlotIds: input.repair.invalidSlotIds, previousOutput: input.repair.previousOutput ?? null } : null }) },
+    ])
+    // The service owns validation and recovery. Returning the raw parsed value
+    // here is intentional: malformed model structures must not strand a user.
+    return response.value
+  }
+
   async evaluateAssessment(input: { goal: string; dimensions: z.infer<typeof AssessmentSchema>['dimensions']; questions: Array<z.infer<typeof AssessmentQuestionSchema> & { id: string }>; answers: Array<{ questionId: string; value: unknown }> }): Promise<z.infer<typeof AssessmentEvaluationSchema>> {
     const contract = '{"dimensions":[{"key":"dimension-key","level":"exposed","confidence":0.6,"summary":"仅基于作答的判断","nextValidation":"下一步验证","evidence":["作答摘要"]}],"summary":"不包含总分的诊断摘要","questionResults":[{"questionId":"题目ID","outcome":"correct|partial|incorrect|unverified","explanation":"终结后可见的简短解析"}]}'
     const first = await this.structured([
@@ -562,7 +709,9 @@ export class AgentPlanningService {
   private readonly practiceEnvironments: PracticeEnvironmentCatalog
   private readonly contextLocks = new Map<string, Promise<void>>()
   private readonly sessionLocks = new Map<string, Promise<void>>()
-  constructor(private readonly repository: ProductRepository, private readonly provider: PlanningProvider, private readonly config?: Pick<LabConfig, 'modelName'>, private readonly zhihu?: ZhihuOpenApiClient) { this.contextCompiler = new PlanningContextCompiler(this.db); this.practiceEnvironments = new PracticeEnvironmentCatalog(this.db); this.recoverInterruptedDiagnostics() }
+  constructor(private readonly repository: ProductRepository, private readonly provider: PlanningProvider, private readonly config?: Pick<LabConfig, 'modelName'> & Partial<Pick<LabConfig, 'plannerAssessmentV2Enabled'>>, private readonly zhihu?: ZhihuOpenApiClient) { this.contextCompiler = new PlanningContextCompiler(this.db); this.practiceEnvironments = new PracticeEnvironmentCatalog(this.db); this.recoverInterruptedDiagnostics() }
+
+  private get assessmentV2Enabled(): boolean { return this.config?.plannerAssessmentV2Enabled === true }
 
   private recoverInterruptedDiagnostics(): void {
     const now = new Date().toISOString()
@@ -629,7 +778,7 @@ export class AgentPlanningService {
   private setStage(sessionId: string, stage: PlanningDiagnosticStage): void { this.db.prepare('UPDATE planning_sessions SET stage = ?, updated_at = ? WHERE id = ?').run(stage, new Date().toISOString(), sessionId) }
 
   private progressFor(sessionId: string, stage: PlanningDiagnosticStage, messages?: AgentPlanningMessage[], assessment?: DiagnosticAssessment | null): PlanningProgress {
-    if (stage === 'baseline') { const count = (messages ?? []).filter((message) => message.role === 'user').length; return { completed: Math.min(count, 3), total: 3, current: Math.min(count + 1, 3), label: '基础了解' } }
+    if (stage === 'baseline') { const count = (messages ?? []).filter((message) => message.role === 'user').length; return { completed: Math.min(count, 6), total: 6, current: Math.min(count + 1, 6), label: '基础了解' } }
     if (stage.startsWith('assessment_')) return assessment?.progress ?? { completed: 0, total: 12, current: 1, label: '水平测评' }
     if (stage === 'requirements' || stage === 'requirements_review') { const count = number(this.db.prepare('SELECT COUNT(*) AS count FROM planning_requirement_turns WHERE session_id = ?').get(sessionId) as Row, 'count'); return { completed: Math.min(count, 5), total: 5, current: Math.min(count + 1, 5), label: '要求确认' } }
     return { completed: stage === 'ready' ? 3 : 4, total: 4, current: stage === 'ready' ? 4 : 4, label: '路线生成' }
@@ -648,9 +797,10 @@ export class AgentPlanningService {
   private baselineReady(session: AgentPlanningSession): boolean {
     const userTurns = session.messages.filter((message) => message.role === 'user').length
     const evidence = session.profile?.dimensions ?? []
-    const hasLevel = evidence.some((dimension) => dimension.level !== 'unknown' && dimension.confidence >= 0.35)
-    const hasResume = Boolean(session.resume)
-    return userTurns >= 3 || (userTurns >= 1 && (hasLevel || hasResume))
+    const evidencedDimensions = new Set(evidence.filter((dimension) => dimension.level !== 'unknown' && dimension.confidence >= 0.35).map((dimension) => dimension.key))
+    const concreteSignal = Boolean(session.resume) || Boolean(session.profile?.evidence.some((item) => item.sourceType === 'resume' || item.topicKey === 'projects' || item.topicKey === 'responsibility' || item.excerpt.trim().length >= 30))
+    const directionClear = session.goal.trim().length >= 4
+    return userTurns >= 6 || (userTurns >= 2 && directionClear && evidencedDimensions.size >= 2 && concreteSignal)
   }
 
   roadmapReadiness(learnerId: string, sessionId: string): PlanningReadiness {
@@ -694,10 +844,52 @@ export class AgentPlanningService {
     return AssessmentSchema.parse({ dimensions: dimensions.map(([key, title]) => ({ key, title, rationale: `确认${title}，避免把推测当成能力结论。` })), questions })
   }
 
+  private async generateAssessmentV2(input: { goal: string; messages: AgentPlanningMessage[]; resumeText: string | null; context: PlanningContextPacket | null }): Promise<z.infer<typeof AssessmentSchema>> {
+    const dimensions = v2Dimensions()
+    const slots = v2Slots(dimensions)
+    const valid = new Map<string, AssessmentDraftQuestion>()
+    const prompts = new Set<string>()
+    const accept = (output: unknown, allowed: AssessmentQuestionSlot[]) => {
+      const candidates = normalizeSlotCandidates(output, allowed)
+      for (const slot of allowed) {
+        if (valid.has(slot.id)) continue
+        const question = questionCandidate(slot, candidates.get(slot.id))
+        const prompt = question?.prompt.trim().toLocaleLowerCase()
+        if (!question || !prompt || prompts.has(prompt)) continue
+        prompts.add(prompt)
+        valid.set(slot.id, question)
+      }
+    }
+
+    let firstOutput: unknown = null
+    if (this.provider.generateAssessmentContent) {
+      firstOutput = await this.provider.generateAssessmentContent({ ...input, dimensions, slots })
+      accept(firstOutput, slots)
+      const missing = slots.filter((slot) => !valid.has(slot.id))
+      if (missing.length > 0) {
+        const repaired = await this.provider.generateAssessmentContent({ ...input, dimensions, slots, repair: { invalidSlotIds: missing.map((slot) => slot.id), previousOutput: firstOutput } })
+        accept(repaired, missing)
+      }
+    }
+
+    for (const slot of slots) {
+      if (valid.has(slot.id)) continue
+      const fallback = fallbackQuestion(slot, input.goal)
+      let prompt = fallback.prompt.trim().toLocaleLowerCase()
+      if (prompts.has(prompt)) {
+        fallback.prompt = `${fallback.prompt} ${slot.id}`
+        prompt = fallback.prompt.trim().toLocaleLowerCase()
+      }
+      prompts.add(prompt)
+      valid.set(slot.id, fallback)
+    }
+    return AssessmentSchema.parse({ dimensions, questions: slots.map((slot) => valid.get(slot.id)!) })
+  }
+
   async prepareAssessment(learnerId: string, sessionId: string, clientRequestId: string): Promise<DiagnosticAssessment> {
     const session = this.getSession(learnerId, sessionId)
     if (!['baseline', 'assessment_preparing'].includes(session.diagnosticStage)) throw new LabError('invalid_planning_stage', '当前阶段不能创建诊断', 409)
-    if (!this.baselineReady(session)) throw new LabError('baseline_incomplete', '请先完成最多三轮的目标与能力基线确认', 409, false, { baselineTurns: session.messages.filter((message) => message.role === 'user').length })
+    if (!this.baselineReady(session)) throw new LabError('baseline_incomplete', '请先完成基础了解后再开始诊断', 409, false, { baselineTurns: session.messages.filter((message) => message.role === 'user').length, maximumTurns: 6 })
     const existing = this.db.prepare('SELECT * FROM planning_assessments WHERE session_id = ? AND client_request_id = ?').get(sessionId, clientRequestId) as Row | undefined
     if (existing) return this.assessmentFrom(existing)!
     const active = this.currentAssessment(sessionId); if (active && ['preparing', 'answering', 'evaluating'].includes(text(active, 'status'))) return this.assessmentFrom(active)!
@@ -710,7 +902,10 @@ export class AgentPlanningService {
       this.db.prepare("INSERT INTO planning_agent_invocations(id, session_id, learner_id, client_request_id, kind, provider, model, status, input_fingerprint, created_at) VALUES (?, ?, ?, ?, 'assessment_generator', ?, ?, 'running', ?, ?)").run(invocationId, sessionId, learnerId, clientRequestId, this.provider.providerName, this.provider.modelName, fingerprint({ sessionId, clientRequestId, goal: session.goal, profileSnapshotId: session.profile?.id ?? null }), now)
     })()
     try {
-      const resume = this.repository.getPlanningResumeContext(sessionId, learnerId); const generated = this.provider.generateAssessment ? await this.provider.generateAssessment({ goal: session.goal, messages: session.messages, resumeText: resumeSnippet(resume, session.goal), context: this.contextCompiler.current(learnerId, sessionId) }) : this.fallbackAssessment(session.goal)
+      const resume = this.repository.getPlanningResumeContext(sessionId, learnerId); const generationInput = { goal: session.goal, messages: session.messages, resumeText: resumeSnippet(resume, session.goal), context: this.contextCompiler.current(learnerId, sessionId) }
+      const generated = this.assessmentV2Enabled
+        ? await this.generateAssessmentV2(generationInput)
+        : this.provider.generateAssessment ? await this.provider.generateAssessment(generationInput) : this.fallbackAssessment(session.goal)
       const parsed = AssessmentSchema.parse(generated)
       const tx = this.db.transaction(() => {
         this.db.prepare("UPDATE planning_assessments SET status = 'answering', dimensions_json = ?, error_message = NULL, failure_code = NULL, updated_at = ? WHERE id = ?").run(JSON.stringify(parsed.dimensions), new Date().toISOString(), id)
@@ -772,8 +967,24 @@ export class AgentPlanningService {
     try {
       const material = questions.map((question) => ({ id: text(question, 'id'), dimensionKey: text(question, 'dimension_key'), type: text(question, 'question_type') as AssessmentQuestion['type'], prompt: text(question, 'prompt'), options: json(question.options_json, []), rubric: json(question.rubric_json, {}), referenceAnswer: json(question.reference_answer_json, null) }))
       const inputAnswers = answers.filter((answer) => number(answer, 'skipped') !== 1).map((answer) => ({ questionId: text(answer, 'question_id'), value: json(answer.value_json, null) }))
-      const evaluation = this.provider.evaluateAssessment ? await this.provider.evaluateAssessment({ goal: session.goal, dimensions: json(assessment.dimensions_json, []), questions: material as never, answers: inputAnswers }) : this.fallbackEvaluation(assessment, material, inputAnswers)
-      const parsed = AssessmentEvaluationSchema.parse(evaluation)
+      let evaluation: unknown
+      try {
+        evaluation = this.provider.evaluateAssessment
+          ? await this.provider.evaluateAssessment({ goal: session.goal, dimensions: json(assessment.dimensions_json, []), questions: material as never, answers: inputAnswers })
+          : this.fallbackEvaluation(assessment, material, inputAnswers)
+      } catch (error) {
+        if (!this.assessmentV2Enabled || !(error instanceof PlanningAgentError && error.code === 'assessment_evaluation_invalid_output')) throw error
+        // A malformed evaluation must not discard valid learner answers or
+        // strand the session in the evaluating phase. Transport failures still
+        // remain visible to the existing retry flow.
+        evaluation = this.fallbackEvaluation(assessment, material, inputAnswers)
+      }
+      const candidate = AssessmentEvaluationSchema.safeParse(evaluation)
+      const parsed = candidate.success
+        ? candidate.data
+        : this.assessmentV2Enabled
+          ? this.fallbackEvaluation(assessment, material, inputAnswers)
+          : AssessmentEvaluationSchema.parse(evaluation)
       this.db.transaction(() => { this.db.prepare("UPDATE planning_assessments SET status = ?, completion_mode = ?, evaluation_json = ?, updated_at = ? WHERE id = ?").run(action === 'abandon' ? 'abandoned' : 'completed', action, JSON.stringify(parsed), new Date().toISOString(), assessmentId); this.saveAssessmentProfile(learnerId, sessionId, assessmentId, parsed); this.db.prepare("UPDATE planning_agent_invocations SET status = 'succeeded', completed_at = ?, latency_ms = ? WHERE id = ?").run(new Date().toISOString(), Date.now() - Date.parse(now), invocation) })()
       this.setStage(sessionId, 'requirements'); return this.assessmentFrom(this.currentAssessment(sessionId))!
     } catch (error) {
@@ -917,7 +1128,7 @@ export class AgentPlanningService {
       for (const [key] of REQUIRED_TOPICS) if (completedTopics.has(key)) updateTopic.run('covered', JSON.stringify(delta.evidence.filter((item) => item.topicKey === key).map((item) => item.sourceId)), now, sessionId, key)
       const next = this.nextQuestion(sessionId, delta.followUpTopic ?? null); const sequence = this.db.prepare('SELECT COALESCE(MAX(sequence), 0) + 1 AS sequence FROM planning_messages WHERE session_id = ?').get(sessionId) as Row
       this.db.prepare('INSERT INTO planning_messages(id, session_id, sequence, role, content, metadata_json, created_at) VALUES (?, ?, ?, \'assistant\', ?, ?, ?)').run(randomUUID(), sessionId, number(sequence, 'sequence'), assistant, JSON.stringify({ profileSnapshotId: snapshotId }), now)
-      this.db.prepare("UPDATE planning_sessions SET agent_status = 'idle', profile_snapshot_id = ?, status = 'draft', baseline_turn_count = CASE WHEN stage = 'baseline' THEN MIN(3, (SELECT COUNT(*) FROM planning_messages WHERE session_id = ?)) ELSE baseline_turn_count END, updated_at = ? WHERE id = ?").run(snapshotId, sessionId, now, sessionId)
+      this.db.prepare("UPDATE planning_sessions SET agent_status = 'idle', profile_snapshot_id = ?, status = 'draft', baseline_turn_count = CASE WHEN stage = 'baseline' THEN MIN(6, (SELECT COUNT(*) FROM planning_messages WHERE session_id = ? AND role = 'user')) ELSE baseline_turn_count END, updated_at = ? WHERE id = ?").run(snapshotId, sessionId, now, sessionId)
       const staged = this.getSession(learnerId, sessionId)
       if (staged.diagnosticStage === 'baseline' && this.baselineReady(staged)) this.setStage(sessionId, 'assessment_preparing')
       this.db.prepare("UPDATE planning_agent_invocations SET status = 'succeeded', latency_ms = ?, completed_at = ? WHERE id = ?").run(Date.now() - started, new Date().toISOString(), invocationId)

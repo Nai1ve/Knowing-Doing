@@ -35,10 +35,25 @@ export function applyProductMigrations(dbPath: string): void {
     for (const file of migrationFiles()) {
       if (versions.has(file)) continue
       const sql = fs.readFileSync(path.join(migrationDir(), file), 'utf8')
-      database.transaction(() => {
+      const foreignKeyRebuild = sql.startsWith('-- product-migrate: foreign-key-rebuild')
+      const apply = database.transaction(() => {
         database.exec(sql)
+        if (foreignKeyRebuild) {
+          const violations = database.prepare('PRAGMA foreign_key_check').all()
+          if (violations.length > 0) throw new Error(`Foreign key check failed during ${file}`)
+        }
         database.prepare('INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)').run(file, new Date().toISOString())
-      })()
+      })
+      if (!foreignKeyRebuild) {
+        apply()
+        continue
+      }
+      // SQLite cannot disable foreign-key enforcement within a transaction.
+      // The only supported parent-table rebuild path switches it off before the
+      // transaction, restores it afterwards, and verifies the entire graph
+      // before committing the migration marker.
+      database.pragma('foreign_keys = OFF')
+      try { apply() } finally { database.pragma('foreign_keys = ON') }
     }
   } finally {
     database.close()

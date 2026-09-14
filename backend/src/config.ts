@@ -77,6 +77,7 @@ export interface LabConfig {
   zhihuOauthRedirectUri: string
   zhihuOauthScopes: string
   signedDeviceSessionEnabled: boolean
+  plannerAssessmentV2Enabled: boolean
   zhihuOauthEnabled: boolean
   zhihuSourceSyncEnabled: boolean
   practiceCardV2Enabled: boolean
@@ -191,6 +192,9 @@ export function loadConfig(): LabConfig {
     zhihuOauthRedirectUri,
     zhihuOauthScopes: process.env.ZHIHU_OAUTH_SCOPES ?? '',
     signedDeviceSessionEnabled,
+    // Keep the existing assessment generator as the rollout default. V2 is
+    // deliberately opt-in until its recovery behaviour has been observed.
+    plannerAssessmentV2Enabled: process.env.PLANNER_ASSESSMENT_V2_ENABLED === 'true',
     zhihuOauthEnabled,
     zhihuSourceSyncEnabled: process.env.ZHIHU_SOURCE_SYNC_ENABLED === 'true',
     practiceCardV2Enabled: process.env.PRACTICE_CARD_V2_ENABLED === 'true',

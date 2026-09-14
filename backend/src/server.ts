@@ -41,7 +41,7 @@ curation.resume()
 const writingService = new WritingService(productRepository, curation, new DeepSeekWritingAgent(config))
 writingService.resumeGenerations()
 const planningService = new PlanningService(productRepository, { resumeStoragePath: config.resumeStoragePath, resumeMaxBytes: config.resumeMaxBytes })
-const agentPlanningService = new AgentPlanningService(productRepository, new DeepSeekPlanningAgent(config), { modelName: config.modelName }, zhihuOpenApi)
+const agentPlanningService = new AgentPlanningService(productRepository, new DeepSeekPlanningAgent(config), { modelName: config.modelName, plannerAssessmentV2Enabled: config.plannerAssessmentV2Enabled }, zhihuOpenApi)
 agentPlanningService.recoverRoadmapGenerations()
 const workspaceRunner = config.workspaceRunnerFake
   ? new FakeWorkspaceRunnerClient()
