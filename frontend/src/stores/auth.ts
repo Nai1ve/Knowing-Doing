@@ -23,6 +23,7 @@ export const useAuthStore = defineStore('auth', () => {
   const session = ref<AuthSession | null>(null)
   const callbackMessage = ref('')
   const bootstrapError = ref<string | null>(null)
+  const csrfRefreshRequired = ref(false)
   let bootstrapPromise: Promise<AuthSession | null> | null = null
 
   function fixtureConnections(): OAuthConnection[] { return [{ provider: 'zhihu', status: 'disconnected', scopes: ['读取已授权内容', '同步收藏'], account: undefined }, { provider: 'model', status: 'disconnected', scopes: ['Tutor Agent'] }] }
@@ -35,7 +36,7 @@ export const useAuthStore = defineStore('auth', () => {
 
   async function bootstrapSession(force = false): Promise<AuthSession | null> {
     if (bootstrapPromise) return bootstrapPromise
-    if (!force && session.value) return session.value
+    if (!force && session.value && !csrfRefreshRequired.value) return session.value
     bootstrapping.value = true
     bootstrapError.value = null
     bootstrapPromise = (async () => {
@@ -43,16 +44,22 @@ export const useAuthStore = defineStore('auth', () => {
         const response = await apiClient.request<unknown>('/auth/session', { method: 'POST' })
         if (!isAuthSession(response)) throw new Error('认证会话响应格式无效')
         session.value = response
+        csrfRefreshRequired.value = false
         if (typeof response.csrfToken === 'string' && response.csrfToken) localStorage.setItem('zhixing.csrf-token', response.csrfToken)
         else localStorage.removeItem('zhixing.csrf-token')
         callbackMessage.value = ''
         return response
       } catch {
+        // A response can be successful at HTTP level but invalid at the DTO level.
+        // Do not let a possibly rotated token survive the GET recovery path.
+        localStorage.removeItem('zhixing.csrf-token')
+        csrfRefreshRequired.value = true
         try {
           const response = await apiClient.request<unknown>('/auth/session', { method: 'GET' })
           if (!isAuthSession(response)) throw new Error('认证会话响应格式无效')
           session.value = response
-          callbackMessage.value = ''
+          callbackMessage.value = '登录状态已恢复，但写入凭证未刷新，请重新检查。'
+          bootstrapError.value = callbackMessage.value
           return response
         } catch {
           session.value = null
@@ -97,5 +104,5 @@ export const useAuthStore = defineStore('auth', () => {
     await refreshAfterOAuth()
   }
 
-  return { connections, loading, bootstrapping, session, callbackMessage, bootstrapError, bootstrapSession, loadConnections, authorize, refreshAfterOAuth, disconnect }
+  return { connections, loading, bootstrapping, session, callbackMessage, bootstrapError, csrfRefreshRequired, bootstrapSession, loadConnections, authorize, refreshAfterOAuth, disconnect }
 })

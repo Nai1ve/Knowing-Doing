@@ -62,7 +62,7 @@ describe('auth store', () => {
     expect(localStorage.getItem('zhixing.csrf-token')).toBe('csrf-from-post')
   })
 
-  it('recovers with GET without replacing the existing CSRF token', async () => {
+  it('recovers with GET without accepting or retaining a CSRF token from GET', async () => {
     localStorage.setItem('zhixing.csrf-token', 'csrf-from-previous-post')
     const recovered = session({ auth: { required: true, authenticated: false, provider: null, profile: null } })
     request.mockRejectedValueOnce(new Error('POST unavailable')).mockResolvedValueOnce(recovered)
@@ -73,7 +73,28 @@ describe('auth store', () => {
     expect(request).toHaveBeenNthCalledWith(1, '/auth/session', { method: 'POST' })
     expect(request).toHaveBeenNthCalledWith(2, '/auth/session', { method: 'GET' })
     expect(store.session?.auth.required).toBe(true)
-    expect(localStorage.getItem('zhixing.csrf-token')).toBe('csrf-from-previous-post')
+    expect(localStorage.getItem('zhixing.csrf-token')).toBeNull()
+  })
+
+  it('clears a stale CSRF token when POST returns an invalid DTO, then retries POST once on the next bootstrap', async () => {
+    localStorage.setItem('zhixing.csrf-token', 'possibly-rotated-token')
+    const recovered = session({ auth: { required: true, authenticated: true, provider: 'zhihu', profile: null } })
+    request.mockResolvedValueOnce({ learnerId: 'invalid-dto' }).mockResolvedValueOnce(recovered)
+
+    const store = useAuthStore()
+    await store.bootstrapSession()
+
+    expect(localStorage.getItem('zhixing.csrf-token')).toBeNull()
+    expect(store.session?.auth.authenticated).toBe(true)
+    expect(store.bootstrapError).toContain('写入凭证未刷新')
+    expect(store.csrfRefreshRequired).toBe(true)
+
+    request.mockResolvedValueOnce(session({ csrfToken: 'fresh-csrf' }))
+    await store.bootstrapSession()
+
+    expect(localStorage.getItem('zhixing.csrf-token')).toBe('fresh-csrf')
+    expect(store.csrfRefreshRequired).toBe(false)
+    expect(request).toHaveBeenCalledTimes(3)
   })
 
   it('does not invent an authenticated session when both bootstrap requests fail', async () => {

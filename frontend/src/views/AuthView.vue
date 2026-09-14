@@ -3,7 +3,7 @@ import { computed, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ExternalLink, ShieldCheck } from 'lucide-vue-next'
 import { useAuthStore } from '@/stores/auth'
-import { safeRedirectPath } from '@/utils/auth-flow'
+import { safeAvatarUrl, safeRedirectPath } from '@/utils/auth-flow'
 
 const auth = useAuthStore()
 const route = useRoute()
@@ -11,6 +11,7 @@ const router = useRouter()
 const pending = ref(false)
 const redirectPath = computed(() => safeRedirectPath(route.query.redirect))
 const profile = computed(() => auth.session?.auth.profile)
+const avatarUrl = computed(() => safeAvatarUrl(profile.value?.avatarUrl))
 
 async function continueWithZhihu() {
   pending.value = true
@@ -35,7 +36,7 @@ onMounted(() => { void auth.bootstrapSession() })
       <span class="eyebrow">知行 · 身份入口</span>
       <h1 id="auth-title">先用知乎继续，开始你的学习计划。</h1>
       <p class="auth-description">知乎账号只用于确认你的身份和连接你主动授权的内容。昵称、头像只是资料展示，不会替代你的学习证据。</p>
-      <div v-if="profile" class="auth-profile"><img v-if="profile.avatarUrl" :src="profile.avatarUrl" alt="" /><div><strong>{{ profile.displayName || '知乎用户' }}</strong><small>已识别知乎资料</small></div></div>
+      <div v-if="profile" class="auth-profile"><img v-if="avatarUrl" :src="avatarUrl" alt="" /><div><strong>{{ profile.displayName || '知乎用户' }}</strong><small>已识别知乎资料</small></div></div>
       <button class="auth-primary" type="button" :disabled="pending || auth.bootstrapping" @click="continueWithZhihu"><ExternalLink :size="15" aria-hidden="true" />{{ pending ? '正在跳转知乎…' : '使用知乎继续' }}</button>
       <div v-if="auth.bootstrapError" class="auth-error" role="alert"><strong>暂时无法确认登录状态</strong><p>{{ auth.bootstrapError }}</p><button type="button" class="auth-retry" @click="retry">重新检查</button></div>
       <p v-else class="auth-note">授权完成后会返回知行并继续到 {{ redirectPath === '/overview' ? '总览' : '你刚才打开的页面' }}。</p>
