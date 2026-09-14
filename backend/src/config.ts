@@ -77,6 +77,7 @@ export interface LabConfig {
   zhihuOauthRedirectUri: string
   zhihuOauthScopes: string
   signedDeviceSessionEnabled: boolean
+  zhihuLoginRequired: boolean
   plannerAssessmentV2Enabled: boolean
   zhihuOauthEnabled: boolean
   zhihuSourceSyncEnabled: boolean
@@ -105,11 +106,14 @@ export function loadConfig(): LabConfig {
   const caseBuilderEnabled = process.env.CASE_BUILDER_ENABLED === 'true'
   const signedDeviceSessionEnabled = process.env.SIGNED_DEVICE_SESSION_ENABLED === 'true'
   const zhihuOauthEnabled = process.env.ZHIHU_OAUTH_ENABLED === 'true'
+  const zhihuLoginRequired = process.env.ZHIHU_LOGIN_REQUIRED === 'true'
   const publicOrigin = process.env.PUBLIC_ORIGIN ?? 'http://119.45.243.102'
   const zhihuOauthRedirectUri = process.env.ZHIHU_OAUTH_REDIRECT_URI ?? 'http://119.45.243.102/api/auth/oauth/zhihu/callback'
   const expectedOauthOrigin = 'http://119.45.243.102'
   const expectedOauthCallback = `${expectedOauthOrigin}/api/auth/oauth/zhihu/callback`
   if (zhihuOauthEnabled && !signedDeviceSessionEnabled) throw new Error('SIGNED_DEVICE_SESSION_ENABLED=true is required when ZHIHU_OAUTH_ENABLED=true')
+  if (zhihuLoginRequired && !signedDeviceSessionEnabled) throw new Error('SIGNED_DEVICE_SESSION_ENABLED=true is required when ZHIHU_LOGIN_REQUIRED=true')
+  if (zhihuLoginRequired && !zhihuOauthEnabled) throw new Error('ZHIHU_OAUTH_ENABLED=true is required when ZHIHU_LOGIN_REQUIRED=true')
   if (process.env.ZHIHU_SOURCE_SYNC_ENABLED === 'true' && !zhihuOauthEnabled) throw new Error('ZHIHU_OAUTH_ENABLED=true is required when ZHIHU_SOURCE_SYNC_ENABLED=true')
   if (process.env.MIXED_GYM_ENABLED === 'true' && process.env.PRACTICE_CARD_V2_ENABLED !== 'true') throw new Error('PRACTICE_CARD_V2_ENABLED=true is required when MIXED_GYM_ENABLED=true')
   if (identityMode === 'shared_demo' && zhihuOauthEnabled) throw new Error('ZHIHU_OAUTH_ENABLED is not permitted in shared_demo identity mode')
@@ -192,6 +196,7 @@ export function loadConfig(): LabConfig {
     zhihuOauthRedirectUri,
     zhihuOauthScopes: process.env.ZHIHU_OAUTH_SCOPES ?? '',
     signedDeviceSessionEnabled,
+    zhihuLoginRequired,
     // Keep the existing assessment generator as the rollout default. V2 is
     // deliberately opt-in until its recovery behaviour has been observed.
     plannerAssessmentV2Enabled: process.env.PLANNER_ASSESSMENT_V2_ENABLED === 'true',

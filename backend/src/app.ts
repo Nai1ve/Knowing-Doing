@@ -87,6 +87,9 @@ export function buildApp(dependencies: AppDependencies): { app: FastifyInstance;
       if (!session) return reply.code(401).send({ error: { code: 'session_required', message: '需要有效的设备会话', retryable: false } })
       request.headers['x-authenticated-learner-id'] = session.learnerId
       reply.header('Set-Cookie', sessionCookieHeader(session.id))
+      if (dependencies.config.zhihuLoginRequired && path.startsWith('/api/product/') && !dependencies.zhihuGateway?.authentication(session.learnerId, true).authenticated) {
+        return reply.code(401).send({ error: { code: 'zhihu_auth_required', message: '需要连接知乎账号后才能访问学习内容', retryable: false } })
+      }
       if (!['GET', 'HEAD', 'OPTIONS'].includes(request.method) && !dependencies.identityService.validCsrf(session.id, typeof request.headers['x-csrf-token'] === 'string' ? request.headers['x-csrf-token'] : undefined)) {
         return reply.code(403).send({ error: { code: 'csrf_invalid', message: 'CSRF token 无效', retryable: false } })
       }
@@ -133,7 +136,7 @@ export function buildApp(dependencies: AppDependencies): { app: FastifyInstance;
   }
   if (dependencies.identityService && dependencies.config.signedDeviceSessionEnabled) registerIdentityRoutes(
     app, dependencies.identityService, dependencies.config.publicOrigin, dependencies.zhihuGateway,
-    dependencies.config.zhihuOauthEnabled, dependencies.config.zhihuSourceSyncEnabled,
+    dependencies.config.zhihuOauthEnabled, dependencies.config.zhihuLoginRequired, dependencies.config.zhihuSourceSyncEnabled,
     dependencies.config.zhihuSourceSyncEnabled || dependencies.config.practiceCardV2Enabled,
   )
 
@@ -280,15 +283,15 @@ function sessionCookieHeader(id: string): string {
   return `zhixing_session=${encodeURIComponent(id)}; HttpOnly; SameSite=Lax; Path=/; Max-Age=604800`
 }
 
-function registerIdentityRoutes(app: FastifyInstance, identity: IdentityService, publicOrigin: string, zhihu?: ZhihuGateway, oauthEnabled = false, sourceSyncEnabled = false, sourceLibraryEnabled = false): void {
+function registerIdentityRoutes(app: FastifyInstance, identity: IdentityService, publicOrigin: string, zhihu?: ZhihuGateway, oauthEnabled = false, zhihuLoginRequired = false, sourceSyncEnabled = false, sourceLibraryEnabled = false): void {
   app.get('/api/auth/session', async (request, reply) => {
     const session = identity.resolve(sessionCookie(request))
     if (!session) throw new LabError('session_required', '需要设备会话', 401)
-    reply.header('Set-Cookie', sessionCookieHeader(session.id)).send({ learnerId: session.learnerId, expiresAt: session.expiresAt })
+    reply.header('Set-Cookie', sessionCookieHeader(session.id)).send({ learnerId: session.learnerId, expiresAt: session.expiresAt, auth: zhihu?.authentication(session.learnerId, zhihuLoginRequired) ?? { required: zhihuLoginRequired, authenticated: false, provider: null, profile: null } })
   })
   app.post('/api/auth/session', async (request, reply) => {
     const session = identity.issue(sessionCookie(request))
-    reply.header('Set-Cookie', sessionCookieHeader(session.id)).code(201).send({ learnerId: session.learnerId, csrfToken: session.csrfToken, expiresAt: session.expiresAt })
+    reply.header('Set-Cookie', sessionCookieHeader(session.id)).code(201).send({ learnerId: session.learnerId, csrfToken: session.csrfToken, expiresAt: session.expiresAt, auth: zhihu?.authentication(session.learnerId, zhihuLoginRequired) ?? { required: zhihuLoginRequired, authenticated: false, provider: null, profile: null } })
   })
   if (!zhihu) return
   app.get('/api/auth/connections', async (request, reply) => reply.send(zhihu.connections(learnerId(request))))
@@ -302,7 +305,9 @@ function registerIdentityRoutes(app: FastifyInstance, identity: IdentityService,
       if (!query.state || !authorizationCode) throw new LabError('oauth_callback_missing', '缺少 OAuth state 或 authorization_code', 400)
       const session = identity.resolve(sessionCookie(request))
       if (!session) throw new LabError('session_required', '需要有效的设备会话', 401)
-      await zhihu.callback(session.learnerId, query.state, authorizationCode)
+      const result = await zhihu.callback(session.learnerId, query.state, authorizationCode)
+      const rebound = identity.rebind(session.id, result.learnerId)
+      reply.header('Set-Cookie', sessionCookieHeader(rebound.id))
       reply.redirect(`${publicOrigin}/settings?connection=zhihu&result=success`, 302)
     } catch (error) {
       const reason = error instanceof LabError ? error.code : 'oauth_callback_failed'

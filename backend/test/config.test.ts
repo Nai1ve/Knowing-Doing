@@ -3,7 +3,7 @@ import { loadConfig } from '../src/config.js'
 
 const managedKeys = [
   'ZHIXING_IDENTITY_MODE', 'NODE_ENV', 'LAB_TOKEN_SECRET', 'SIGNED_DEVICE_SESSION_ENABLED',
-  'ZHIHU_OAUTH_ENABLED', 'ZHIHU_SOURCE_SYNC_ENABLED', 'PRACTICE_CARD_V2_ENABLED',
+  'ZHIHU_OAUTH_ENABLED', 'ZHIHU_LOGIN_REQUIRED', 'ZHIHU_SOURCE_SYNC_ENABLED', 'PRACTICE_CARD_V2_ENABLED',
   'PLANNER_ASSESSMENT_V2_ENABLED',
   'MIXED_GYM_ENABLED', 'ZHIHU_OAUTH_APP_ID', 'ZHIHU_OAUTH_APP_KEY',
   'OAUTH_TOKEN_ENCRYPTION_KEY', 'ALLOW_INSECURE_OAUTH_CALLBACK', 'PUBLIC_ORIGIN',
@@ -69,5 +69,15 @@ describe('identity mode configuration', () => {
     delete process.env.ZHIHU_SOURCE_SYNC_ENABLED
     process.env.MIXED_GYM_ENABLED = 'true'
     expect(() => loadConfig()).toThrow(/PRACTICE_CARD_V2_ENABLED=true/)
+  })
+
+  it('requires signed device sessions and Zhihu OAuth before requiring Zhihu login', () => {
+    process.env.NODE_ENV = 'production'
+    process.env.LAB_TOKEN_SECRET = 'test-token-secret'
+    process.env.ZHIHU_LOGIN_REQUIRED = 'true'
+    expect(() => loadConfig()).toThrow(/SIGNED_DEVICE_SESSION_ENABLED=true/)
+
+    process.env.SIGNED_DEVICE_SESSION_ENABLED = 'true'
+    expect(() => loadConfig()).toThrow(/ZHIHU_OAUTH_ENABLED=true/)
   })
 })

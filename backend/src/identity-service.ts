@@ -72,6 +72,16 @@ export class IdentityService {
     return expected.length === actual.length && timingSafeEqual(expected, actual)
   }
 
+  rebind(id: string, learnerId: string): ResolvedDeviceSession {
+    const now = new Date().toISOString()
+    const expiresAt = new Date(Date.now() + SESSION_TTL_MS).toISOString()
+    const changed = this.repository.db.prepare(
+      'UPDATE learner_sessions SET learner_id = ?, expires_at = ?, last_seen_at = ? WHERE id = ? AND expires_at > ?',
+    ).run(learnerId, expiresAt, now, id, now)
+    if (changed.changes !== 1) throw new Error('Cannot rebind an expired device session')
+    return { id, learnerId, expiresAt }
+  }
+
   private row(id: string | undefined): SessionRow | null {
     if (!id) return null
     return this.repository.db.prepare(

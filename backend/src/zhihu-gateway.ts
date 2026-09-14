@@ -38,6 +38,8 @@ type Token = z.infer<typeof tokenSchema>
 type SourceItem = z.infer<typeof itemSchema>
 type ConnectionRow = Record<string, unknown>
 type SyncCursor = { phase: 'favorites' | 'own' | 'activities'; collectionIndex: number; next: string | null; imported: number; updated: number }
+export type ZhihuPublicProfile = { displayName: string | null; avatarUrl: string | null; profileUrl: string | null }
+export type ZhihuCallbackResult = { learnerId: string; profile: ZhihuPublicProfile | null }
 type PublicSearchItem = {
   externalId: string | null
   title: string
@@ -82,6 +84,36 @@ function publicError(error: unknown): { code: string; message: string } {
   return { code: 'source_sync_failed', message: '知乎内容同步失败' }
 }
 
+function safeString(value: unknown, maximum = 1000): string | null {
+  return typeof value === 'string' && value.trim() ? value.trim().slice(0, maximum) : null
+}
+
+function stableProviderId(value: unknown): string | null {
+  if (typeof value !== 'string' && typeof value !== 'number') return null
+  const normalized = String(value).trim()
+  return normalized && normalized.length <= 512 ? normalized : null
+}
+
+function publicProfile(value: unknown): { providerUserId: string | null; profile: ZhihuPublicProfile | null } {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return { providerUserId: null, profile: null }
+  const record = value as Record<string, unknown>
+  const providerUserId = stableProviderId(record.id) ?? stableProviderId(record.uid) ?? stableProviderId(record.url_token)
+  const profile: ZhihuPublicProfile = {
+    displayName: safeString(record.name) ?? safeString(record.display_name) ?? safeString(record.displayName),
+    avatarUrl: safeString(record.avatar_url) ?? safeString(record.avatarUrl),
+    profileUrl: safeString(record.profile_url) ?? safeString(record.profileUrl) ?? safeString(record.url),
+  }
+  return { providerUserId, profile: profile.displayName || profile.avatarUrl || profile.profileUrl ? profile : null }
+}
+
+function storedPublicProfile(value: unknown): ZhihuPublicProfile | null {
+  if (typeof value !== 'string') return null
+  try {
+    const profile = publicProfile(JSON.parse(value)).profile
+    return profile
+  } catch { return null }
+}
+
 export class ZhihuGateway {
   private readonly fetchImpl: typeof fetch
   private readonly sleep: (milliseconds: number) => Promise<void>
@@ -112,52 +144,66 @@ export class ZhihuGateway {
     return { authorizationUrl: url.toString(), expiresInSeconds: 300 }
   }
 
-  async callback(learnerId: string, state: string, code: string): Promise<void> {
+  async callback(learnerId: string, state: string, code: string): Promise<ZhihuCallbackResult> {
     const stateRow = this.repository.db.prepare(
       "SELECT * FROM oauth_authorization_states WHERE provider = 'zhihu' AND learner_id = ? AND state_hash = ? AND consumed_at IS NULL AND expires_at > ?",
     ).get(learnerId, this.hash(state), new Date().toISOString()) as ConnectionRow | undefined
     if (!stateRow) throw new LabError('oauth_state_invalid', 'OAuth state 无效、已使用、跨会话或已过期', 400)
 
     const token = await this.exchangeToken({ grant_type: 'authorization_code', code, redirect_uri: this.options.redirectUri })
-    let providerUserId: string | number | undefined = token.uid
-    // A successfully exchanged authorization code already proves the user consented.
-    // Profile retrieval is best effort because Zhihu OAuth applications can be granted
-    // no public-profile scope; do not turn that optional capability into a failed login.
-    const profileResponse = await this.fetchImpl(this.url(this.options.userPath), { headers: { Authorization: `Bearer ${token.access_token}`, Accept: 'application/json' } })
-    if (profileResponse.ok) {
-      const profile = z.object({ id: z.union([z.string(), z.number()]).optional(), uid: z.union([z.string(), z.number()]).optional() }).passthrough().parse(await profileResponse.json())
-      providerUserId = profile.id ?? profile.uid ?? providerUserId
+    let endpointIdentity: { providerUserId: string | null; profile: ZhihuPublicProfile | null } = { providerUserId: null, profile: null }
+    try {
+      const profileResponse = await this.fetchImpl(this.url(this.options.userPath), { headers: { Authorization: `Bearer ${token.access_token}`, Accept: 'application/json' } })
+      if (profileResponse.ok) endpointIdentity = publicProfile(await profileResponse.json())
+    } catch {
+      // A token uid is sufficient even when this optional public-profile call is unavailable.
     }
-    if (!providerUserId) providerUserId = `oauth-${this.hash(token.access_token).slice(0, 24)}`
+    const providerUserId = stableProviderId(token.uid) ?? endpointIdentity.providerUserId
+    if (!providerUserId) throw new LabError('oauth_provider_identity_unavailable', '无法确认知乎账号身份，请重新授权', 502)
 
     const now = new Date().toISOString()
     const sealed = this.encrypt(JSON.stringify(token))
-    this.repository.db.transaction(() => {
+    return this.repository.db.transaction(() => {
       const consumed = this.repository.db.prepare(
         'UPDATE oauth_authorization_states SET consumed_at = ? WHERE id = ? AND learner_id = ? AND consumed_at IS NULL',
       ).run(now, stateRow.id, learnerId)
       if (consumed.changes !== 1) throw new LabError('oauth_state_invalid', 'OAuth state 已被消费', 400)
+      const existing = this.repository.db.prepare(`
+        SELECT learner_id learnerId FROM provider_connections
+        WHERE provider = 'zhihu' AND provider_user_id = ? LIMIT 1
+      `).get(providerUserId) as { learnerId: string } | undefined
+      let canonicalLearnerId = existing?.learnerId ?? learnerId
+      if (!existing) {
+        const current = this.repository.db.prepare(
+          "SELECT provider_user_id providerUserId FROM provider_connections WHERE learner_id = ? AND provider = 'zhihu'",
+        ).get(learnerId) as { providerUserId: string | null } | undefined
+        if (current?.providerUserId && current.providerUserId !== providerUserId) {
+          canonicalLearnerId = randomUUID()
+          this.repository.ensureLearner(canonicalLearnerId)
+        }
+      }
       this.repository.db.prepare(`
         INSERT INTO provider_connections(
           id, learner_id, provider, provider_user_id, token_ciphertext, token_iv, token_tag,
-          token_expires_at, scopes_json, status, created_at, updated_at
-        ) VALUES (?, ?, 'zhihu', ?, ?, ?, ?, ?, ?, 'active', ?, ?)
+          token_expires_at, scopes_json, status, profile_json, created_at, updated_at
+        ) VALUES (?, ?, 'zhihu', ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?)
         ON CONFLICT(learner_id, provider) DO UPDATE SET
           provider_user_id=excluded.provider_user_id, token_ciphertext=excluded.token_ciphertext,
           token_iv=excluded.token_iv, token_tag=excluded.token_tag,
           token_expires_at=excluded.token_expires_at, scopes_json=excluded.scopes_json,
-          status='active', updated_at=excluded.updated_at
+          status='active', profile_json=excluded.profile_json, updated_at=excluded.updated_at
       `).run(
-        randomUUID(), learnerId, String(providerUserId), sealed.ciphertext, sealed.iv, sealed.tag,
+        randomUUID(), canonicalLearnerId, providerUserId, sealed.ciphertext, sealed.iv, sealed.tag,
         token.expires_in ? new Date(Date.now() + token.expires_in * 1000).toISOString() : null,
-        JSON.stringify(token.scope?.split(/\s+/).filter(Boolean) ?? this.options.scopes.split(/\s+/).filter(Boolean)), now, now,
+        JSON.stringify(token.scope?.split(/\s+/).filter(Boolean) ?? this.options.scopes.split(/\s+/).filter(Boolean)), JSON.stringify(endpointIdentity.profile ?? {}), now, now,
       )
+      return { learnerId: canonicalLearnerId, profile: endpointIdentity.profile }
     })()
   }
 
   connections(learnerId: string) {
     const rows = this.repository.db.prepare(
-      "SELECT provider, provider_user_id providerUserId, status, scopes_json scopesJson FROM provider_connections WHERE learner_id = ? AND provider = 'zhihu'",
+      "SELECT provider, provider_user_id providerUserId, status, scopes_json scopesJson, profile_json profileJson FROM provider_connections WHERE learner_id = ? AND provider = 'zhihu'",
     ).all(learnerId) as Array<Record<string, unknown>>
     if (rows.length === 0) return [{ provider: 'zhihu' as const, status: 'disconnected' as const, scopes: [] as string[] }]
     return rows.map((row) => ({
@@ -165,7 +211,20 @@ export class ZhihuGateway {
       status: row.status === 'active' ? 'connected' as const : 'pending' as const,
       account: row.providerUserId == null ? undefined : String(row.providerUserId),
       scopes: this.json<string[]>(row.scopesJson, []),
+      profile: storedPublicProfile(row.profileJson),
     }))
+  }
+
+  authentication(learnerId: string, required: boolean) {
+    const connection = this.repository.db.prepare(
+      "SELECT profile_json profileJson FROM provider_connections WHERE learner_id = ? AND provider = 'zhihu' AND status = 'active'",
+    ).get(learnerId) as { profileJson: string } | undefined
+    return {
+      required,
+      authenticated: Boolean(connection),
+      provider: connection ? 'zhihu' as const : null,
+      profile: connection ? storedPublicProfile(connection.profileJson) : null,
+    }
   }
 
   syncAll(learnerId: string, clientRequestId: string) {

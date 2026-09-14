@@ -62,7 +62,7 @@ describe('signed device identity and Zhihu OAuth', () => {
     const state = database(); cleanup.push(() => { state.repository.close(); rmSync(state.directory, { recursive: true, force: true }) })
     const identity = new IdentityService(state.repository)
     const app = buildApp({
-      config: { ...loadConfig(), identityMode: 'client', signedDeviceSessionEnabled: true, legacyHeaderLearnerId: false, zhihuOauthEnabled: true, zhihuSourceSyncEnabled: false, practiceCardV2Enabled: false, mixedGymEnabled: false, publicOrigin: 'http://119.45.243.102', corsOrigin: 'http://119.45.243.102' },
+      config: { ...loadConfig(), identityMode: 'client', signedDeviceSessionEnabled: true, legacyHeaderLearnerId: false, zhihuOauthEnabled: true, zhihuLoginRequired: false, zhihuSourceSyncEnabled: false, practiceCardV2Enabled: false, mixedGymEnabled: false, publicOrigin: 'http://119.45.243.102', corsOrigin: 'http://119.45.243.102' },
       store: noopStore, identityService: identity, zhihuGateway: gateway(state.repository),
     }).app
     cleanup.push(() => { void app.close() })
@@ -74,6 +74,7 @@ describe('signed device identity and Zhihu OAuth', () => {
     const cookie = (Array.isArray(setCookie) ? setCookie[0] : setCookie).split(';')[0]
     const body = issued.json<{ learnerId: string; csrfToken: string }>()
     expect(body.learnerId).not.toBe('forged')
+    expect((await app.inject({ method: 'GET', url: '/api/product/runtime-status', headers: { cookie } })).statusCode).toBe(200)
 
     const noCsrf = await app.inject({ method: 'POST', url: '/api/auth/oauth/zhihu/start', headers: { cookie, origin: 'http://119.45.243.102', 'x-learner-id': 'forged' } })
     expect(noCsrf.statusCode).toBe(403)
@@ -85,6 +86,128 @@ describe('signed device identity and Zhihu OAuth', () => {
     expect(authorizationUrl.searchParams.get('app_id')).toBe('app-id')
     expect(authorizationUrl.searchParams.has('client_id')).toBe(false)
     expect(authorizationUrl.searchParams.get('state')).toBeTruthy()
+  })
+
+  it('uses token uid when the profile endpoint is unavailable and rebinds a second device to the canonical learner', async () => {
+    const state = database(); cleanup.push(() => { state.repository.close(); rmSync(state.directory, { recursive: true, force: true }) })
+    const identity = new IdentityService(state.repository)
+    const fetchImpl = vi.fn(async (input: string | URL | Request) => {
+      const url = new URL(String(input))
+      if (url.pathname === '/access_token') return Response.json({ access_token: 'token-not-an-identity', uid: 'stable-zhihu-uid', expires_in: 3600 })
+      if (url.pathname === '/user') return new Response('<html>not found</html>', { status: 404 })
+      return new Response('', { status: 404 })
+    }) as typeof fetch
+    const client = gateway(state.repository, fetchImpl)
+    const first = identity.issue()
+    const firstState = new URL(client.start(first.learnerId).authorizationUrl).searchParams.get('state')!
+    const firstResult = await client.callback(first.learnerId, firstState, 'first-code')
+    expect(firstResult).toEqual({ learnerId: first.learnerId, profile: null })
+
+    const second = identity.issue()
+    const secondState = new URL(client.start(second.learnerId).authorizationUrl).searchParams.get('state')!
+    const secondResult = await client.callback(second.learnerId, secondState, 'second-code')
+    identity.rebind(second.id, secondResult.learnerId)
+
+    expect(secondResult.learnerId).toBe(first.learnerId)
+    expect(identity.resolve(second.id)?.learnerId).toBe(first.learnerId)
+    expect(state.repository.db.prepare("SELECT COUNT(*) count FROM provider_connections WHERE provider='zhihu' AND provider_user_id='stable-zhihu-uid'").get()).toEqual({ count: 1 })
+  })
+
+  it('keeps different Zhihu accounts isolated and never treats token material as an identity', async () => {
+    const state = database(); cleanup.push(() => { state.repository.close(); rmSync(state.directory, { recursive: true, force: true }) })
+    const fetchImpl = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const url = new URL(String(input))
+      if (url.pathname === '/access_token') {
+        const code = new URLSearchParams(String(init?.body)).get('code')
+        return Response.json({ access_token: `token-${code}`, uid: `uid-${code}`, expires_in: 3600 })
+      }
+      if (url.pathname === '/user') return new Response('', { status: 404 })
+      return new Response('', { status: 404 })
+    }) as typeof fetch
+    const client = gateway(state.repository, fetchImpl)
+    const first = 'learner-account-one'; const second = 'learner-account-two'
+    state.repository.ensureLearner(first); state.repository.ensureLearner(second)
+    const firstResult = await client.callback(first, new URL(client.start(first).authorizationUrl).searchParams.get('state')!, 'one')
+    const secondResult = await client.callback(second, new URL(client.start(second).authorizationUrl).searchParams.get('state')!, 'two')
+
+    expect(firstResult.learnerId).toBe(first)
+    expect(secondResult.learnerId).toBe(second)
+    expect(state.repository.db.prepare("SELECT provider_user_id providerUserId FROM provider_connections WHERE provider='zhihu' ORDER BY provider_user_id").all()).toEqual([{ providerUserId: 'uid-one' }, { providerUserId: 'uid-two' }])
+    expect(JSON.stringify(state.repository.db.prepare('SELECT * FROM provider_connections').all())).not.toContain('token-one')
+  })
+
+  it('does not consume state or persist a token when no stable provider identity is available', async () => {
+    const state = database(); cleanup.push(() => { state.repository.close(); rmSync(state.directory, { recursive: true, force: true }) })
+    state.repository.ensureLearner('identity-missing')
+    const fetchImpl = vi.fn(async (input: string | URL | Request) => {
+      const url = new URL(String(input))
+      if (url.pathname === '/access_token') return Response.json({ access_token: 'test-access-token-without-uid', expires_in: 3600 })
+      if (url.pathname === '/user') return new Response('', { status: 404 })
+      return new Response('', { status: 404 })
+    }) as typeof fetch
+    const client = gateway(state.repository, fetchImpl)
+    const stateValue = new URL(client.start('identity-missing').authorizationUrl).searchParams.get('state')!
+
+    await expect(client.callback('identity-missing', stateValue, 'identity-missing-code')).rejects.toMatchObject({ code: 'oauth_provider_identity_unavailable' })
+    expect(state.repository.db.prepare('SELECT consumed_at consumedAt FROM oauth_authorization_states').get()).toEqual({ consumedAt: null })
+    expect(state.repository.db.prepare('SELECT COUNT(*) count FROM provider_connections').get()).toEqual({ count: 0 })
+  })
+
+  it('consumes one state exactly once when duplicate callbacks race', async () => {
+    const state = database(); cleanup.push(() => { state.repository.close(); rmSync(state.directory, { recursive: true, force: true }) })
+    state.repository.ensureLearner('race-learner')
+    const fetchImpl = vi.fn(async (input: string | URL | Request) => {
+      const url = new URL(String(input))
+      if (url.pathname === '/access_token') return Response.json({ access_token: 'race-token', uid: 'race-user' })
+      if (url.pathname === '/user') return new Response('', { status: 404 })
+      return new Response('', { status: 404 })
+    }) as typeof fetch
+    const client = gateway(state.repository, fetchImpl)
+    const stateValue = new URL(client.start('race-learner').authorizationUrl).searchParams.get('state')!
+    const results = await Promise.allSettled([
+      client.callback('race-learner', stateValue, 'race-code'),
+      client.callback('race-learner', stateValue, 'race-code'),
+    ])
+
+    expect(results.filter((result) => result.status === 'fulfilled')).toHaveLength(1)
+    expect(results.filter((result) => result.status === 'rejected')).toHaveLength(1)
+    expect(state.repository.db.prepare("SELECT COUNT(*) count FROM provider_connections WHERE provider='zhihu' AND provider_user_id='race-user'").get()).toEqual({ count: 1 })
+  })
+
+  it('returns a stable public session auth shape and gates product routes only when Zhihu login is required', async () => {
+    const state = database(); cleanup.push(() => { state.repository.close(); rmSync(state.directory, { recursive: true, force: true }) })
+    const identity = new IdentityService(state.repository)
+    const fetchImpl = vi.fn(async (input: string | URL | Request) => {
+      const url = new URL(String(input))
+      if (url.pathname === '/access_token') return Response.json({ access_token: 'session-secret-token', uid: 'session-user', expires_in: 3600 })
+      if (url.pathname === '/user') return Response.json({ id: 'profile-id', name: '知乎用户', avatar_url: 'https://img.zhihu.test/avatar.png', url: 'https://www.zhihu.com/people/profile-id' })
+      return new Response('', { status: 404 })
+    }) as typeof fetch
+    const app = buildApp({
+      config: { ...loadConfig(), identityMode: 'client', signedDeviceSessionEnabled: true, legacyHeaderLearnerId: false, zhihuOauthEnabled: true, zhihuLoginRequired: true, zhihuSourceSyncEnabled: false, practiceCardV2Enabled: false, mixedGymEnabled: false, publicOrigin: 'http://119.45.243.102', corsOrigin: 'http://119.45.243.102' },
+      store: noopStore, identityService: identity, zhihuGateway: gateway(state.repository, fetchImpl),
+    }).app
+    cleanup.push(() => { void app.close() })
+
+    const created = await app.inject({ method: 'POST', url: '/api/auth/session', headers: { origin: 'http://119.45.243.102' } })
+    const cookie = (Array.isArray(created.headers['set-cookie']) ? created.headers['set-cookie'][0] : created.headers['set-cookie'])!.split(';')[0]
+    const createdBody = created.json<{ learnerId: string; csrfToken: string; auth: { required: boolean; authenticated: boolean } }>()
+    expect(createdBody.auth).toEqual({ required: true, authenticated: false, provider: null, profile: null })
+    expect((await app.inject({ method: 'GET', url: '/api/product/runtime-status', headers: { cookie } })).json()).toMatchObject({ error: { code: 'zhihu_auth_required' } })
+
+    const unauthenticated = await app.inject({ method: 'GET', url: '/api/auth/session', headers: { cookie } })
+    expect(unauthenticated.statusCode).toBe(200)
+    expect(unauthenticated.json()).toMatchObject({ learnerId: createdBody.learnerId, auth: { required: true, authenticated: false, provider: null, profile: null } })
+    expect(unauthenticated.json()).not.toHaveProperty('csrfToken')
+
+    const start = await app.inject({ method: 'POST', url: '/api/auth/oauth/zhihu/start', headers: { cookie, origin: 'http://119.45.243.102', 'x-csrf-token': createdBody.csrfToken } })
+    const oauthState = new URL(start.json<{ authorizationUrl: string }>().authorizationUrl).searchParams.get('state')!
+    const callback = await app.inject({ method: 'GET', url: `/api/auth/oauth/zhihu/callback?state=${encodeURIComponent(oauthState)}&authorization_code=session-code`, headers: { cookie } })
+    expect(callback.statusCode).toBe(302)
+    const authenticated = await app.inject({ method: 'GET', url: '/api/auth/session', headers: { cookie } })
+    expect(authenticated.json()).toMatchObject({ auth: { required: true, authenticated: true, provider: 'zhihu', profile: { displayName: '知乎用户', avatarUrl: 'https://img.zhihu.test/avatar.png', profileUrl: 'https://www.zhihu.com/people/profile-id' } } })
+    expect(JSON.stringify(authenticated.json())).not.toContain('session-secret-token')
+    expect((await app.inject({ method: 'GET', url: '/api/product/runtime-status', headers: { cookie } })).statusCode).toBe(200)
   })
 
   it('binds one-time state to the device, encrypts tokens, refreshes once, and resumes paged sync', async () => {
