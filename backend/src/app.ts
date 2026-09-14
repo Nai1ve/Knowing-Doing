@@ -296,12 +296,13 @@ function registerIdentityRoutes(app: FastifyInstance, identity: IdentityService,
   app.delete('/api/auth/connections/zhihu', async (request, reply) => reply.send(zhihu.disconnect(learnerId(request))))
   app.post('/api/auth/oauth/zhihu/start', async (request, reply) => reply.send(zhihu.start(learnerId(request))))
   app.get('/api/auth/oauth/zhihu/callback', async (request, reply) => {
-    const query = request.query as { state?: string; code?: string }
+    const query = request.query as { state?: string; authorization_code?: string; code?: string }
     try {
-      if (!query.state || !query.code) throw new LabError('oauth_callback_missing', '缺少 OAuth state 或 code', 400)
+      const authorizationCode = query.authorization_code ?? query.code
+      if (!query.state || !authorizationCode) throw new LabError('oauth_callback_missing', '缺少 OAuth state 或 authorization_code', 400)
       const session = identity.resolve(sessionCookie(request))
       if (!session) throw new LabError('session_required', '需要有效的设备会话', 401)
-      await zhihu.callback(session.learnerId, query.state, query.code)
+      await zhihu.callback(session.learnerId, query.state, authorizationCode)
       reply.redirect(`${publicOrigin}/settings?connection=zhihu&result=success`, 302)
     } catch (error) {
       const reason = error instanceof LabError ? error.code : 'oauth_callback_failed'

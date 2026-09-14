@@ -103,7 +103,8 @@ export class ZhihuGateway {
     ).run(randomUUID(), learnerId, 'zhihu', this.hash(state), this.options.redirectUri, new Date(createdAt.getTime() + 5 * 60_000).toISOString(), createdAt.toISOString())
 
     const url = new URL(this.options.authorizePath, this.options.baseUrl)
-    url.searchParams.set('client_id', this.options.clientId)
+    // Zhihu's OAuth application contract uses app_id (not the generic OAuth client_id).
+    url.searchParams.set('app_id', this.options.clientId)
     url.searchParams.set('redirect_uri', this.options.redirectUri)
     url.searchParams.set('response_type', 'code')
     url.searchParams.set('state', state)
@@ -118,11 +119,16 @@ export class ZhihuGateway {
     if (!stateRow) throw new LabError('oauth_state_invalid', 'OAuth state 无效、已使用、跨会话或已过期', 400)
 
     const token = await this.exchangeToken({ grant_type: 'authorization_code', code, redirect_uri: this.options.redirectUri })
+    let providerUserId: string | number | undefined = token.uid
+    // A successfully exchanged authorization code already proves the user consented.
+    // Profile retrieval is best effort because Zhihu OAuth applications can be granted
+    // no public-profile scope; do not turn that optional capability into a failed login.
     const profileResponse = await this.fetchImpl(this.url(this.options.userPath), { headers: { Authorization: `Bearer ${token.access_token}`, Accept: 'application/json' } })
-    if (!profileResponse.ok) throw new LabError('oauth_user_validation_failed', '知乎账户验证失败', 502)
-    const profile = z.object({ id: z.union([z.string(), z.number()]).optional(), uid: z.union([z.string(), z.number()]).optional() }).passthrough().parse(await profileResponse.json())
-    const providerUserId = profile.id ?? profile.uid ?? token.uid
-    if (!providerUserId) throw new LabError('oauth_user_invalid', '知乎账户未返回用户标识', 502)
+    if (profileResponse.ok) {
+      const profile = z.object({ id: z.union([z.string(), z.number()]).optional(), uid: z.union([z.string(), z.number()]).optional() }).passthrough().parse(await profileResponse.json())
+      providerUserId = profile.id ?? profile.uid ?? providerUserId
+    }
+    if (!providerUserId) providerUserId = `oauth-${this.hash(token.access_token).slice(0, 24)}`
 
     const now = new Date().toISOString()
     const sealed = this.encrypt(JSON.stringify(token))
@@ -458,10 +464,11 @@ export class ZhihuGateway {
   }
 
   private async exchangeToken(payload: Record<string, string>): Promise<Token> {
+    const form = new URLSearchParams({ ...payload, app_id: this.options.clientId, app_key: this.options.clientSecret })
     const response = await this.fetchImpl(this.url(this.options.tokenPath), {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
-      body: JSON.stringify({ ...payload, client_id: this.options.clientId, client_secret: this.options.clientSecret }),
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded', Accept: 'application/json' },
+      body: form.toString(),
     })
     if (!response.ok) throw new LabError('oauth_token_exchange_failed', '知乎 OAuth token 交换失败', 502)
     return tokenSchema.parse(await response.json())

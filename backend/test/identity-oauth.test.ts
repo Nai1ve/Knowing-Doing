@@ -81,7 +81,10 @@ describe('signed device identity and Zhihu OAuth', () => {
     expect(wrongOrigin.statusCode).toBe(403)
     const accepted = await app.inject({ method: 'POST', url: '/api/auth/oauth/zhihu/start', headers: { cookie, origin: 'http://119.45.243.102', 'x-csrf-token': body.csrfToken } })
     expect(accepted.statusCode).toBe(200)
-    expect(accepted.json().authorizationUrl).toContain('state=')
+    const authorizationUrl = new URL(accepted.json().authorizationUrl)
+    expect(authorizationUrl.searchParams.get('app_id')).toBe('app-id')
+    expect(authorizationUrl.searchParams.has('client_id')).toBe(false)
+    expect(authorizationUrl.searchParams.get('state')).toBeTruthy()
   })
 
   it('binds one-time state to the device, encrypts tokens, refreshes once, and resumes paged sync', async () => {
@@ -93,8 +96,11 @@ describe('signed device identity and Zhihu OAuth', () => {
     const fetchImpl = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
       const url = new URL(String(input))
       if (url.pathname === '/access_token') {
-        const payload = JSON.parse(String(init?.body ?? '{}')) as { grant_type?: string }
-        if (payload.grant_type === 'refresh_token') { refreshes += 1; return Response.json({ access_token: 'refreshed-token', refresh_token: 'refresh-token', expires_in: 3600 }) }
+        expect(new Headers(init?.headers).get('content-type')).toBe('application/x-www-form-urlencoded')
+        const payload = new URLSearchParams(String(init?.body ?? ''))
+        expect(payload.get('app_id')).toBe('app-id')
+        expect(payload.get('app_key')).toBe('app-key')
+        if (payload.get('grant_type') === 'refresh_token') { refreshes += 1; return Response.json({ access_token: 'refreshed-token', refresh_token: 'refresh-token', expires_in: 3600 }) }
         return Response.json({ access_token: 'initial-token', refresh_token: 'refresh-token', expires_in: 3600 })
       }
       if (url.pathname === '/user') return Response.json({ id: 'zhihu-user-1' })
