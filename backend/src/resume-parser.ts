@@ -4,6 +4,7 @@ export interface ResumeParseResult {
   pageCount: number
   text: string
 }
+export interface RemoteResumePdfParser { parse(data: Buffer): Promise<ResumeParseResult> }
 
 export class ResumeParseError extends Error {
   constructor(message: string) {
@@ -48,7 +49,12 @@ function pageText(items: unknown[]): string {
   return lines.join('\n').replace(/\u00a0/g, ' ').trim()
 }
 
-export async function parseResumePdf(data: Buffer, options: { timeoutMs?: number; maxPages?: number } = {}): Promise<ResumeParseResult> {
+export async function parseResumePdf(data: Buffer, options: { timeoutMs?: number; maxPages?: number; remoteParser?: RemoteResumePdfParser } = {}): Promise<ResumeParseResult> {
+  // The provider is an acceleration/scan fallback, never the only parser.
+  // Its task/download identifiers remain inside the adapter.
+  if (options.remoteParser) {
+    try { return await options.remoteParser.parse(data) } catch { /* use local pdfjs below */ }
+  }
   const timeoutMs = options.timeoutMs ?? 15_000
   const maxPages = options.maxPages ?? 30
   let document: (Awaited<ReturnType<typeof getDocument>>['promise'] extends Promise<infer T> ? T : never) | undefined

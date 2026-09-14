@@ -27,11 +27,13 @@ import { IdentityService } from './identity-service.js'
 import { ZhihuGateway } from './zhihu-gateway.js'
 import { MixedGymService } from './mixed-gym-service.js'
 import { DeepSeekPracticeCardGenerator } from './practice-card-generator.js'
+import { ZhihuPdfParseAdapter } from './zhihu-pdf-parse.js'
 
 const config = loadConfig()
 const productRepository = new ProductRepository(config.productDbPath)
 const identityService = new IdentityService(productRepository)
 const zhihuOpenApi = new ZhihuOpenApiClient({ accessSecret: config.zhihuAccessSecret, baseUrl: config.zhihuApiBaseUrl, timeoutMs: config.retrievalTimeoutMs, articlePath: config.zhihuArticlePath })
+const zhihuPdfParser = config.zhihuPdfParseEnabled ? new ZhihuPdfParseAdapter({ accessSecret: config.zhihuAccessSecret, baseUrl: config.zhihuApiBaseUrl, timeoutMs: config.retrievalTimeoutMs, maxPolls: config.zhihuPdfParseMaxPolls, maxDownloadBytes: config.zhihuPdfParseMaxDownloadBytes }) : undefined
 const zhihuGateway = new ZhihuGateway(productRepository, { clientId: config.zhihuOauthClientId, clientSecret: config.zhihuOauthClientSecret, baseUrl: config.zhihuOauthBaseUrl, encryptionKey: config.oauthTokenEncryptionKey, allowInsecureCallback: config.allowInsecureOauthCallback, authorizePath: config.zhihuOauthAuthorizePath, tokenPath: config.zhihuOauthTokenPath, dataPlatformBaseUrl: config.zhihuApiBaseUrl, dataPlatformAccessSecret: config.zhihuAccessSecret, collectionsPath: config.zhihuCollectionsPath, contentPath: config.zhihuContentPath, followeesPath: config.zhihuFolloweesPath, favlistsPath: config.zhihuFavlistsPath, favlistContentsPath: config.zhihuFavlistContentsPath, redirectUri: config.zhihuOauthRedirectUri, scopes: config.zhihuOauthScopes, publicSearch: zhihuOpenApi })
 if (config.zhihuSourceSyncEnabled) zhihuGateway.resume()
 productRepository.markRunningTutorInvocationsInterrupted()
@@ -40,7 +42,7 @@ const curation = new CurationService(productRepository, new ModelCurationSummari
 curation.resume()
 const writingService = new WritingService(productRepository, curation, new DeepSeekWritingAgent(config))
 writingService.resumeGenerations()
-const planningService = new PlanningService(productRepository, { resumeStoragePath: config.resumeStoragePath, resumeMaxBytes: config.resumeMaxBytes })
+const planningService = new PlanningService(productRepository, { resumeStoragePath: config.resumeStoragePath, resumeMaxBytes: config.resumeMaxBytes, remoteResumeParser: zhihuPdfParser })
 const agentPlanningService = new AgentPlanningService(productRepository, new DeepSeekPlanningAgent(config), { modelName: config.modelName, plannerAssessmentV2Enabled: config.plannerAssessmentV2Enabled }, zhihuOpenApi)
 agentPlanningService.recoverRoadmapGenerations()
 const workspaceRunner = config.workspaceRunnerFake

@@ -6,7 +6,7 @@ import { once } from 'node:events'
 import type { Readable } from 'node:stream'
 import type Database from 'better-sqlite3'
 import { LabError } from './errors.js'
-import { parseResumePdf, ResumeParseError, ResumeTextUnavailableError } from './resume-parser.js'
+import { parseResumePdf, ResumeParseError, ResumeTextUnavailableError, type RemoteResumePdfParser } from './resume-parser.js'
 import type { LearningPlan, PlanUnit, PracticeRun, ResumeAttachment } from './product-types.js'
 import type {
   CurrentLearning, DynamicRuntimeStatus, ExecutionProposal, PlanningSession, PlanningTemplateKey, PlanningTurn, Roadmap, RoadmapDraft, RoadmapNode, RoadmapNodePage, RoadmapNodeStatus, RoadmapTree,
@@ -87,10 +87,12 @@ export class PlanningService {
   private dynamicRuntimeChecker: ((practice: PracticeRun) => DynamicRuntimeStatus) | null = null
   private readonly resumeStoragePath: string
   private readonly resumeMaxBytes: number
+  private readonly remoteResumeParser: RemoteResumePdfParser | undefined
 
-  constructor(private readonly repository: ProductRepository, options: { resumeStoragePath?: string; resumeMaxBytes?: number } = {}) {
+  constructor(private readonly repository: ProductRepository, options: { resumeStoragePath?: string; resumeMaxBytes?: number; remoteResumeParser?: RemoteResumePdfParser } = {}) {
     this.resumeStoragePath = options.resumeStoragePath ?? path.resolve(process.cwd(), 'data/resumes')
     this.resumeMaxBytes = options.resumeMaxBytes ?? 10 * 1024 * 1024
+    this.remoteResumeParser = options.remoteResumeParser
   }
 
   setDynamicRuntimeChecker(checker: (practice: PracticeRun) => DynamicRuntimeStatus): void { this.dynamicRuntimeChecker = checker }
@@ -135,7 +137,7 @@ export class PlanningService {
       if (header.toString('ascii') !== '%PDF-') throw new LabError('resume_pdf_only', '文件内容不是有效的 PDF', 422)
       let parsed: Awaited<ReturnType<typeof parseResumePdf>>
       try {
-        parsed = await parseResumePdf(await readFile(temporaryPath))
+        parsed = await parseResumePdf(await readFile(temporaryPath), { remoteParser: this.remoteResumeParser })
       } catch (error) {
         if (error instanceof ResumeTextUnavailableError) throw new LabError('resume_text_unavailable', error.message, 422)
         if (error instanceof ResumeParseError) throw new LabError('resume_parse_failed', error.message, 422)

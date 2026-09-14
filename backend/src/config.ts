@@ -37,6 +37,9 @@ export interface LabConfig {
   zhihuAccessSecret: string
   zhihuApiBaseUrl: string
   zhihuArticlePath: string
+  zhihuPdfParseEnabled: boolean
+  zhihuPdfParseMaxPolls: number
+  zhihuPdfParseMaxDownloadBytes: number
   retrievalTimeoutMs: number
   retrievalCacheTtlMs: number
   identityMode: 'client' | 'shared_demo'
@@ -157,6 +160,9 @@ export function loadConfig(): LabConfig {
     zhihuApiBaseUrl: process.env.ZHIXING_ZHIHU_API_BASE_URL ?? 'https://developer.zhihu.com',
     // No official article-body endpoint was confirmed for this integration.
     zhihuArticlePath: process.env.ZHIXING_ZHIHU_ARTICLE_PATH ?? '',
+    zhihuPdfParseEnabled: process.env.ZHIHU_PDF_PARSE_ENABLED === 'true',
+    zhihuPdfParseMaxPolls: numberEnv('ZHIHU_PDF_PARSE_MAX_POLLS', 20),
+    zhihuPdfParseMaxDownloadBytes: numberEnv('ZHIHU_PDF_PARSE_MAX_DOWNLOAD_BYTES', 10 * 1024 * 1024),
     retrievalTimeoutMs: numberEnv('ZHIXING_RETRIEVAL_TIMEOUT_MS', 15_000),
     retrievalCacheTtlMs: numberEnv('ZHIXING_RETRIEVAL_CACHE_TTL_MS', 24 * 60 * 60 * 1000),
     identityMode,
