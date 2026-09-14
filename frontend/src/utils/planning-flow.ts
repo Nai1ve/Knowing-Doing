@@ -1,4 +1,7 @@
-import type { PlanningStage } from '@/types/product'
+import type { PlanningProgress, PlanningStage } from '@/types/product'
+
+export const baselineTurnMinimum = 2
+export const baselineTurnMaximum = 6
 
 export const planningSteps = [
   { key: 'baseline', label: '基线' },
@@ -26,4 +29,25 @@ export function isAssessmentStage(stage: PlanningStage): boolean {
 
 export function isTerminalAssessmentStatus(status: string | undefined): boolean {
   return status === 'completed' || status === 'abandoned'
+}
+
+export function baselineProgress(progress: PlanningProgress | null | undefined): PlanningProgress {
+  // Older sessions may still report the retired three-turn total. Keep the
+  // server's completed/current values, but render the current contract's
+  // six-turn ceiling until those sessions are refreshed by the API.
+  const total = Math.max(progress?.total ?? 0, baselineTurnMaximum)
+  const completed = Math.max(0, Math.min(progress?.completed ?? 0, total))
+  const current = Math.max(1, Math.min(progress?.current ?? completed + 1, total))
+  return { ...progress, completed, total, current, label: progress?.label ?? '基础了解' }
+}
+
+export function planningStageLabel(stage: PlanningStage): string {
+  if (stage === 'baseline') return '基础了解'
+  if (stage === 'assessment_preparing') return '准备水平测评'
+  if (stage === 'assessment_answering') return '水平测评'
+  if (stage === 'assessment_evaluating') return '整理测评结果'
+  if (stage === 'requirements' || stage === 'requirements_review') return '确认需求'
+  if (stage === 'ready') return '等待生成路线'
+  if (stage === 'generating') return '生成路线'
+  return '路线已生成'
 }

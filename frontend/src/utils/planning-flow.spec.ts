@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { isAssessmentStage, planningStepForStage, planningStepIndex } from './planning-flow'
+import { baselineProgress, baselineTurnMaximum, baselineTurnMinimum, isAssessmentStage, planningStageLabel, planningStepForStage, planningStepIndex } from './planning-flow'
 
 describe('planning flow', () => {
   it('maps the server stages to the four visible steps', () => {
@@ -14,5 +14,18 @@ describe('planning flow', () => {
     expect(isAssessmentStage('assessment_preparing')).toBe(true)
     expect(isAssessmentStage('assessment_answering')).toBe(true)
     expect(isAssessmentStage('requirements')).toBe(false)
+  })
+
+  it('keeps baseline progress adaptive through the six-turn ceiling', () => {
+    expect(baselineTurnMinimum).toBe(2)
+    expect(baselineTurnMaximum).toBe(6)
+    expect(baselineProgress({ completed: 5, total: 6, current: 6, label: '基础了解' })).toMatchObject({ completed: 5, total: 6, current: 6 })
+    expect(baselineProgress({ completed: 2, total: 3, current: 3 })).toMatchObject({ completed: 2, total: 6, current: 3 })
+  })
+
+  it('labels server stages without assuming a fixed baseline count', () => {
+    expect(planningStageLabel('baseline')).toBe('基础了解')
+    expect(planningStageLabel('assessment_preparing')).toBe('准备水平测评')
+    expect(planningStageLabel('requirements_review')).toBe('确认需求')
   })
 })

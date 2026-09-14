@@ -1,6 +1,5 @@
 import { defineStore } from 'pinia'
-import { onBeforeUnmount } from 'vue'
-import { ref } from 'vue'
+import { computed, getCurrentInstance, onBeforeUnmount, ref } from 'vue'
 import { confirmPlanningRequirementBrief, createAgentPlanningSession, createAgentPlanningSessionDraft, createAgentRoadmap, createPlanningAssessment, finalizePlanningAssessment, getAgentPlanningSession, getAgentPlanningState, getAgentRoadmapGeneration, getPlanningAssessment, getPlanningAssessmentReview, retryAgentInvocation, retryAgentRoadmap, savePlanningAssessmentAnswers, sendAgentPlanningMessage, sendPlanningRequirementsMessage, uploadPlanningResume } from '@/api/planningService'
 import type { AgentPlanningSession, AgentPlanningState, AgentRoadmapGeneration, PlanningAssessment, PlanningAssessmentAnswer, PlanningAssessmentReview, PlanningReadiness, PlanningRequirementBrief, PlanningStreamEvent } from '@/types/product'
 import { createClientId } from '@/utils/client-id'
@@ -9,14 +8,48 @@ import { hasApiErrorCode } from '@/api/client'
 export const usePlanningAgentStore = defineStore('planningAgent', () => {
   const session = ref<AgentPlanningSession | null>(null); const state = ref<AgentPlanningState | null>(null); const stateLoading = ref(false); const streaming = ref(false); const generating = ref(false); const generation = ref<AgentRoadmapGeneration | null>(null); const streamingAssistant = ref(''); const question = ref(''); const canGenerateRoadmap = ref(false); const error = ref<string | null>(null); const loadError = ref<string | null>(null); const resumeNotice = ref<string | null>(null); const failedInvocationId = ref<string | null>(null)
   const assessment = ref<PlanningAssessment | null>(null); const assessmentLoading = ref(false); const assessmentSaving = ref(false); const assessmentError = ref<string | null>(null); const assessmentReview = ref<PlanningAssessmentReview | null>(null); const reviewLoading = ref(false); const requirementSaving = ref(false)
+  const assessmentRequestIds = new Map<string, string>()
   let pollingToken = 0
   let pollingPromise: Promise<void> | null = null
   const terminalStatuses = new Set<AgentRoadmapGeneration['status']>(['succeeded', 'failed', 'interrupted'])
   const sleep = (milliseconds: number) => new Promise<void>((resolve) => window.setTimeout(resolve, milliseconds))
   function stopPolling() { pollingToken += 1; pollingPromise = null; generating.value = false }
-  function applyReadiness(value: PlanningReadiness | null | undefined) { if (!value) return; canGenerateRoadmap.value = value.canGenerateRoadmap }
-  function applySession(value: AgentPlanningSession) { session.value = value; applyReadiness(value.readiness); question.value = value.readiness?.nextAction ?? question.value; if (value.assessment) assessment.value = value.assessment }
-  function applyAssessment(value: PlanningAssessment | null | undefined) { if (!value) return; assessment.value = value; assessmentError.value = value.error ?? null; if (session.value) { session.value.assessment = value; if (value.progress) session.value.progress = value.progress } }
+  function applyReadiness(value: PlanningReadiness | null | undefined) { if (!value) return; if (session.value) session.value.readiness = value; canGenerateRoadmap.value = value.canGenerateRoadmap }
+  function applySession(value: AgentPlanningSession) { session.value = value; applyReadiness(value.readiness); question.value = value.readiness?.nextAction ?? question.value; if (value.assessment) applyAssessment(value.assessment) }
+  function safeAssessmentMessage(message: string | null | undefined): string | null {
+    if (!message) return null
+    if (/校验|验证|rubric|reference|参考答案|schema|validation|zod|json/i.test(message)) return '评估题目暂时没有准备好，但已保存的对话和画像仍然保留，可以安全重试。'
+    return message
+  }
+  function assessmentErrorMessage(cause: unknown, fallback: string): string {
+    return safeAssessmentMessage(cause instanceof Error ? cause.message : null) ?? fallback
+  }
+  function requestIdForAssessment(sessionId: string, rotate = false): string {
+    const storageKey = `zhixing.planning.assessment.request.${sessionId}`
+    if (rotate) {
+      assessmentRequestIds.delete(sessionId)
+      try { sessionStorage.removeItem(storageKey) } catch { /* storage may be unavailable */ }
+    }
+    const existing = assessmentRequestIds.get(sessionId) ?? (() => {
+      try { return sessionStorage.getItem(storageKey) } catch { return null }
+    })()
+    if (existing) return existing
+    const id = createClientId()
+    assessmentRequestIds.set(sessionId, id)
+    try { sessionStorage.setItem(storageKey, id) } catch { /* storage may be unavailable */ }
+    return id
+  }
+  function clearAssessmentRequestId(sessionId: string) {
+    assessmentRequestIds.delete(sessionId)
+    try { sessionStorage.removeItem(`zhixing.planning.assessment.request.${sessionId}`) } catch { /* storage may be unavailable */ }
+  }
+  function applyAssessment(value: PlanningAssessment | null | undefined) {
+    if (!value) return
+    assessment.value = value
+    assessmentError.value = value.status === 'failed' ? safeAssessmentMessage(value.error) ?? '评估题目暂时没有准备好，但已保存的对话和画像仍然保留，可以安全重试。' : safeAssessmentMessage(value.error)
+    if (value.status !== 'preparing' && value.status !== 'failed' && session.value?.id === value.planningSessionId) clearAssessmentRequestId(value.planningSessionId)
+    if (session.value) { session.value.assessment = value; if (value.progress) session.value.progress = value.progress }
+  }
   function hydrateGeneration(value: AgentRoadmapGeneration | null) {
     generation.value = value
     if (value?.status === 'succeeded') canGenerateRoadmap.value = false
@@ -66,9 +99,9 @@ export const usePlanningAgentStore = defineStore('planningAgent', () => {
     if (event.type === 'stage_changed') {
       if (event.session) applySession(event.session)
       else if (session.value) { session.value.stage = event.stage; if (event.progress) session.value.progress = event.progress; if (event.readiness) { session.value.readiness = event.readiness; applyReadiness(event.readiness) } }
-      if (event.stage === 'assessment_preparing') void ensureAssessment()
+      if (event.stage === 'assessment_preparing') void ensureAssessment().catch(() => undefined)
     }
-    if (event.type === 'assessment_status') { applyAssessment(event.assessment); if (session.value && event.progress) session.value.progress = event.progress; if (event.message) assessmentError.value = event.message }
+    if (event.type === 'assessment_status') { applyAssessment(event.assessment); if (session.value && event.progress) session.value.progress = event.progress; if (event.message) assessmentError.value = safeAssessmentMessage(event.message) }
     if (event.type === 'requirements_brief_updated' && session.value) session.value.requirementBrief = event.requirementBrief
     if (event.type === 'readiness_changed' && session.value) { session.value.readiness = event.readiness; applyReadiness(event.readiness) }
     if (event.type === 'completed') { applySession(event.session); streamingAssistant.value = '' }
@@ -103,8 +136,8 @@ export const usePlanningAgentStore = defineStore('planningAgent', () => {
     if (assessment.value && assessment.value.planningSessionId !== id) assessment.value = null
     try {
       const loadedSession = await getAgentPlanningSession(id); applySession(loadedSession); resumeGeneration(loadedSession.roadmapGeneration)
-      if (loadedSession.stage === 'assessment_preparing') await ensureAssessment()
-      else if (loadedSession.assessment?.id) await loadAssessment(loadedSession.assessment.id)
+      if (loadedSession.stage === 'assessment_preparing') await ensureAssessment().catch(() => null)
+      else if (loadedSession.assessment?.id) await loadAssessment(loadedSession.assessment.id).catch(() => null)
       return loadedSession
     } catch (cause) { loadError.value = cause instanceof Error ? cause.message : '规划会话加载失败'; throw cause } finally { streaming.value = false }
   }
@@ -121,38 +154,49 @@ export const usePlanningAgentStore = defineStore('planningAgent', () => {
     }
     const requestId = createClientId(); await run((onEvent) => sendAgentPlanningMessage(currentSession.id, message, requestId, onEvent)); return session.value
   }
-  async function ensureAssessment() {
-    if (!session.value || assessmentLoading.value || (assessment.value?.planningSessionId === session.value.id && assessment.value.status !== 'failed')) return assessment.value
+  async function ensureAssessment(force = false) {
+    if (!session.value || assessmentLoading.value) return assessment.value
+    if (assessment.value?.planningSessionId === session.value.id && assessment.value.status === 'failed' && !force) return assessment.value
+    if (assessment.value?.planningSessionId === session.value.id && !['failed', 'preparing'].includes(assessment.value.status)) return assessment.value
     assessmentLoading.value = true; assessmentError.value = null
-    try { const created = await createPlanningAssessment(session.value.id); applyAssessment(created); return created }
-    catch (cause) { assessmentError.value = cause instanceof Error ? cause.message : '评估准备失败，请重试'; throw cause }
+    try { const created = await createPlanningAssessment(session.value.id, requestIdForAssessment(session.value.id)); applyAssessment(created); return created }
+    catch (cause) { assessmentError.value = assessmentErrorMessage(cause, '评估暂时没有准备好，但已保存的对话和画像仍然保留，可以安全重试。'); throw cause }
     finally { assessmentLoading.value = false }
   }
   async function loadAssessment(id = assessment.value?.id ?? session.value?.assessment?.id) {
     if (!id) return null
     assessmentLoading.value = true; assessmentError.value = null
     try { const loaded = await getPlanningAssessment(id); applyAssessment(loaded); return loaded }
-    catch (cause) { assessmentError.value = cause instanceof Error ? cause.message : '评估加载失败，请重试'; throw cause }
+    catch (cause) { assessmentError.value = assessmentErrorMessage(cause, '评估加载失败，但已保存的对话和画像仍然保留，可以安全重试。'); throw cause }
     finally { assessmentLoading.value = false }
   }
-  async function retryAssessment() { assessmentError.value = null; if (session.value?.stage === 'assessment_preparing' || !assessment.value) return ensureAssessment(); return loadAssessment() }
+  async function retryAssessment() {
+    assessmentError.value = null
+    if (!session.value) return null
+    if (assessment.value?.status === 'failed') {
+      clearAssessmentRequestId(session.value.id)
+      return ensureAssessment(true)
+    }
+    if (session.value.stage === 'assessment_preparing' || !assessment.value) return ensureAssessment()
+    return loadAssessment()
+  }
   async function saveAssessmentAnswers(answers: Record<string, PlanningAssessmentAnswer>, skipped: string[]) {
     if (!assessment.value) throw new Error('评估尚未准备好'); assessmentSaving.value = true; assessmentError.value = null
     try { const saved = await savePlanningAssessmentAnswers(assessment.value.id, answers, skipped); applyAssessment(saved); return saved }
-    catch (cause) { assessmentError.value = cause instanceof Error ? cause.message : '答案保存失败，请重试'; throw cause }
+    catch (cause) { assessmentError.value = assessmentErrorMessage(cause, '答案保存失败，请重试。已保存的其他答案不会丢失。'); throw cause }
     finally { assessmentSaving.value = false }
   }
   async function finalizeAssessment(mode: 'complete' | 'abandon') {
     if (!assessment.value) throw new Error('评估尚未准备好'); assessmentSaving.value = true; assessmentError.value = null
     try { const finalized = await finalizePlanningAssessment(assessment.value.id, mode); applyAssessment(finalized); if (session.value) applySession(await getAgentPlanningSession(session.value.id)); return finalized }
-    catch (cause) { assessmentError.value = cause instanceof Error ? cause.message : '评估提交失败，请重试'; throw cause }
+    catch (cause) { assessmentError.value = assessmentErrorMessage(cause, '评估提交失败，请重试。已保存的答案不会丢失。'); throw cause }
     finally { assessmentSaving.value = false }
   }
   async function loadAssessmentReview() {
     if (!assessment.value || !['completed', 'abandoned'].includes(assessment.value.status)) return null
     reviewLoading.value = true; assessmentError.value = null
     try { assessmentReview.value = await getPlanningAssessmentReview(assessment.value.id); return assessmentReview.value }
-    catch (cause) { assessmentError.value = cause instanceof Error ? cause.message : '评估复核加载失败，请重试'; throw cause }
+    catch (cause) { assessmentError.value = assessmentErrorMessage(cause, '评估复核加载失败，请重试。'); throw cause }
     finally { reviewLoading.value = false }
   }
   async function confirmRequirementBrief(brief: PlanningRequirementBrief) {
@@ -164,6 +208,6 @@ export const usePlanningAgentStore = defineStore('planningAgent', () => {
   async function retry() { if (!failedInvocationId.value) return; await run((onEvent) => retryAgentInvocation(failedInvocationId.value!, onEvent)) }
   async function generate() { if (!session.value) throw new Error('规划会话尚未加载'); if (!session.value.readiness?.canGenerateRoadmap) throw new Error(session.value.readiness?.blockers?.join('；') || session.value.readiness?.nextAction || '当前信息还不足以生成路线'); if (generating.value && generation.value) return generation.value; stopPolling(); error.value = null; generating.value = true; session.value.stage = 'generating'; try { const created = await createAgentRoadmap(session.value.id, createClientId()); hydrateGeneration(created); if (!terminalStatuses.has(created.status)) await pollGeneration(created.id); if (generation.value?.status === 'failed' || generation.value?.status === 'interrupted') throw new Error(generation.value.failureMessage ?? '路线生成失败'); return generation.value } catch (cause) { error.value = cause instanceof Error ? cause.message : '路线生成失败'; throw cause } finally { if (!pollingPromise) generating.value = false } }
   async function retryGeneration() { if (!generation.value || !['failed', 'interrupted'].includes(generation.value.status)) return generation.value; stopPolling(); error.value = null; generating.value = true; try { const retried = await retryAgentRoadmap(generation.value.id); hydrateGeneration(retried); if (!terminalStatuses.has(retried.status)) await pollGeneration(retried.id); if (generation.value?.status === 'failed' || generation.value?.status === 'interrupted') throw new Error(generation.value.failureMessage ?? '路线生成失败'); return generation.value } catch (cause) { error.value = cause instanceof Error ? cause.message : '路线生成失败'; throw cause } finally { if (!pollingPromise) generating.value = false } }
-  onBeforeUnmount(stopPolling)
+  if (getCurrentInstance()) onBeforeUnmount(stopPolling)
   return { session, state, stateLoading, streaming, generating, generation, streamingAssistant, question, canGenerateRoadmap, error, loadError, resumeNotice, failedInvocationId, assessment, assessmentLoading, assessmentSaving, assessmentError, assessmentReview, reviewLoading, requirementSaving, start, load, loadState, send, retry, ensureAssessment, loadAssessment, retryAssessment, saveAssessmentAnswers, finalizeAssessment, loadAssessmentReview, confirmRequirementBrief, generate, retryGeneration, clearResumeNotice, stopPolling }
 })

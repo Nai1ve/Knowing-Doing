@@ -28,6 +28,13 @@ const questionNumber = computed(() => question.value ? currentIndex.value + 1 : 
 const progressPercent = computed(() => props.assessment?.progress.total ? Math.round((props.assessment.progress.completed / props.assessment.progress.total) * 100) : 0)
 const isTerminal = computed(() => props.assessment?.status === 'completed' || props.assessment?.status === 'abandoned')
 const isBusyState = computed(() => props.loading || props.assessment?.status === 'preparing' || props.assessment?.status === 'evaluating')
+const safeError = computed(() => {
+  const message = props.error ?? props.assessment?.error ?? null
+  if (!message) return null
+  return /校验|rubric|reference|参考答案|schema|validation|zod|json/i.test(message)
+    ? '评估题目暂时没有准备好，但已保存的对话和画像仍然保留，可以安全重试。'
+    : message
+})
 
 function currentAnswer(): PlanningAssessmentAnswer { return question.value ? draftAnswers.value[question.value.key] ?? null : null }
 function setText(event: Event) { if (question.value) draftAnswers.value[question.value.key] = (event.target as HTMLTextAreaElement).value }
@@ -61,7 +68,7 @@ function toggleReview() { reviewOpen.value = !reviewOpen.value; if (reviewOpen.v
   <section class="assessment-card" aria-labelledby="assessment-title">
     <header class="assessment-header"><div><div class="eyebrow">Diagnostic assessment</div><h2 id="assessment-title">把会什么，变成可验证的起点</h2></div><span v-if="assessment" class="assessment-status">{{ assessment.status === 'answering' ? '进行中' : assessment.status === 'completed' ? '已完成' : assessment.status === 'abandoned' ? '已结束' : assessment.status === 'evaluating' ? '正在整理' : '准备中' }}</span></header>
     <div v-if="loading || isBusyState" class="assessment-state" aria-live="polite"><span class="state-pulse" /><div><strong>{{ assessment?.status === 'evaluating' ? '正在整理评估结果…' : '正在准备评估…' }}</strong><p>当前状态会自动保存。若网络中断，可以安全重试。</p></div></div>
-    <div v-else-if="error" class="assessment-state error" role="alert"><AlertTriangle :size="16" aria-hidden="true" /><div><strong>评估暂时没有准备好</strong><p>{{ error }}</p><button type="button" class="secondary-button" @click="emit('retry')"><RotateCcw :size="13" aria-hidden="true" />重试评估</button></div></div>
+    <div v-else-if="safeError || assessment?.status === 'failed'" class="assessment-state error" role="alert"><AlertTriangle :size="16" aria-hidden="true" /><div><strong>评估暂时没有准备好</strong><p>{{ safeError ?? '评估准备没有完成，但已保存的对话和画像仍然保留，可以安全重试。' }}</p><small>不会丢失已保存的对话、简历和画像信息；重试只会重新准备当前测评。</small><button type="button" class="secondary-button" :disabled="loading || saving" @click="emit('retry')"><RotateCcw :size="13" aria-hidden="true" />{{ loading ? '正在恢复…' : '重试评估' }}</button></div></div>
     <template v-else-if="assessment && !isTerminal">
       <div class="assessment-progress"><div><span>第 {{ questionNumber }} / {{ assessment.questions.length }} 题</span><strong>{{ progressPercent }}%</strong></div><div class="progress-track"><span :style="{ width: `${progressPercent}%` }" /></div></div>
       <article v-if="question" class="question"><small>{{ question.difficulty }} · 可明确跳过</small><h3>{{ question.prompt }}</h3>
