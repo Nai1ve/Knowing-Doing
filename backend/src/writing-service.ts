@@ -28,17 +28,21 @@ function excerpt(content: string, max = 420): string {
   return normalized.length > max ? `${normalized.slice(0, max)}…` : normalized
 }
 
+function isVerifiedEvidence(status: string): boolean {
+  return status === 'verified_lab' || status === 'verified_workspace'
+}
+
 function materialCategory(artifact: Artifact): WritingMaterial['category'] {
   if (artifact.kind === 'user_message') return 'hypothesis'
   if (artifact.kind === 'tutor_reply') return 'reflection'
-  if (artifact.kind === 'sql') return 'attempt'
-  if (artifact.kind === 'explain' || artifact.kind === 'benchmark' || artifact.kind === 'result_set' || artifact.kind === 'error') return 'evidence'
+  if (artifact.kind === 'sql' || artifact.kind === 'workspace_command' || artifact.kind === 'workspace_file') return 'attempt'
+  if (artifact.kind === 'explain' || artifact.kind === 'benchmark' || artifact.kind === 'result_set' || artifact.kind === 'error' || artifact.kind === 'workspace_output' || artifact.kind === 'workspace_error' || artifact.kind === 'workspace_verification') return 'evidence'
   if (artifact.sourceKind === 'zhihu' || artifact.kind === 'source_excerpt') return 'source'
   return 'context'
 }
 
 function materialTitle(artifact: Artifact): string {
-  const labels: Record<string, string> = { user_message: '用户判断', tutor_reply: 'Tutor 回复', sql: 'SQL 尝试', explain: 'EXPLAIN 证据', benchmark: '基准证据', result_set: '结果集证据', error: '错误证据', external_text: '外部素材', source_excerpt: '来源摘录' }
+  const labels: Record<string, string> = { user_message: '用户判断', tutor_reply: 'Tutor 回复', sql: 'SQL 尝试', explain: 'EXPLAIN 证据', benchmark: '基准证据', result_set: '结果集证据', error: '错误证据', external_text: '外部素材', source_excerpt: '来源摘录', workspace_command: '工作区命令', workspace_file: '文件修改', workspace_output: '工作区输出', workspace_error: '工作区错误', workspace_verification: '工作区验证结果' }
   return labels[artifact.kind] ?? artifact.kind
 }
 
@@ -76,17 +80,17 @@ function lines(materials: WritingMaterial[], predicate: (material: WritingMateri
 
 function buildOutline(run: PracticeRun, project: WritingProject, snapshot: PracticeSnapshot): { sections: SectionDraft[]; claims: Array<{ sectionKey: string; text: string; kind: WritingClaim['kind']; status: WritingClaim['status']; evidenceRefs: string[]; sourceRefs: string[] }> } {
   const materials = selectedMaterials(project)
-  const lab = materials.filter((material) => material.verificationStatus === 'verified_lab')
+  const lab = materials.filter((material) => isVerifiedEvidence(material.verificationStatus))
   const sources = materials.filter((material) => material.refType === 'source')
   const pathText = snapshot.pathNodes.map((node) => `- ${node.judgment}${node.judgmentChange ? `（变化：${node.judgmentChange}）` : ''}`).join('\n')
   const sections: SectionDraft[] = [
-    { sectionKey: 'context', position: 1, title: '问题背景', required: true, status: 'generated', content: `本次实践围绕${caseLabel(run)}展开。\n\n- 学习目标：从一次工程现象出发，完成可验证的排查和修复。\n- 实验环境：知行受控 MySQL Lab。\n- 约束：所有结论以本次实验数据为准，不直接等同于生产环境结论。`, evidenceRefs: refs(materials, (m) => m.category === 'context'), sourceRefs: [] },
-    { sectionKey: 'symptom', position: 2, title: '现象与线索', required: true, status: 'generated', content: lines(materials, (m) => m.category === 'context' || m.category === 'evidence', '待补充最初现象、日志和目标 SQL。'), evidenceRefs: refs(materials, (m) => m.category === 'context' || m.category === 'evidence'), sourceRefs: [] },
+    { sectionKey: 'context', position: 1, title: '问题背景', required: true, status: 'generated', content: `本次实践围绕${caseLabel(run)}展开。\n\n- 学习目标：从一次工程现象出发，完成可验证的排查和修复。\n- 实验环境：知行受控${run.practiceKind === 'code_workspace' ? ' Python 工作区' : ' MySQL Lab'}。\n- 约束：所有结论以本次实验数据为准，不直接等同于生产环境结论。`, evidenceRefs: refs(materials, (m) => m.category === 'context'), sourceRefs: [] },
+    { sectionKey: 'symptom', position: 2, title: '现象与线索', required: true, status: 'generated', content: lines(materials, (m) => m.category === 'context' || m.category === 'evidence', '待补充最初现象、日志和目标问题描述。'), evidenceRefs: refs(materials, (m) => m.category === 'context' || m.category === 'evidence'), sourceRefs: [] },
     { sectionKey: 'hypothesis', position: 3, title: '我的初始判断', required: true, status: 'generated', content: lines(materials, (m) => m.category === 'hypothesis', '待补充你最初认为问题在哪里，以及准备如何验证。'), evidenceRefs: [], sourceRefs: [] },
-    { sectionKey: 'evidence', position: 4, title: '证据与排查', required: true, status: 'generated', content: lines(materials, (m) => m.category === 'evidence', '待补充 EXPLAIN、错误、基准或结果集证据。'), evidenceRefs: refs(materials, (m) => m.category === 'evidence'), sourceRefs: [] },
-    { sectionKey: 'attempts', position: 5, title: '尝试与判断转折', required: true, status: 'generated', content: `${lines(materials, (m) => m.category === 'attempt', '待补充至少一次 SQL 或索引尝试。')}${pathText ? `\n\n已有判断记录：\n${pathText}` : ''}`, evidenceRefs: refs(materials, (m) => m.category === 'attempt' || m.category === 'evidence'), sourceRefs: [] },
-    { sectionKey: 'solution', position: 6, title: '最终方案', required: true, status: 'generated', content: lines(materials, (m) => m.category === 'solution' || (m.category === 'attempt' && m.verificationStatus === 'verified_lab'), '待补充最终 SQL、索引或配置修改，并说明选择理由。'), evidenceRefs: refs(lab, (m) => m.category === 'solution' || m.category === 'attempt'), sourceRefs: [] },
-    { sectionKey: 'verification', position: 7, title: '结果验证', required: true, status: 'generated', content: lines(materials, (m) => m.category === 'evidence' && m.verificationStatus === 'verified_lab', '待补充前后 EXPLAIN、性能基准和结果集一致性。'), evidenceRefs: refs(lab, (m) => m.category === 'evidence'), sourceRefs: [] },
+    { sectionKey: 'evidence', position: 4, title: '证据与排查', required: true, status: 'generated', content: lines(materials, (m) => m.category === 'evidence', '待补充 EXPLAIN、工作区命令输出、错误、基准或结果集证据。'), evidenceRefs: refs(materials, (m) => m.category === 'evidence'), sourceRefs: [] },
+    { sectionKey: 'attempts', position: 5, title: '尝试与判断转折', required: true, status: 'generated', content: `${lines(materials, (m) => m.category === 'attempt', '待补充至少一次 SQL、索引或代码修改尝试。')}${pathText ? `\n\n已有判断记录：\n${pathText}` : ''}`, evidenceRefs: refs(materials, (m) => m.category === 'attempt' || m.category === 'evidence'), sourceRefs: [] },
+    { sectionKey: 'solution', position: 6, title: '最终方案', required: true, status: 'generated', content: lines(materials, (m) => m.category === 'solution' || (m.category === 'attempt' && isVerifiedEvidence(m.verificationStatus)), '待补充最终修改（SQL、索引或代码）并说明选择理由。'), evidenceRefs: refs(lab, (m) => m.category === 'solution' || m.category === 'attempt'), sourceRefs: [] },
+    { sectionKey: 'verification', position: 7, title: '结果验证', required: true, status: 'generated', content: lines(materials, (m) => m.category === 'evidence' && isVerifiedEvidence(m.verificationStatus), '待补充前后验证输出（EXPLAIN 或工作区命令结果）和结果一致性。'), evidenceRefs: refs(lab, (m) => m.category === 'evidence'), sourceRefs: [] },
     { sectionKey: 'principles', position: 8, title: '原理与可迁移方法', required: true, status: 'empty', content: sources.length > 0 ? `待根据已选来源整理原理，不能把来源观点写成本次实验结果。\n\n参考来源：${sources.map((source) => source.title).join('、')}` : '待补充本次案例背后的原理，以及下一次遇到类似问题时的排查顺序。', evidenceRefs: [], sourceRefs: sources.map((source) => source.refId) },
     { sectionKey: 'boundaries', position: 9, title: '适用边界与代价', required: true, status: 'empty', content: '待补充数据分布、MySQL 版本、索引维护成本、写入影响和生产环境差异。', evidenceRefs: [], sourceRefs: [] },
     { sectionKey: 'reproduction', position: 10, title: '可复现步骤', required: true, status: 'generated', content: lines(materials, (m) => m.refType === 'artifact' && (m.category === 'attempt' || m.category === 'evidence'), '待补充可执行 SQL、执行顺序和验证方法。'), evidenceRefs: refs(materials, (m) => m.refType === 'artifact' && (m.category === 'attempt' || m.category === 'evidence')), sourceRefs: [] },
@@ -199,7 +203,7 @@ export class WritingService {
     const snapshot = this.repository.snapshot(runId)
     const sourceList = this.repository.listSources(sourceIds(snapshot))
     for (const artifact of snapshot.artifacts) {
-      this.repository.upsertWritingMaterial({ projectId: project.id, category: materialCategory(artifact), refType: 'artifact', refId: artifact.id, title: materialTitle(artifact), excerpt: excerpt(artifact.content), selected: artifact.verificationStatus === 'verified_lab' || artifact.kind === 'user_message', verificationStatus: artifact.verificationStatus, metadata: { artifactKind: artifact.kind, sourceKind: artifact.sourceKind } })
+      this.repository.upsertWritingMaterial({ projectId: project.id, category: materialCategory(artifact), refType: 'artifact', refId: artifact.id, title: materialTitle(artifact), excerpt: excerpt(artifact.content), selected: isVerifiedEvidence(artifact.verificationStatus) || artifact.kind === 'user_message', verificationStatus: artifact.verificationStatus, metadata: { artifactKind: artifact.kind, sourceKind: artifact.sourceKind } })
     }
     for (const source of sourceList) this.repository.upsertWritingMaterial(sourceMaterial(project.id, source))
     return this.repository.getWritingProject(project.id)
