@@ -12,6 +12,14 @@ const oauthReasonLabels: Record<string, string> = {
   session_required: '请先建立知乎登录会话，再继续。',
 }
 
+// Reasons that describe a failed authorization attempt. session_required and
+// zhihu_auth_required mean "log in first", not "the last attempt failed".
+const oauthFailureReasons = new Set(Object.keys(oauthReasonLabels).filter((key) => key !== 'session_required'))
+
+export function isOAuthFailureReason(value: unknown): boolean {
+  return typeof value === 'string' && oauthFailureReasons.has(value)
+}
+
 export function safeRedirectPath(value: unknown, fallback = '/overview'): string {
   if (typeof value !== 'string' || !value.startsWith('/') || value.startsWith('//') || value.includes('://') || value.includes('\\') || /[\u0000-\u001f]/.test(value)) return fallback
   return value

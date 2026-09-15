@@ -1,4 +1,4 @@
-import { apiClient } from './client'
+import { apiClient, emitApiAuthRedirect } from './client'
 import type { AgentPlanningSession, AgentPlanningState, AgentRoadmapGeneration, CurrentRoadmapResponse, KnowledgeRoute, PlanningAssessment, PlanningAssessmentReview, PlanningAssessmentAnswer, PlanningRequirementBrief, PlanningStreamEvent, ProductPlanAdjustment, ProductResumeAttachment, RoadmapDraft, RoadmapNode, RoadmapNodePage, RoadmapTree } from '@/types/product'
 import { createClientId } from '@/utils/client-id'
 
@@ -15,7 +15,13 @@ async function streamRequest(path: string, body: Record<string, unknown>, onEven
   const headers: Record<string, string> = { Accept: 'text/event-stream', 'Content-Type': 'application/json', 'X-Learner-Id': learnerId() }
   if (csrfToken) headers['X-CSRF-Token'] = csrfToken
   const response = await fetch(`${import.meta.env.VITE_API_BASE_URL ?? '/api'}${path}`, { method: 'POST', credentials: 'include', headers, body: JSON.stringify(body) })
-  if (!response.ok) throw new Error(`规划请求失败：${response.status}`)
+  if (!response.ok) {
+    const text = await response.text()
+    let payload: unknown
+    try { payload = JSON.parse(text) } catch { payload = text }
+    emitApiAuthRedirect(payload)
+    throw new Error(`规划请求失败：${response.status}`)
+  }
   if (!response.body) throw new Error('规划服务没有返回事件流')
   const reader = response.body.getReader(); const decoder = new TextDecoder(); let buffer = ''
   const consume = (chunk: string) => {

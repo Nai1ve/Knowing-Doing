@@ -4,13 +4,14 @@ import { createPinia, setActivePinia } from 'pinia'
 import { createMemoryHistory, createRouter } from 'vue-router'
 import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { apiClient } from '@/api/client'
-import { getConnections } from '@/api/oauthService'
+import { getConnections, logoutOAuth } from '@/api/oauthService'
 import { getSourceCollections, getSourceItems, getSourceSyncs } from '@/api/learningExperienceService'
 import SettingsView from './SettingsView.vue'
 
 vi.mock('@/api/oauthService', () => ({
   disconnectOAuth: vi.fn(),
   getConnections: vi.fn(),
+  logoutOAuth: vi.fn(),
   startZhihuOAuth: vi.fn(),
 }))
 
@@ -31,6 +32,7 @@ describe('SettingsView OAuth callback handling', () => {
   beforeEach(() => {
     pinia = createPinia()
     setActivePinia(pinia)
+    vi.clearAllMocks()
     sessionStorage.clear()
     request.mockResolvedValue({
       learnerId: 'server-only-learner-id',
@@ -52,6 +54,7 @@ describe('SettingsView OAuth callback handling', () => {
       history: createMemoryHistory(),
       routes: [
         { path: '/settings', name: 'settings', component: SettingsView },
+        { path: '/auth', name: 'auth', component: { template: '<div>auth</div>' } },
         { path: '/overview', name: 'overview', component: { template: '<div>overview</div>' } },
         { path: '/planning/:sessionId', name: 'planning', component: { template: '<div>planning</div>' } },
       ],
@@ -91,6 +94,36 @@ describe('SettingsView OAuth callback handling', () => {
 
     expect(host.textContent).toContain('知乎授权失败：知乎授权没有完成，请重试。')
     expect(host.textContent).not.toContain('unexpected-secret-value')
+    app.unmount()
+  })
+
+  it('revokes the device session and routes to the auth entry on logout', async () => {
+    vi.mocked(logoutOAuth).mockResolvedValue(undefined)
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true)
+    const { app, host, router } = await mountAt('/settings')
+
+    const logoutButton = Array.from(host.querySelectorAll('button')).find((button) => button.textContent?.includes('退出登录'))
+    expect(logoutButton).toBeTruthy()
+    logoutButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    expect(logoutOAuth).toHaveBeenCalledTimes(1)
+    expect(router.currentRoute.value.name).toBe('auth')
+    confirmSpy.mockRestore()
+    app.unmount()
+  })
+
+  it('keeps the device session when the logout confirmation is declined', async () => {
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false)
+    const { app, host, router } = await mountAt('/settings')
+
+    const logoutButton = Array.from(host.querySelectorAll('button')).find((button) => button.textContent?.includes('退出登录'))
+    logoutButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    expect(logoutOAuth).not.toHaveBeenCalled()
+    expect(router.currentRoute.value.name).toBe('settings')
+    confirmSpy.mockRestore()
     app.unmount()
   })
 })

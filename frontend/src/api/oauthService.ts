@@ -13,3 +13,9 @@ export async function startZhihuOAuth(): Promise<{ authorizationUrl: string }> {
 export async function disconnectOAuth(provider: OAuthConnection['provider']): Promise<void> {
   await apiClient.request(`/auth/connections/${provider}`, { method: 'DELETE' })
 }
+
+export async function logoutOAuth(): Promise<void> {
+  // POST /api/auth/logout revokes the current device session and clears the
+  // cookie; 200 is also returned idempotently when the session is already gone.
+  await apiClient.request('/auth/logout', { method: 'POST' })
+}

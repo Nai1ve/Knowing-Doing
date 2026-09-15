@@ -1,4 +1,4 @@
-import { ApiError, apiClient } from './client'
+import { ApiError, apiClient, emitApiAuthRedirect } from './client'
 import type { LabExecutionResult, LabRun } from '@/types/lab'
 import type { ProductArtifact, ProductLabAccess, ProductLabExecution, ProductMemory, ProductPlan, ProductPracticeCompletion, ProductPracticeHistoryPage, ProductPracticePin, ProductPracticeRun, ProductPracticeStart, ProductSnapshot, ProductTutorResponse, ProductTutorStreamEvent, ProductWritingBlockEvidence, ProductWritingCluster, ProductWritingClusterDetail, ProductWritingClusterOverview, ProductWritingDraftRun, ProductWritingGenerationJob, ProductWritingProject, ProductWritingDocument, ProductWritingWorkspace } from '@/types/product'
 import { createClientId } from '@/utils/client-id'
@@ -43,6 +43,7 @@ async function streamTutorRequest(path: string, body: Record<string, unknown>, o
   if (!response.ok) {
     const text = await response.text(); let payload: unknown
     try { payload = JSON.parse(text) } catch { payload = text }
+    emitApiAuthRedirect(payload)
     throw new ApiError(response.status, `Tutor 请求失败（${response.status}）`, payload)
   }
   if (!response.body) throw new ApiError(503, 'Tutor 没有返回流', undefined)

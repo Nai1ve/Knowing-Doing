@@ -17,6 +17,41 @@ export function hasApiErrorCode(error: unknown, code: string): error is ApiError
   return payloadError?.code === code
 }
 
+/**
+ * Error codes that mean the current device session is no longer sufficient to
+ * reach the business page. The app reacts by returning to the auth entry.
+ */
+export const authRedirectCodes = new Set(['session_required', 'zhihu_auth_required', 'reauthorization_required'])
+
+export type ApiAuthRedirectListener = (code: string) => void
+const authRedirectListeners = new Set<ApiAuthRedirectListener>()
+
+export function onApiAuthRedirect(listener: ApiAuthRedirectListener): () => void {
+  authRedirectListeners.add(listener)
+  return () => { authRedirectListeners.delete(listener) }
+}
+
+export function apiErrorCode(payload: unknown): string | null {
+  if (!payload || typeof payload !== 'object' || !('error' in payload)) return null
+  const error = (payload as { error?: unknown }).error
+  if (!error || typeof error !== 'object' || !('code' in error)) return null
+  const code = (error as { code?: unknown }).code
+  return typeof code === 'string' && code ? code : null
+}
+
+export function isAuthRedirectCode(code: string | null | undefined): code is string {
+  return typeof code === 'string' && authRedirectCodes.has(code)
+}
+
+/** Notifies registered listeners when a payload carries an auth-required code. */
+export function emitApiAuthRedirect(payload: unknown): void {
+  const code = apiErrorCode(payload)
+  if (!isAuthRedirectCode(code)) return
+  for (const listener of authRedirectListeners) {
+    try { listener(code) } catch { /* a listener must never break request handling */ }
+  }
+}
+
 function isJsonResponse(response: Response): boolean {
   return response.headers.get('content-type')?.toLowerCase().includes('application/json') ?? false
 }
@@ -46,6 +81,7 @@ export function createApiClient(options: ApiClientOptions) {
         : payload && typeof payload === 'object' && 'error' in payload && typeof (payload as { error?: { message?: unknown } }).error?.message === 'string'
           ? String((payload as { error: { message: string } }).error.message)
         : `请求失败：${response.status}`
+      emitApiAuthRedirect(payload)
       throw new ApiError(response.status, message, payload)
     }
     return payload as T

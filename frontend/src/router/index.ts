@@ -36,7 +36,12 @@ export function createAppRouter(history = createWebHistory(import.meta.env.BASE_
     const auth = useAuthStore()
     const session = await auth.bootstrapSession()
     if (to.meta.public) {
-      if (to.name === 'auth' && session && (!session.auth.required || session.auth.authenticated)) return { name: 'overview' }
+      // An authenticated session (or a gray rollout where login is optional and
+      // there is no active auth redirect) should not sit on the auth entry. A
+      // reason query means the user was routed here by an auth-required error
+      // (e.g. reauthorization_required) and must see that state even when the
+      // global login flag is off.
+      if (to.name === 'auth' && session && (session.auth.authenticated || (!session.auth.required && !to.query.reason))) return { name: 'overview' }
       return true
     }
     if (!session || (session.auth.required && !session.auth.authenticated)) return { name: 'auth', query: { redirect: safeRedirectPath(to.fullPath) }, replace: true }

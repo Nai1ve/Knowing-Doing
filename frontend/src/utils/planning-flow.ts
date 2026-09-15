@@ -1,4 +1,4 @@
-import type { PlanningProgress, PlanningStage } from '@/types/product'
+import type { PlanningAssessmentStatus, PlanningProgress, PlanningStage } from '@/types/product'
 
 export const baselineTurnMinimum = 2
 export const baselineTurnMaximum = 3
@@ -29,6 +29,16 @@ export function isAssessmentStage(stage: PlanningStage): boolean {
 
 export function isTerminalAssessmentStatus(status: string | undefined): boolean {
   return status === 'completed' || status === 'abandoned'
+}
+
+export function assessmentStatusLabel(status: PlanningAssessmentStatus | string | undefined): string {
+  if (status === 'preparing') return '正在准备测评'
+  if (status === 'answering') return '测评进行中'
+  if (status === 'evaluating') return '正在整理测评结果'
+  if (status === 'completed') return '测评已完成'
+  if (status === 'abandoned') return '测评已结束'
+  if (status === 'failed') return '测评未完成'
+  return '测评已更新'
 }
 
 export function baselineProgress(progress: PlanningProgress | null | undefined): PlanningProgress {
