@@ -1,0 +1,51 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "Knowing Doing：从身份到可验证实践的学习闭环",
+    "locale": "zh-CN",
+    "output": "knowing-doing-architecture.html",
+    "quality_profile": "showcase",
+    "viewBox": [1600, 940]
+  },
+  "components": [
+    { "id": "learner", "type": "frontend", "label": "Vue 学习体验", "tag": "Browser", "pos": [50, 390], "size": [170, 76] },
+    { "id": "api", "type": "backend", "label": "Fastify Product API", "tag": "Product boundary", "pos": [300, 390], "size": [190, 76] },
+    { "id": "planner", "type": "backend", "label": "Planner 与画像", "tag": "AgentPlanningService", "pos": [560, 190], "size": [194, 80] },
+    { "id": "sources", "type": "backend", "label": "Source Library", "tag": "Private source evidence", "pos": [560, 390], "size": [194, 80] },
+    { "id": "practice", "type": "backend", "label": "Practice Card / Mixed Gym", "tag": "Learning session", "pos": [820, 390], "size": [210, 80] },
+    { "id": "build", "type": "backend", "label": "EnvironmentBuildOrchestrator", "tag": "Server verified", "pos": [1090, 390], "size": [220, 80] },
+    { "id": "runtime", "type": "backend", "label": "MySQL / Python Runtime Drivers", "tag": "Controlled execution", "pos": [1090, 620], "size": [220, 80] },
+    { "id": "sqlite", "type": "database", "label": "SQLite ProductRepository", "tag": "Durable state", "pos": [560, 690], "size": [210, 76] },
+    { "id": "zhihu", "type": "external", "label": "知乎 OAuth / Data Platform", "tag": "External provider", "pos": [300, 700], "size": [200, 76] },
+    { "id": "deepseek", "type": "external", "label": "DeepSeek Provider", "tag": "Schema constrained", "pos": [820, 160], "size": [190, 76] },
+    { "id": "openhands", "type": "security", "label": "case-builder-agent / OpenHands", "tag": "Internal only", "pos": [1090, 160], "size": [240, 88] },
+    { "id": "docker", "type": "cloud", "label": "Docker Builder / Lab Host", "tag": "No public socket", "pos": [1360, 390], "size": [170, 80] }
+  ],
+  "boundaries": [
+    { "kind": "region", "label": "Knowing Doing 产品服务", "wraps": ["api", "planner", "sources", "practice", "build", "runtime", "sqlite"], "pad": 38 },
+    { "kind": "security-group", "label": "内部 Builder / Runtime 权限边界", "wraps": ["openhands", "docker"], "pad": 32 }
+  ],
+  "connections": [
+    { "id": "learner-api", "from": "learner", "to": "api", "label": "Cookie · CSRF · REST/SSE", "variant": "emphasis", "labelAt": [260, 480] },
+    { "id": "api-planner", "from": "api", "to": "planner", "label": "已认证上下文", "fromSide": "top", "toSide": "left" },
+    { "id": "planner-practice", "from": "planner", "to": "practice", "label": "确认路线 → CardIntent", "fromSide": "right", "toSide": "top", "route": "auto" },
+    { "id": "api-zhihu", "from": "api", "to": "zhihu", "label": "OAuth 回调 / 同步请求", "variant": "security", "fromSide": "bottom", "toSide": "top", "labelAt": [388, 480] },
+    { "id": "zhihu-sources", "from": "zhihu", "to": "sources", "label": "收藏 · 自有内容 · 搜索结果", "variant": "dashed", "fromSide": "right", "toSide": "bottom", "via": [[540, 738], [540, 520], [657, 520]], "labelAt": [600, 560] },
+    { "id": "sources-practice", "from": "sources", "to": "practice", "label": "SourceDigest（部分知识卡来源于收藏）", "variant": "emphasis", "labelAt": [787, 484] },
+    { "id": "planner-deepseek", "from": "planner", "to": "deepseek", "label": "结构化题目 / 路线生成", "variant": "dashed", "fromSide": "right", "toSide": "left", "labelAt": [787, 130] },
+    { "id": "practice-deepseek", "from": "practice", "to": "deepseek", "label": "卡片 / Tutor / 写作候选", "variant": "dashed", "fromSide": "top", "toSide": "bottom" },
+    { "id": "practice-build", "from": "practice", "to": "build", "label": "需要 Runtime 的活动", "variant": "emphasis", "labelAt": [1060, 484] },
+    { "id": "practice-runtime", "from": "practice", "to": "runtime", "label": "mysql_lab / docker_workspace", "fromSide": "bottom", "toSide": "top" },
+    { "id": "build-openhands", "from": "build", "to": "openhands", "label": "OpenHandsBuildAdapter：任务 / 事件 / Manifest", "variant": "security", "fromSide": "top", "toSide": "bottom" },
+    { "id": "openhands-docker", "from": "openhands", "to": "docker", "label": "Docker socket（仅 Builder Agent）", "variant": "security", "fromSide": "right", "toSide": "top" },
+    { "id": "runtime-docker", "from": "runtime", "to": "docker", "label": "无网络容器 / 受控 exec", "variant": "dashed", "fromSide": "right", "toSide": "bottom" },
+    { "id": "sources-sqlite", "from": "sources", "to": "sqlite", "label": "同步游标 · 来源摘要", "fromSide": "bottom", "toSide": "top", "labelAt": [720, 610] },
+    { "id": "runtime-sqlite", "from": "runtime", "to": "sqlite", "label": "Verifier 结果 → Evidence", "variant": "emphasis", "fromSide": "left", "toSide": "right" }
+  ],
+  "cards": [
+    { "dot": "violet", "title": "来源到卡片", "items": ["知乎收藏仅作为来源证据，不等于标准答案", "SourceDigest 控制卡片可消费的内容范围"] },
+    { "dot": "amber", "title": "构建与运行时", "items": ["OpenHands 通过内部 Adapter 工作，产品 API 不直连", "MySQL 与 Python 只能走各自的 Runtime Driver"] },
+    { "dot": "emerald", "title": "完成判定", "items": ["模型或 Agent 声称成功不能使 Gym ready", "知识、Verifier 与反思共同写入能力证据"] }
+  ]
+}
