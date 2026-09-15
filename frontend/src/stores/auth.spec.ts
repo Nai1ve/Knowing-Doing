@@ -4,11 +4,12 @@ import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { apiClient } from '@/api/client'
 import type { OAuthConnection } from '@/types/domain'
 import { useAuthStore, type AuthSession } from './auth'
-import { disconnectOAuth, getConnections, startZhihuOAuth } from '@/api/oauthService'
+import { disconnectOAuth, getConnections, logoutOAuth, startZhihuOAuth } from '@/api/oauthService'
 
 vi.mock('@/api/oauthService', () => ({
   disconnectOAuth: vi.fn(),
   getConnections: vi.fn(),
+  logoutOAuth: vi.fn(),
   startZhihuOAuth: vi.fn(),
 }))
 
@@ -119,5 +120,34 @@ describe('auth store', () => {
     expect(refreshed?.auth.authenticated).toBe(true)
     expect(getConnections).toHaveBeenCalledTimes(1)
     expect(store.connections).toEqual([connectedZhihu])
+  })
+
+  it('revokes the device session and clears local auth state on logout', async () => {
+    const authenticated = session({ csrfToken: 'csrf-to-clear', auth: { required: true, authenticated: true, provider: 'zhihu', profile: { displayName: '小知', avatarUrl: null, profileUrl: null } } })
+    request.mockResolvedValue(authenticated)
+    vi.mocked(logoutOAuth).mockResolvedValue(undefined)
+
+    const store = useAuthStore()
+    await store.bootstrapSession()
+    store.connections = [connectedZhihu]
+    expect(localStorage.getItem('zhixing.csrf-token')).toBe('csrf-to-clear')
+
+    await store.logout()
+
+    expect(logoutOAuth).toHaveBeenCalledTimes(1)
+    expect(store.session).toBeNull()
+    expect(store.connections).toEqual([])
+    expect(localStorage.getItem('zhixing.csrf-token')).toBeNull()
+  })
+
+  it('clears local auth state even when the logout endpoint is unreachable', async () => {
+    request.mockResolvedValue(session())
+    vi.mocked(logoutOAuth).mockRejectedValue(new Error('network unavailable'))
+
+    const store = useAuthStore()
+    await store.logout()
+
+    expect(store.session).toBeNull()
+    expect(store.connections).toEqual([])
   })
 })

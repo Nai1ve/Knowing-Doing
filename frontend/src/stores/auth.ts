@@ -1,6 +1,6 @@
 import { ref } from 'vue'
 import { defineStore } from 'pinia'
-import { disconnectOAuth, getConnections, startZhihuOAuth } from '@/api/oauthService'
+import { disconnectOAuth, getConnections, logoutOAuth, startZhihuOAuth } from '@/api/oauthService'
 import type { OAuthConnection } from '@/types/domain'
 import { apiClient } from '@/api/client'
 import { saveOAuthReturnPath } from '@/utils/auth-flow'
@@ -106,5 +106,26 @@ export const useAuthStore = defineStore('auth', () => {
     await refreshAfterOAuth()
   }
 
-  return { connections, loading, bootstrapping, session, callbackMessage, bootstrapError, csrfRefreshRequired, bootstrapSession, loadConnections, authorize, refreshAfterOAuth, disconnect }
+  function clearSession() {
+    session.value = null
+    connections.value = []
+    csrfRefreshRequired.value = false
+    bootstrapError.value = null
+    callbackMessage.value = ''
+    localStorage.removeItem('zhixing.csrf-token')
+  }
+
+  async function logout() {
+    try {
+      await logoutOAuth()
+    } catch {
+      // POST /api/auth/logout is idempotent server-side (200 even when the
+      // session is already gone). Local state must clear regardless so the app
+      // never keeps rendering business pages against a revoked cookie.
+    } finally {
+      clearSession()
+    }
+  }
+
+  return { connections, loading, bootstrapping, session, callbackMessage, bootstrapError, csrfRefreshRequired, bootstrapSession, loadConnections, authorize, refreshAfterOAuth, disconnect, logout, clearSession }
 })
