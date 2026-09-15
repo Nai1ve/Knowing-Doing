@@ -8,23 +8,11 @@ Type=simple
 User=ubuntu
 WorkingDirectory=/home/ubuntu/knowing-doing-canary/backend
 EnvironmentFile=/etc/knowing-doing/backend.env
-# Canary overrides are applied AFTER the shared production env file, so these
-# win. Every business flag stays OFF: the staged release exercises the new
-# schema and code safely while production keeps its current behavior. The
-# OAuth origin/callback is pinned to the production host by config.ts, so
-# real OAuth is validated during the staged rollout, not on the canary port.
-Environment=LAB_API_PORT=3002
-Environment=LAB_CORS_ORIGIN=http://119.45.243.102:8082
-Environment=SIGNED_DEVICE_SESSION_ENABLED=false
-Environment=ZHIHU_OAUTH_ENABLED=false
-Environment=ZHIHU_LOGIN_REQUIRED=false
-Environment=ZHIHU_SOURCE_SYNC_ENABLED=false
-Environment=ZHIHU_RESEARCH_ENABLED=false
-Environment=PLANNER_ASSESSMENT_V2_ENABLED=false
-Environment=PRACTICE_CARD_V2_ENABLED=false
-Environment=MIXED_GYM_ENABLED=false
-Environment=LEGACY_CASE_FLOW_ENABLED=true
-ExecStart=/usr/bin/node /home/ubuntu/knowing-doing-canary/backend/dist/src/server.js
+# These overrides are passed by /usr/bin/env to the API process itself. They
+# must not rely on unit-file precedence with the shared EnvironmentFile: a
+# canary binding to production :3001 would collide with the live API. Every
+# business flag stays OFF while the staged release shares the product database.
+ExecStart=/usr/bin/env LAB_API_PORT=3002 LAB_CORS_ORIGIN=http://119.45.243.102:8082 SIGNED_DEVICE_SESSION_ENABLED=false ZHIHU_OAUTH_ENABLED=false ZHIHU_LOGIN_REQUIRED=false ZHIHU_SOURCE_SYNC_ENABLED=false ZHIHU_RESEARCH_ENABLED=false PLANNER_ASSESSMENT_V2_ENABLED=false PRACTICE_CARD_V2_ENABLED=false MIXED_GYM_ENABLED=false LEGACY_CASE_FLOW_ENABLED=true /usr/bin/node /home/ubuntu/knowing-doing-canary/backend/dist/src/server.js
 Restart=on-failure
 RestartSec=5
 TimeoutStopSec=15
