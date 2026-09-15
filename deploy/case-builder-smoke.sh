@@ -13,7 +13,11 @@ if [ ! -f "$agent_env" ]; then
   exit 1
 fi
 
-token="$(sed -n 's/^CASE_BUILDER_TOKEN=//p' "$agent_env" | tail -n 1)"
+# The deployed agent environment is intentionally root-readable only.  The
+# protected smoke job runs as the deployment account, so use its pre-approved,
+# non-interactive sudo path to read only the internal request token; never echo
+# the value or pass the whole environment to a child process.
+token="$(sudo -n sed -n 's/^CASE_BUILDER_TOKEN=//p' "$agent_env" | tail -n 1)"
 if [ -z "$token" ]; then
   echo 'Case Builder token is not configured.' >&2
   exit 1
