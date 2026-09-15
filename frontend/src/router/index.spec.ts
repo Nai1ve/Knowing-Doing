@@ -73,4 +73,21 @@ describe('application auth route guard', () => {
     expect(router.currentRoute.value.name).toBe('auth')
     expect(router.currentRoute.value.query.redirect).toBe('/planning/session-1')
   })
+
+  it('keeps the auth entry for an active reauthorization reason even when login is optional', async () => {
+    request.mockResolvedValue(authSession(false, false))
+
+    await router.push('/auth?reason=reauthorization_required&redirect=/overview')
+
+    expect(router.currentRoute.value.name).toBe('auth')
+    expect(router.currentRoute.value.query.reason).toBe('reauthorization_required')
+  })
+
+  it('bounces optional-login users off the auth entry when there is no active reason', async () => {
+    request.mockResolvedValue(authSession(false, false))
+
+    await router.push('/auth')
+
+    expect(router.currentRoute.value.name).toBe('overview')
+  })
 })
