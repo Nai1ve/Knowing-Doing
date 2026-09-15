@@ -226,6 +226,10 @@ else
   exit 1
 fi
 if sudo -n grep -q '^CASE_BUILDER_ENABLED=true$' /etc/knowing-doing/backend.env; then
+  # The Agent and the Docker daemon must resolve the Builder workspace to the
+  # exact same host path; a named volume cannot be bind-mounted by a child
+  # container through the Docker socket.
+  sudo -n install -d -m 0700 "$data_root/case-builder-state"
   sudo -n "${compose[@]}" up -d workspace-runner case-builder-agent
 else
   sudo -n "${compose[@]}" stop case-builder-agent >/dev/null 2>&1 || true

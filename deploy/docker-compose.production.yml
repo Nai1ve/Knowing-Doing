@@ -44,7 +44,10 @@ services:
     environment:
       CASE_BUILDER_PORT: 3102
       CASE_BUILDER_BIND_HOST: 0.0.0.0
-      CASE_BUILDER_STATE_DIR: /var/lib/case-builder-agent
+      # Docker socket bind mounts are resolved by the host daemon. Keep this
+      # path identical inside the Agent and on the host so its OpenHands child
+      # container can read request.json and write manifest.json.
+      CASE_BUILDER_STATE_DIR: /home/ubuntu/knowing-doing-data/case-builder-state
       CASE_BUILDER_DOCKER_SOCKET_ENABLED: "true"
       CASE_BUILDER_SIMULATED: "false"
       CASE_BUILDER_OPENHANDS_COMMAND: "/app/.venv/bin/python /usr/local/bin/zhixing-openhands-build.py"
@@ -55,7 +58,7 @@ services:
       - "127.0.0.1:3102:3102"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
-      - zhixing-case-builder-state:/var/lib/case-builder-agent
+      - /home/ubuntu/knowing-doing-data/case-builder-state:/home/ubuntu/knowing-doing-data/case-builder-state
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3102/health').then((r) => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
       interval: 10s
@@ -65,5 +68,3 @@ services:
 volumes:
   zhixing-lab-mysql-data:
     name: zhixing-lab-mysql-data
-  zhixing-case-builder-state:
-    name: zhixing-case-builder-state

@@ -9,6 +9,10 @@ The API, SQLite product database, and MySQL Lab are deployed separately:
 - `case-builder-agent` binds only `127.0.0.1:3102` on the host. It is the
   OpenHands/Docker build boundary; failed Builder resources are retained for 24
   hours, while successful Builder scratch resources are removed immediately.
+- `/home/ubuntu/knowing-doing-data/case-builder-state` is the Builder's
+  root-owned workspace bind mount. It intentionally has the same absolute
+  path inside the Agent and on the host, because Docker socket child mounts
+  are resolved by the host daemon.
 
 ## GitHub Actions secrets
 
