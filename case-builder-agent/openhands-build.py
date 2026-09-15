@@ -283,14 +283,18 @@ def run_python_preflight(request: dict[str, Any], starter: list[dict[str, str]],
             target.write_text(item["content"], encoding="utf-8")
 
     materialize(starter)
-    first = subprocess.run(["python3", "-m", "pytest", "-q"], cwd=root, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False, timeout=120)
+    # OpenHands opens a login shell for terminal actions, which can reset PATH.
+    # Pin the independently-owned preflight to the image's known tool venv so
+    # an agent shell configuration cannot change verification semantics.
+    pytest_python = "/app/.venv/bin/python"
+    first = subprocess.run([pytest_python, "-m", "pytest", "-q"], cwd=root, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False, timeout=120)
     if first.returncode == 0:
         fail("python_starter_did_not_fail", "Python starter 未产生预期失败")
     shutil.rmtree(root)
     root.mkdir(parents=True)
     materialize(starter)
     materialize(reference)
-    second = subprocess.run(["python3", "-m", "pytest", "-q"], cwd=root, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False, timeout=120)
+    second = subprocess.run([pytest_python, "-m", "pytest", "-q"], cwd=root, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False, timeout=120)
     if second.returncode != 0:
         fail("python_reference_preflight_failed", clean(second.stderr or second.stdout))
     shutil.rmtree(root)
@@ -327,7 +331,7 @@ def openhands_task(request: dict[str, Any]) -> None:
         prompt += (
             "Create the public initial files under /workspace/starter and the private reference repair under /workspace/reference. "
             "Use only .py, .json, .md, or .txt files. The starter must fail the server-declared pytest check and the reference overlay must pass it. "
-            "Run pytest against both states before finishing. Keep the reference solution minimal and do not place it in starter. "
+            "Run /app/.venv/bin/python -m pytest against both states before finishing. Keep the reference solution minimal and do not place it in starter. "
         )
     else:
         prompt += (
