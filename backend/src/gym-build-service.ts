@@ -7,7 +7,7 @@ import { CaseWorkspaceService } from './case-workspace-service.js'
 import { MySqlDynamicCaseService } from './mysql-dynamic-case-service.js'
 import type { DynamicRuntimeStatus } from './planning-types.js'
 import type { CaseDesignCard } from './case-design-agent.js'
-import { ENVIRONMENT_BUILD_PROTOCOL_VERSION, type EnvironmentBuildAdapterEvent, type EnvironmentBuildFailureCategory, type EnvironmentBuildManifest, type EnvironmentBuildPhase, type EnvironmentBuildStatus, manifestFingerprint, OpenHandsBuildAdapterError, safeBuildDiagnostic, safeBuildText, type OpenHandsBuildAdapter, type OpenHandsMySqlBuildContract } from './environment-build.js'
+import { ENVIRONMENT_BUILD_PROTOCOL_VERSION, type EnvironmentBuildAdapterEvent, type EnvironmentBuildFailureCategory, type EnvironmentBuildManifest, type EnvironmentBuildPhase, type EnvironmentBuildStatus, manifestFingerprint, OpenHandsBuildAdapterError, safeBuildDiagnostic, safeBuildText, validateEnvironmentManifest, type OpenHandsBuildAdapter, type OpenHandsMySqlBuildContract } from './environment-build.js'
 import { waitForBuildTask } from './openhands-build-adapter.js'
 import { resolveEnvironmentCommand } from './environment-registry.js'
 
@@ -567,23 +567,10 @@ export class EnvironmentBuildOrchestrator {
   }
 
   private assertManifest(job: GymBuildJob, manifest: EnvironmentBuildManifest, attemptId: string, mysqlContract: OpenHandsMySqlBuildContract | null): void {
-    if (manifest.runtimeKind !== job.runtimeKind || manifest.environment.key !== job.environmentKey || manifest.environment.version !== job.environmentVersion) throw new OpenHandsBuildAdapterError('manifest_environment_mismatch', 'OpenHands Manifest 与当前 Gym 环境不一致', 'agent_failure')
-    if (manifest.verification.commandKeys.some((key) => !resolveEnvironmentCommand(job.environmentKey, job.environmentVersion, key))) throw new OpenHandsBuildAdapterError('manifest_command_not_allowed', 'OpenHands Manifest 包含未授权验证命令', 'agent_failure')
-    if (new Set(manifest.starterFiles.map((file) => file.path)).size !== manifest.starterFiles.length || new Set(manifest.referenceFiles.map((file) => file.path)).size !== manifest.referenceFiles.length) throw new OpenHandsBuildAdapterError('manifest_duplicate_files', 'OpenHands Manifest 包含重复文件路径', 'agent_failure')
-    const manifestFiles = [...manifest.starterFiles, ...manifest.referenceFiles]
-    const fileBytes = manifestFiles.reduce((total, file) => total + Buffer.byteLength(file.content, 'utf8'), 0)
-    if (fileBytes > 2 * 1024 * 1024 || manifestFiles.some((file) => file.path.startsWith('/') || file.path.includes('..') || file.path.includes('\\') || Buffer.byteLength(file.content, 'utf8') > 256 * 1024 || (manifest.runtimeKind === 'docker_workspace' && !/\.(py|json|md|txt)$/.test(file.path)))) throw new OpenHandsBuildAdapterError('manifest_asset_boundary_invalid', 'OpenHands Manifest 包含越界的环境资产', 'agent_failure')
-    for (const resource of manifest.resources) {
-      if (resource.labels['zhixing.case-build'] !== job.id) throw new OpenHandsBuildAdapterError('manifest_resource_label_missing', 'OpenHands 资源缺少当前构建标签', 'agent_failure')
-      if (resource.labels['zhixing.case-attempt'] !== attemptId || resource.labels['zhixing.protocol-version'] !== String(ENVIRONMENT_BUILD_PROTOCOL_VERSION) || resource.labels['zhixing.resource-role'] !== resource.role) throw new OpenHandsBuildAdapterError('manifest_resource_label_invalid', 'OpenHands 资源标签与当前构建不一致', 'agent_failure')
-    }
-    const runtimeImage = manifest.resources.find((resource) => resource.kind === 'image' && resource.role === 'runtime_artifact')
-    if (!runtimeImage || runtimeImage.labels['zhixing.runtime-kind'] !== job.runtimeKind || runtimeImage.labels['zhixing.runtime-image-digest'] !== manifest.environment.runtimeImageDigest || runtimeImage.labels['zhixing.environment-key'] !== job.environmentKey || runtimeImage.labels['zhixing.environment-version'] !== job.environmentVersion) throw new OpenHandsBuildAdapterError('manifest_runtime_artifact_missing', 'OpenHands Manifest 缺少已标记的运行时镜像产物', 'agent_failure')
-    if (job.runtimeKind === 'mysql_lab') {
-      if (!mysqlContract || !manifest.mysql) throw new OpenHandsBuildAdapterError('manifest_mysql_contract_missing', 'MySQL Manifest 缺少服务端冻结的案例契约', 'agent_failure')
-      if (manifest.mysql.contractFingerprint !== mysqlContract.materializationFingerprint || manifest.mysql.starterExplain !== mysqlContract.starterExplain || manifest.mysql.referenceSql.length !== 1 || manifest.mysql.referenceSql[0] !== mysqlContract.referenceSql || !manifest.mysql.initializationSql.includes(mysqlContract.schemaSql) || !manifest.mysql.initializationSql.includes(mysqlContract.faultSql)) throw new OpenHandsBuildAdapterError('manifest_mysql_contract_mismatch', 'MySQL Manifest 与当前案例物料不一致', 'agent_failure')
-      if (runtimeImage.labels['zhixing.mysql-contract-fingerprint'] !== mysqlContract.materializationFingerprint) throw new OpenHandsBuildAdapterError('manifest_mysql_artifact_contract_missing', 'MySQL 运行时镜像缺少案例物料标签', 'agent_failure')
-    }
+    validateEnvironmentManifest(manifest, {
+      jobId: job.id, attemptId, runtimeKind: job.runtimeKind, environmentKey: job.environmentKey, environmentVersion: job.environmentVersion, mysqlContract,
+      resolveCommandKey: (key) => Boolean(resolveEnvironmentCommand(job.environmentKey, job.environmentVersion, key)),
+    })
   }
 
   private async buildWithAdapter(input: { job: GymBuildJob; card: CaseDesignCard; environment: AgentPracticeEnvironment; attemptId: string; mysqlContract: OpenHandsMySqlBuildContract | null; diagnostic: ReturnType<typeof safeBuildDiagnostic> | null }): Promise<EnvironmentBuildManifest | null> {
