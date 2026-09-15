@@ -7,6 +7,7 @@ repo_root="${ZHIXING_REPO_ROOT:-/home/ubuntu/knowing-doing-repo}"
 repo_url="${ZHIXING_REPO_URL:-https://github.com/Nai1ve/Knowing-Doing.git}"
 release_root="${ZHIXING_RELEASE_ROOT:-/home/ubuntu/knowing-doing-releases}"
 current_link="${ZHIXING_APP_ROOT:-/home/ubuntu/knowing-doing-current}"
+canary_link="${ZHIXING_CANARY_ROOT:-/home/ubuntu/knowing-doing-canary}"
 data_root="${ZHIXING_DATA_ROOT:-/home/ubuntu/knowing-doing-data}"
 release_dir="$release_root/$commit"
 archive_path="${ZHIXING_RELEASE_ARCHIVE:-}"
@@ -234,6 +235,25 @@ fi
 wait_for_http_service 'Workspace Runner' http://127.0.0.1:3101/health
 if sudo -n grep -q '^CASE_BUILDER_ENABLED=true$' /etc/knowing-doing/backend.env; then
   wait_for_http_service 'Case Builder Agent' http://127.0.0.1:3102/health
+fi
+
+if [ "${ZHIXING_CANARY_ONLY:-0}" = 1 ]; then
+  # Rolling canary: stage the release and start the canary service on :3002
+  # without touching the production symlink, systemd unit, or nginx. The
+  # canary unit forces every business flag OFF (see knowing-doing-canary.service),
+  # so the new schema + code are exercised safely alongside production.
+  # OAuth cannot be exercised on the canary port: config.ts pins the OAuth
+  # origin/callback to the production host, which is by design.
+  ln -sfn "$release_dir" "$canary_link"
+  sudo -n install -d -m 0755 /etc/systemd/system
+  sudo -n install -m 0644 "$release_dir/deploy/knowing-doing-canary.service" /etc/systemd/system/knowing-doing-canary.service
+  sudo -n systemctl daemon-reload
+  sudo -n systemctl enable knowing-doing-canary.service >/dev/null
+  sudo -n systemctl restart knowing-doing-canary.service
+  wait_for_http_service 'Canary API' http://127.0.0.1:3002/api/product/runtime-status
+  echo "Canary ready at http://127.0.0.1:3002 (frontend http://119.45.243.102:8082)."
+  echo "Promote: re-run without ZHIXING_CANARY_ONLY. Roll back: systemctl disable --now knowing-doing-canary && rm -f \"$canary_link\""
+  exit 0
 fi
 
 ln -sfn "$release_dir" "$current_link"
