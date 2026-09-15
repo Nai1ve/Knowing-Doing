@@ -62,6 +62,12 @@ describe('identity and OAuth lifecycle', () => {
     }).app
     cleanup.push(() => { void app.close() })
 
+    // Health is intentionally the one anonymous endpoint: it contains no
+    // learner or product data and lets a rolling deployment verify the new
+    // process before it receives any authenticated traffic.
+    expect((await app.inject({ method: 'GET', url: '/healthz' })).json()).toEqual({ ok: true })
+    expect((await app.inject({ method: 'GET', url: '/healthz' })).statusCode).toBe(200)
+
     const issued = await app.inject({ method: 'POST', url: '/api/auth/session', headers: { origin: 'http://119.45.243.102' } })
     const cookie = (Array.isArray(issued.headers['set-cookie']) ? issued.headers['set-cookie'][0] : issued.headers['set-cookie'])!.split(';')[0]
     const csrf = issued.json<{ csrfToken: string }>().csrfToken

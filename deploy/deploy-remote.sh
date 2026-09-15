@@ -250,7 +250,7 @@ if [ "${ZHIXING_CANARY_ONLY:-0}" = 1 ]; then
   sudo -n systemctl daemon-reload
   sudo -n systemctl enable knowing-doing-canary.service >/dev/null
   sudo -n systemctl restart knowing-doing-canary.service
-  wait_for_http_service 'Canary API' http://127.0.0.1:3002/api/product/runtime-status
+  wait_for_http_service 'Canary API' http://127.0.0.1:3002/healthz
   echo "Canary ready at http://127.0.0.1:3002 (frontend http://119.45.243.102:8082)."
   echo "Promote: re-run without ZHIXING_CANARY_ONLY. Roll back: systemctl disable --now knowing-doing-canary && rm -f \"$canary_link\""
   exit 0
@@ -275,7 +275,7 @@ rollback_production_release() {
   sudo -n systemctl daemon-reload
   sudo -n systemctl restart knowing-doing.service
   sudo -n systemctl reload nginx
-  if ! wait_for_http_service 'Rolled-back API' http://127.0.0.1:3001/api/product/runtime-status; then
+  if ! wait_for_http_service 'Rolled-back API' http://127.0.0.1:3001/healthz; then
     echo "Automatic rollback could not restore a healthy API; inspect knowing-doing.service immediately." >&2
   fi
   exit "$failed_status"
@@ -298,7 +298,7 @@ sudo -n systemctl restart knowing-doing.service
 sudo -n systemctl reload nginx
 
 for attempt in $(seq 1 30); do
-  if curl --fail --silent --show-error http://127.0.0.1:3001/api/product/runtime-status >/dev/null; then
+  if curl --fail --silent --show-error http://127.0.0.1:3001/healthz >/dev/null; then
     trap - ERR
     echo "Production release is healthy: $release_dir"
     exit 0

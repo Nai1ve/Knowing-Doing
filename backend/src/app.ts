@@ -76,12 +76,16 @@ export function buildApp(dependencies: AppDependencies): { app: FastifyInstance;
       const isBootstrap = request.method === 'POST' && path === '/api/auth/session'
       const isCallback = request.method === 'GET' && path === '/api/auth/oauth/zhihu/callback'
       const isLogout = request.method === 'POST' && path === '/api/auth/logout'
+      // Deployment probes cannot carry a learner cookie. Keep this endpoint
+      // deliberately content-free so it proves only that this API process is
+      // listening; all product and identity data remains session protected.
+      const isHealthProbe = request.method === 'GET' && path === '/healthz'
       const origin = typeof request.headers.origin === 'string' ? request.headers.origin.replace(/\/$/, '') : null
       const acceptedOrigins = new Set([dependencies.config.publicOrigin, dependencies.config.corsOrigin].map((value) => value.replace(/\/$/, '')))
       if (!['GET', 'HEAD', 'OPTIONS'].includes(request.method) && origin && !acceptedOrigins.has(origin)) {
         return reply.code(403).send({ error: { code: 'origin_invalid', message: '请求来源不受信任', retryable: false } })
       }
-      if (isBootstrap || isCallback) return
+      if (isBootstrap || isCallback || isHealthProbe) return
 
       const sessionId = sessionCookie(request)
       const session = dependencies.identityService.resolve(sessionId)
@@ -120,6 +124,8 @@ export function buildApp(dependencies: AppDependencies): { app: FastifyInstance;
     const response = errorResponse(error)
     reply.code(response.statusCode).send(response.body)
   })
+
+  app.get('/healthz', async (_request, reply) => reply.send({ ok: true }))
 
   app.get('/api/product/runtime-status', async (_request, reply) => {
     reply.send(await dependencies.runtimeStatus?.() ?? { model: { configured: Boolean(dependencies.config.modelBaseUrl && dependencies.config.modelApiKey), name: dependencies.config.modelName }, zhihu: { configured: false, executable: false, lastRetrieval: null } })
