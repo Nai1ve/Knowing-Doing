@@ -439,6 +439,8 @@ export interface ResumeAttachment {
   textLength: number
   parseError: string | null
   parseErrorCode: string | null
+  /** Which pipeline produced the text: provider parse or local fallback. */
+  parseProvider: 'zhihu' | 'local' | null
   version: number
   includedAt: string
   includedInPlanningContext: boolean

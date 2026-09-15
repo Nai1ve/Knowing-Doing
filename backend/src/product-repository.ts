@@ -86,7 +86,7 @@ function profileEvidenceFrom(row: Row): ProfileEvidence {
 }
 
 function resumeAttachmentFrom(row: Row): ResumeAttachment {
-  return { id: text(row, 'id'), learnerId: text(row, 'learner_id'), planningSessionId: text(row, 'planning_session_id'), originalFilename: text(row, 'original_filename'), mimeType: 'application/pdf', sizeBytes: number(row, 'size_bytes'), sha256: text(row, 'sha256'), parseStatus: text(row, 'parse_status') as ResumeAttachment['parseStatus'], pageCount: number(row, 'page_count'), textLength: number(row, 'text_length'), parseError: nullableText(row, 'parse_error'), parseErrorCode: nullableText(row, 'parse_error_code'), version: number(row, 'version'), includedAt: text(row, 'included_at'), includedInPlanningContext: true, createdAt: text(row, 'created_at'), updatedAt: text(row, 'updated_at') }
+  return { id: text(row, 'id'), learnerId: text(row, 'learner_id'), planningSessionId: text(row, 'planning_session_id'), originalFilename: text(row, 'original_filename'), mimeType: 'application/pdf', sizeBytes: number(row, 'size_bytes'), sha256: text(row, 'sha256'), parseStatus: text(row, 'parse_status') as ResumeAttachment['parseStatus'], pageCount: number(row, 'page_count'), textLength: number(row, 'text_length'), parseError: nullableText(row, 'parse_error'), parseErrorCode: nullableText(row, 'parse_error_code'), parseProvider: nullableText(row, 'parse_provider') as 'zhihu' | 'local' | null, version: number(row, 'version'), includedAt: text(row, 'included_at'), includedInPlanningContext: text(row, 'parse_status') === 'ready', createdAt: text(row, 'created_at'), updatedAt: text(row, 'updated_at') }
 }
 
 function diagnosticSessionFrom(row: Row, turns: DiagnosticTurn[], evidence: ProfileEvidence[]): DiagnosticSession {

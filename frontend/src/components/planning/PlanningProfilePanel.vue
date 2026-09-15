@@ -5,7 +5,7 @@ import ResumeUploadField from '@/components/onboarding/ResumeUploadField.vue'
 import type { AgentPlanningSession, ProductResumeAttachment } from '@/types/product'
 import { baselineProgress, baselineTurnMaximum, baselineTurnMinimum, planningStageLabel } from '@/utils/planning-flow'
 
-const props = defineProps<{ session: AgentPlanningSession; uploading?: boolean; uploadError?: string | null; resumeNotice?: string | null; resumePolling?: boolean; resumePollExhausted?: boolean; resumePollError?: string | null; degraded?: boolean }>()
+const props = defineProps<{ session: AgentPlanningSession; uploading?: boolean; uploadError?: string | null; resumeNotice?: string | null; resumePolling?: boolean; resumePollExhausted?: boolean; resumePollError?: string | null }>()
 const emit = defineEmits<{ upload: [payload: { file: File | null; valid: boolean }] }>()
 const sourceLabels: Record<string, string> = { user_message: '对话', resume: '简历', diagnostic_assessment: '诊断评估', 'lab/workspace_verification': '实践验证', 'lab/workspace verification': '实践验证', lab_verification: '实践验证', workspace_verification: '实践验证' }
 function resumeStatusLabel(status: ProductResumeAttachment['parseStatus']) {
@@ -20,7 +20,7 @@ const resumeStatusDetail = computed<{ note: string; kind: string } | null>(() =>
   if (resume.parseStatus === 'processing') return { kind: 'processing', note: '正在提取 PDF 文本，通常需要几秒钟。' }
   if (resume.parseStatus === 'ready') {
     if (!resume.includedInPlanningContext) return { kind: 'consolidating', note: '已解析，正在整理画像并纳入规划上下文…' }
-    if (props.degraded) return { kind: 'degraded', note: '已用本地备选方案完成解析，内容质量可能低于云端解析。' }
+    if (resume.parseProvider === 'local') return { kind: 'degraded', note: '已用本地备选方案完成解析，内容质量可能低于云端解析。' }
     return { kind: 'ready', note: '已解析并纳入规划上下文。' }
   }
   return { kind: 'failed', note: '未能解析该 PDF，可重新选择文件重试，已保存的学习内容不受影响。' }

@@ -158,7 +158,7 @@ describe('planningAgent assessment recovery', () => {
 
   it('polls a pending PDF after refresh and stops when parsing is ready', async () => {
     vi.useFakeTimers()
-    const pending = baseSession({ resume: { id: 'resume-1', learnerId: 'learner-1', planningSessionId: 'session-1', originalFilename: 'resume.pdf', mimeType: 'application/pdf', sizeBytes: 100, sha256: 'hash', parseStatus: 'pending', pageCount: 0, textLength: 0, parseError: null, version: 1, includedAt: '2026-09-14T00:00:00.000Z', includedInPlanningContext: false, createdAt: '2026-09-14T00:00:00.000Z', updatedAt: '2026-09-14T00:00:00.000Z' } })
+    const pending = baseSession({ resume: { id: 'resume-1', learnerId: 'learner-1', planningSessionId: 'session-1', originalFilename: 'resume.pdf', mimeType: 'application/pdf', sizeBytes: 100, sha256: 'hash', parseStatus: 'pending', pageCount: 0, textLength: 0, parseError: null, parseErrorCode: null, parseProvider: null, version: 1, includedAt: '2026-09-14T00:00:00.000Z', includedInPlanningContext: false, createdAt: '2026-09-14T00:00:00.000Z', updatedAt: '2026-09-14T00:00:00.000Z' } })
     const ready = { ...pending, resume: { ...pending.resume!, parseStatus: 'ready' as const, pageCount: 2, textLength: 640, includedInPlanningContext: true } }
     vi.mocked(getAgentPlanningSession).mockResolvedValueOnce(pending)
     vi.mocked(getPlanningResume).mockResolvedValueOnce(ready.resume)
@@ -175,7 +175,7 @@ describe('planningAgent assessment recovery', () => {
 
   it('stops PDF polling at the maximum attempt count', async () => {
     vi.useFakeTimers()
-    const pending = baseSession({ resume: { id: 'resume-1', learnerId: 'learner-1', planningSessionId: 'session-1', originalFilename: 'resume.pdf', mimeType: 'application/pdf', sizeBytes: 100, sha256: 'hash', parseStatus: 'processing', pageCount: 0, textLength: 0, parseError: null, version: 1, includedAt: '2026-09-14T00:00:00.000Z', includedInPlanningContext: false, createdAt: '2026-09-14T00:00:00.000Z', updatedAt: '2026-09-14T00:00:00.000Z' } })
+    const pending = baseSession({ resume: { id: 'resume-1', learnerId: 'learner-1', planningSessionId: 'session-1', originalFilename: 'resume.pdf', mimeType: 'application/pdf', sizeBytes: 100, sha256: 'hash', parseStatus: 'processing', pageCount: 0, textLength: 0, parseError: null, parseErrorCode: null, parseProvider: null, version: 1, includedAt: '2026-09-14T00:00:00.000Z', includedInPlanningContext: false, createdAt: '2026-09-14T00:00:00.000Z', updatedAt: '2026-09-14T00:00:00.000Z' } })
     vi.mocked(getAgentPlanningSession).mockResolvedValue(pending)
     vi.mocked(getPlanningResume).mockResolvedValue(pending.resume)
 

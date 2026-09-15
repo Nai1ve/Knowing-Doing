@@ -6,7 +6,7 @@ import type { AgentPlanningSession, ProductResumeAttachment } from '@/types/prod
 
 function resume(parseStatus: ProductResumeAttachment['parseStatus'], overrides: Partial<ProductResumeAttachment> = {}): ProductResumeAttachment {
   return {
-    id: 'resume-1', learnerId: 'learner-1', planningSessionId: 'session-1', originalFilename: 'resume.pdf', mimeType: 'application/pdf', sizeBytes: 100, sha256: 'hash', parseStatus, pageCount: parseStatus === 'ready' ? 2 : 0, textLength: parseStatus === 'ready' ? 640 : 0, parseError: 'private provider details', version: 1, includedAt: '2026-09-14T00:00:00.000Z', includedInPlanningContext: parseStatus === 'ready', createdAt: '2026-09-14T00:00:00.000Z', updatedAt: '2026-09-14T00:00:00.000Z', ...overrides,
+    id: 'resume-1', learnerId: 'learner-1', planningSessionId: 'session-1', originalFilename: 'resume.pdf', mimeType: 'application/pdf', sizeBytes: 100, sha256: 'hash', parseStatus, pageCount: parseStatus === 'ready' ? 2 : 0, textLength: parseStatus === 'ready' ? 640 : 0, parseError: 'private provider details', parseErrorCode: null, parseProvider: null, version: 1, includedAt: '2026-09-14T00:00:00.000Z', includedInPlanningContext: parseStatus === 'ready', createdAt: '2026-09-14T00:00:00.000Z', updatedAt: '2026-09-14T00:00:00.000Z', ...overrides,
   }
 }
 
@@ -71,14 +71,14 @@ describe('PlanningProfilePanel resume status', () => {
     host.remove()
   })
 
-  it('renders a degraded parse notice only when flagged as degraded', async () => {
+  it('renders a degraded parse notice only for a local fallback parse', async () => {
     const normal = render(resume('ready'))
     await nextTick()
-    expect(normal.host.textContent).not.toContain('降级解析')
+    expect(normal.host.textContent).not.toContain('本地备选方案完成解析')
     normal.app.unmount()
     normal.host.remove()
 
-    const degraded = render(resume('ready'), { degraded: true })
+    const degraded = render(resume('ready', { parseProvider: 'local' }))
     await nextTick()
     expect(degraded.host.textContent).toContain('本地备选方案完成解析')
     degraded.app.unmount()
