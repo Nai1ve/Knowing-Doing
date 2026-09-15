@@ -256,6 +256,36 @@ if [ "${ZHIXING_CANARY_ONLY:-0}" = 1 ]; then
   exit 0
 fi
 
+previous_release=""
+if [ -L "$current_link" ]; then
+  previous_release="$(readlink -f "$current_link" || true)"
+fi
+
+rollback_production_release() {
+  local failed_status="$1"
+  trap - ERR
+  set +e
+  if [ -z "$previous_release" ] || [ ! -d "$previous_release" ]; then
+    echo "Production promotion failed and no previous immutable release is available for automatic rollback." >&2
+    exit "$failed_status"
+  fi
+
+  echo "Promotion failed; restoring previous release: $previous_release" >&2
+  ln -sfn "$previous_release" "$current_link"
+  sudo -n systemctl daemon-reload
+  sudo -n systemctl restart knowing-doing.service
+  sudo -n systemctl reload nginx
+  if ! wait_for_http_service 'Rolled-back API' http://127.0.0.1:3001/api/product/runtime-status; then
+    echo "Automatic rollback could not restore a healthy API; inspect knowing-doing.service immediately." >&2
+  fi
+  exit "$failed_status"
+}
+
+# From this point, a failed nginx validation, systemd restart, or health probe
+# must restore the prior immutable application release. SQLite migrations are
+# append-only and deliberately remain in place; old releases are required to
+# remain compatible with the expanded schema during the rollout window.
+trap 'rollback_production_release $?' ERR
 ln -sfn "$release_dir" "$current_link"
 
 sudo -n install -d -m 0755 /etc/knowing-doing
@@ -269,6 +299,8 @@ sudo -n systemctl reload nginx
 
 for attempt in $(seq 1 30); do
   if curl --fail --silent --show-error http://127.0.0.1:3001/api/product/runtime-status >/dev/null; then
+    trap - ERR
+    echo "Production release is healthy: $release_dir"
     exit 0
   fi
   sleep 2
@@ -276,4 +308,4 @@ done
 
 echo "API did not become ready" >&2
 sudo -n journalctl -u knowing-doing.service -n 80 --no-pager >&2 || true
-exit 1
+rollback_production_release 1
