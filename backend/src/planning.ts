@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto'
 import fs from 'node:fs'
-import { mkdir, readFile, rename, rm } from 'node:fs/promises'
+import { mkdir, readFile, readdir, rename, rm, stat } from 'node:fs/promises'
 import path from 'node:path'
 import { once } from 'node:events'
 import type { Readable } from 'node:stream'
@@ -147,6 +147,45 @@ export class PlanningService {
   }
 
   resumePendingParses(): void { this.repository.recoverResumeParses(); for (const row of this.repository.pendingResumeDocuments()) queueMicrotask(() => { void this.parsePendingResume(String(row.id)) }) }
+
+  /**
+   * Retention policy for uploaded resume files so the storage directory does
+   * not accumulate unboundedly:
+   * - `.uploading` temp files older than `uploadTempMaxAgeMs` are removed
+   *   (interrupted uploads that no document row references).
+   * - `.pdf` files whose stored_filename is no longer referenced by any
+   *   `learner_resume_documents` row are orphaned and removed.
+   * - `.pdf` files for a superseded (non-current) document are kept until the
+   *   retention window passes, then removed.
+   */
+  async cleanupStaleResumeFiles(options: { uploadTempMaxAgeMs?: number; retentionMs?: number } = {}): Promise<{ removedFiles: string[] }> {
+    const uploadTempMaxAgeMs = options.uploadTempMaxAgeMs ?? 60 * 60_000
+    const retentionMs = options.retentionMs ?? 30 * 24 * 60 * 60_000
+    await mkdir(this.resumeStoragePath, { recursive: true })
+    const entries = await readdir(this.resumeStoragePath).catch(() => [])
+    const referenced = new Set((this.db.prepare('SELECT stored_filename FROM learner_resume_documents').all() as Row[]).map((row) => str(row, 'stored_filename')))
+    const removedFiles: string[] = []
+    const now = Date.now()
+    for (const entry of entries) {
+      const filePath = path.join(this.resumeStoragePath, entry)
+      const fileStat = await stat(filePath).catch(() => null)
+      if (!fileStat?.isFile()) continue
+      if (entry.endsWith('.uploading')) {
+        if (now - fileStat.mtimeMs > uploadTempMaxAgeMs) { await rm(filePath, { force: true }); removedFiles.push(entry) }
+        continue
+      }
+      if (!entry.endsWith('.pdf') || !referenced.has(entry)) {
+        if (!entry.endsWith('.pdf')) continue
+        await rm(filePath, { force: true }); removedFiles.push(entry)
+        continue
+      }
+      const document = this.db.prepare('SELECT is_current FROM learner_resume_documents WHERE stored_filename = ?').get(entry) as Row | undefined
+      if (document && num(document, 'is_current') !== 1 && now - fileStat.mtimeMs > retentionMs) {
+        await rm(filePath, { force: true }); removedFiles.push(entry)
+      }
+    }
+    return { removedFiles }
+  }
   private async parsePendingResume(id: string): Promise<void> {
     const row = this.repository.claimResumeParse(id); if (!row) return
     const leaseToken = String(row.parse_lease_token)

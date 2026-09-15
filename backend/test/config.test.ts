@@ -7,7 +7,7 @@ const managedKeys = [
   'PLANNER_ASSESSMENT_V2_ENABLED',
   'MIXED_GYM_ENABLED', 'ZHIHU_OAUTH_APP_ID', 'ZHIHU_OAUTH_APP_KEY',
   'OAUTH_TOKEN_ENCRYPTION_KEY', 'ALLOW_INSECURE_OAUTH_CALLBACK', 'PUBLIC_ORIGIN',
-  'ZHIHU_OAUTH_REDIRECT_URI',
+  'ZHIHU_OAUTH_REDIRECT_URI', 'ZHIHU_PDF_PARSE_ENABLED', 'ZHIXING_ZHIHU_ACCESS_SECRET',
 ] as const
 const originalEnvironment = Object.fromEntries(managedKeys.map((key) => [key, process.env[key]]))
 
@@ -69,6 +69,15 @@ describe('identity mode configuration', () => {
     delete process.env.ZHIHU_SOURCE_SYNC_ENABLED
     process.env.MIXED_GYM_ENABLED = 'true'
     expect(() => loadConfig()).toThrow(/PRACTICE_CARD_V2_ENABLED=true/)
+  })
+
+  it('requires the Data Platform access secret when PDF parsing is enabled', () => {
+    process.env.NODE_ENV = 'production'
+    process.env.LAB_TOKEN_SECRET = 'test-token-secret'
+    process.env.ZHIHU_PDF_PARSE_ENABLED = 'true'
+    expect(() => loadConfig()).toThrow(/ZHIXING_ZHIHU_ACCESS_SECRET is required/)
+    process.env.ZHIXING_ZHIHU_ACCESS_SECRET = 'data-access-secret'
+    expect(loadConfig().zhihuPdfParseEnabled).toBe(true)
   })
 
   it('requires signed device sessions and Zhihu OAuth before requiring Zhihu login', () => {

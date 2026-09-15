@@ -438,6 +438,7 @@ export interface ResumeAttachment {
   pageCount: number
   textLength: number
   parseError: string | null
+  parseErrorCode: string | null
   version: number
   includedAt: string
   includedInPlanningContext: boolean
