@@ -27,6 +27,7 @@ import { IdentityService } from './identity-service.js'
 import { ZhihuGateway } from './zhihu-gateway.js'
 import { MixedGymService } from './mixed-gym-service.js'
 import { DeepSeekPracticeCardGenerator } from './practice-card-generator.js'
+import { ResearchService } from './research-service.js'
 import { ZhihuPdfParseAdapter } from './zhihu-pdf-parse.js'
 
 const config = loadConfig()
@@ -36,6 +37,10 @@ const zhihuOpenApi = new ZhihuOpenApiClient({ accessSecret: config.zhihuAccessSe
 const zhihuPdfParser = config.zhihuPdfParseEnabled ? new ZhihuPdfParseAdapter({ accessSecret: config.zhihuAccessSecret, baseUrl: config.zhihuApiBaseUrl, timeoutMs: config.retrievalTimeoutMs, maxPolls: config.zhihuPdfParseMaxPolls, maxDownloadBytes: config.zhihuPdfParseMaxDownloadBytes }) : undefined
 const zhihuGateway = new ZhihuGateway(productRepository, { clientId: config.zhihuOauthClientId, clientSecret: config.zhihuOauthClientSecret, baseUrl: config.zhihuOauthBaseUrl, encryptionKey: config.oauthTokenEncryptionKey, allowInsecureCallback: config.allowInsecureOauthCallback, authorizePath: config.zhihuOauthAuthorizePath, tokenPath: config.zhihuOauthTokenPath, dataPlatformBaseUrl: config.zhihuApiBaseUrl, dataPlatformAccessSecret: config.zhihuAccessSecret, collectionsPath: config.zhihuCollectionsPath, contentPath: config.zhihuContentPath, followeesPath: config.zhihuFolloweesPath, favlistsPath: config.zhihuFavlistsPath, favlistContentsPath: config.zhihuFavlistContentsPath, redirectUri: config.zhihuOauthRedirectUri, scopes: config.zhihuOauthScopes, publicSearch: zhihuOpenApi })
 if (config.zhihuSourceSyncEnabled) zhihuGateway.resume()
+// Completion plan P4.2: the research pipeline is server-triggered (never by
+// the Planner model) and is only constructed behind ZHIHU_RESEARCH_ENABLED,
+// which itself requires OAuth and source sync in loadConfig().
+const researchService = config.zhihuResearchEnabled ? new ResearchService(productRepository, zhihuOpenApi, { cacheTtlMs: config.retrievalCacheTtlMs }) : undefined
 productRepository.markRunningTutorInvocationsInterrupted()
 const retrieval = new RetrievalService(productRepository, new ZhihuCliProvider(config), config.retrievalCacheTtlMs)
 const curation = new CurationService(productRepository, new ModelCurationSummarizer(config))
@@ -90,7 +95,7 @@ const { app, scheduler } = buildApp({
   }),
   identityService: config.signedDeviceSessionEnabled ? identityService : undefined,
   zhihuGateway: config.signedDeviceSessionEnabled ? zhihuGateway : undefined,
-  mixedGymServiceFactory: (build) => new MixedGymService(productRepository, build, new DeepSeekPracticeCardGenerator(config), zhihuOpenApi),
+  mixedGymServiceFactory: (build) => new MixedGymService(productRepository, build, new DeepSeekPracticeCardGenerator(config), zhihuOpenApi, researchService),
   runtimeStatus: async () => ({ model: { configured: Boolean(config.modelBaseUrl && config.modelApiKey), name: config.modelName }, caseBuilder: { enabled: config.caseBuilderEnabled, endpointConfigured: Boolean(config.caseBuilderUrl), model: config.caseBuilderLlmModel }, zhihu: { configured: Boolean(config.zhihuAccessSecret), executable: Boolean(config.zhihuAccessSecret), lastRetrieval: null } }),
 })
 

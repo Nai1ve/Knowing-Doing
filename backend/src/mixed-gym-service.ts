@@ -3,6 +3,7 @@ import type { ProductRepository } from './product-repository.js'
 import type { EnvironmentBuildOrchestrator } from './gym-build-service.js'
 import { LabError } from './errors.js'
 import type { GeneratedPracticeCard, PracticeCardGenerationInput, PracticeCardGenerator } from './practice-card-generator.js'
+import type { AdoptedResearchSource, ResearchService } from './research-service.js'
 
 type Row = Record<string, unknown>
 type ActivityType = 'concept' | 'knowledge_check' | 'scenario_reasoning' | 'runtime_practice' | 'reflection'
@@ -40,6 +41,7 @@ export class MixedGymService {
     private readonly builds: EnvironmentBuildOrchestrator,
     private readonly generator?: PracticeCardGenerator,
     private readonly sourceContent?: { fetchArticle(source: { externalId: string | null; url: string }): Promise<string> },
+    private readonly research?: ResearchService,
   ) {}
 
   async createCard(learnerId: string, planUnitId: string, clientRequestId: string) {
@@ -50,16 +52,45 @@ export class MixedGymService {
 
     const unit = this.planUnit(learnerId, planUnitId)
     const intent = this.cardIntent(learnerId, unit)
-    const selectedSources = this.rankSources(learnerId, intent.sourceQuery.concepts).slice(0, 2)
-    const digests = await Promise.all(selectedSources.map((source) => this.digestFor(learnerId, source)))
+    const sourceSet: Array<{ id: string; title: string; author: string | null; canonicalUrl: string; relevance: number }> = []
+    let digests: SourceDigest[] = []
+    if (this.research) {
+      // Completion plan P4.2: the server-driven research pipeline builds a
+      // bounded candidate set and hands at most two de-identified source
+      // digests to the generator. No adopted sources -> a pure route card.
+      const outcome = await this.research.researchForCard(learnerId, {
+        planUnitId: intent.planUnitId,
+        objective: intent.objective,
+        capabilityIds: intent.capabilityIds,
+        learnerLevel: intent.learnerLevel,
+        learnerGaps: intent.learnerGaps,
+        roadmapNodeId: nullable(unit, 'roadmap_node_id'),
+        sourceQuery: intent.sourceQuery,
+      })
+      digests = outcome.adopted.map((adopted) => this.digestFromResearch(adopted))
+      sourceSet.push(...outcome.adopted.map((adopted) => ({
+        id: adopted.sourceItemId ?? adopted.candidate.id,
+        title: adopted.candidate.title,
+        author: adopted.candidate.author,
+        canonicalUrl: adopted.candidate.canonicalUrl,
+        relevance: adopted.candidate.relevance,
+      })))
+    } else {
+      const selectedSources = this.rankSources(learnerId, intent.sourceQuery.concepts).slice(0, 2)
+      digests = await Promise.all(selectedSources.map((source) => this.digestFor(learnerId, source)))
+      sourceSet.push(...selectedSources.map((source) => ({
+        id: text(source, 'id'), title: text(source, 'title'), author: nullable(source, 'author'),
+        canonicalUrl: text(source, 'url'), relevance: Number(source.relevance),
+      })))
+    }
     let generated: GeneratedPracticeCard | null = null
     if (this.generator) {
       try { generated = await this.generator.generate({ intent, sources: digests }) }
       catch { generated = null }
     }
     const activities = generated?.activities ?? this.activitiesFor(intent.preferredRuntime as 'mysql_lab' | 'docker_workspace' | 'none', intent.objective)
-    const sourceReferences = selectedSources.map((source) => ({
-      id: text(source, 'id'), title: text(source, 'title'), author: nullable(source, 'author'), canonicalUrl: text(source, 'url'),
+    const sourceReferences = sourceSet.map((source) => ({
+      id: source.id, title: source.title, author: source.author, canonicalUrl: source.canonicalUrl,
     }))
     const publicDocument = {
       title: generated?.title ?? text(unit, 'title'), objective: intent.objective,
@@ -83,7 +114,7 @@ export class MixedGymService {
       },
       references: { 'knowledge-1': 'evidence-first', 'knowledge-2': 'boundary-first' },
     }
-    const sourceQuality = selectedSources.length > 0 ? Math.max(...selectedSources.map((source) => Number(source.relevance))) : 0
+    const sourceQuality = sourceSet.length > 0 ? Math.max(...sourceSet.map((source) => source.relevance)) : 0
     const version = Number((this.repository.db.prepare(
       'SELECT COALESCE(MAX(version),0)+1 AS value FROM practice_cards WHERE learner_id=? AND plan_unit_id=?',
     ).get(learnerId, planUnitId) as { value: number }).value)
@@ -91,22 +122,24 @@ export class MixedGymService {
     const createdAt = now()
 
     this.repository.db.transaction(() => {
-      this.repository.db.prepare(
-        "UPDATE practice_cards SET status='superseded', superseded_by=?, updated_at=? WHERE learner_id=? AND plan_unit_id=? AND status='ready'",
-      ).run(id, createdAt, learnerId, planUnitId)
       this.repository.db.prepare(`
         INSERT INTO practice_cards(
           id,learner_id,plan_unit_id,intent_json,public_json,private_json,source_quality,status,version,
           client_request_id,created_at,ready_at,updated_at
         ) VALUES(?,?,?,?,?,?,?,'ready',?,?,?,?,?)
       `).run(id, learnerId, planUnitId, JSON.stringify(intent), JSON.stringify(publicDocument), JSON.stringify(privateDocument), sourceQuality, version, clientRequestId, createdAt, createdAt, createdAt)
+      // The new card row must exist before its id can be referenced as the
+      // superseded_by of an older ready card (FK on practice_cards.superseded_by).
+      this.repository.db.prepare(
+        "UPDATE practice_cards SET status='superseded', superseded_by=?, updated_at=? WHERE learner_id=? AND plan_unit_id=? AND status='ready' AND id<>?",
+      ).run(id, createdAt, learnerId, planUnitId, id)
       this.repository.db.prepare('UPDATE plan_units SET practice_card_id=? WHERE id=?').run(id, planUnitId)
-      selectedSources.forEach((source, index) => {
-        this.repository.db.prepare(
+      sourceSet.forEach((source, index) => {
+        if (source.id) this.repository.db.prepare(
           'INSERT INTO practice_card_sources(practice_card_id,source_item_id,relevance,position,created_at) VALUES(?,?,?,?,?)',
-        ).run(id, text(source, 'id'), source.relevance, index + 1, createdAt)
+        ).run(id, source.id, source.relevance, index + 1, createdAt)
       })
-      this.appendCardEvent(id, learnerId, 'ready', { sourceCount: selectedSources.length, mode: publicDocument.mode, generatedBy: generated ? 'model' : 'safe_template' }, clientRequestId)
+      this.appendCardEvent(id, learnerId, 'ready', { sourceCount: sourceSet.length, mode: publicDocument.mode, generatedBy: generated ? 'model' : 'safe_template' }, clientRequestId)
     })()
     return this.getCard(learnerId, id)
   }
@@ -358,6 +391,19 @@ export class MixedGymService {
       const quality = Math.min(0.14, String(row.excerpt ?? '').length / 4000)
       return { ...row, relevance: Math.min(1, overlap * 0.8 + sourceWeight + quality) }
     }).filter((row) => Number(row.relevance) >= 0.65).sort((a, b) => Number(b.relevance) - Number(a.relevance))
+  }
+
+  private digestFromResearch(adopted: AdoptedResearchSource): SourceDigest {
+    const digest = adopted.digest
+    return {
+      sourceItemId: adopted.sourceItemId ?? adopted.candidate.id,
+      title: digest.title, author: digest.author, canonicalUrl: digest.url,
+      summary: digest.excerpt,
+      usefulClaims: digest.summary ? [{ claim: digest.summary.slice(0, 240), sourceAnchor: digest.url }] : [],
+      practicalPatterns: [],
+      cautions: ['该来源仅作为参考证据，需要通过知识题或运行时实践验证。'],
+      fetchedAt: digest.fetchedAt,
+    }
   }
 
   private async digestFor(learnerId: string, source: Row): Promise<SourceDigest> {

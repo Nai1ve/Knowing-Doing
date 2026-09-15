@@ -5,6 +5,14 @@ import { LabError } from './errors.js'
 
 export const ZHIHU_OAUTH_CALLBACK = 'http://119.45.243.102/api/auth/oauth/zhihu/callback'
 
+// Completion plan P4.1: bounded per-run caps. Exceeding a cap keeps the
+// per-collection cursor so the next sync cycle resumes instead of losing data.
+const FAVORITES_CAP = 5000
+const OWN_CAP = 200
+const ACTIVITIES_CAP = 200
+const ACTIVITIES_WINDOW_DAYS = 30
+const MAX_FAVLIST_PAGES_PER_RUN = 20
+
 const tokenSchema = z.object({
   access_token: z.string().min(1),
   refresh_token: z.string().min(1).optional(),
@@ -99,6 +107,27 @@ function safeHttpUrl(value: unknown): string | null {
     if (url.username || url.password) return null
     return url.toString()
   } catch { return null }
+}
+
+// Canonical URL for the triple-dedupe rule: strip fragments and UTM tracking
+// params, sort remaining params, and drop a trailing slash so the same article
+// reached through different entry URLs resolves to one source row.
+function canonicalUrl(value: string): string {
+  const trimmed = value.trim()
+  try {
+    const url = new URL(trimmed)
+    url.hash = ''
+    for (const key of [...url.searchParams.keys()]) if (/^utm_/i.test(key)) url.searchParams.delete(key)
+    url.searchParams.sort()
+    return url.toString().replace(/\/$/, '')
+  } catch { return trimmed }
+}
+
+// Content fingerprint for the triple-dedupe rule: title + author + excerpt only,
+// deliberately excluding the URL so the same content fetched from search and
+// from a favorite list still dedupes into one source row.
+function contentFingerprint(title: string, author: string | null, excerpt: string): string {
+  return createHash('sha256').update(`${title.trim()}\n${(author ?? '').trim()}\n${excerpt.trim()}`).digest('hex')
 }
 
 function stableProviderId(value: unknown): string | null {
@@ -311,7 +340,7 @@ export class ZhihuGateway {
     `).all(learnerId)
   }
 
-  items(learnerId: string, query?: string, collectionId?: string) {
+  items(learnerId: string, query?: string, collectionId?: string): { items: Array<{ id: string; title: string; excerpt: string; author: string | null; url: string; saved: boolean; publishedAt: string | null; tags: string[]; collectionId: string | null }>; nextCursor: null } {
     const pattern = `%${(query ?? '').trim()}%`
     const collectionJoin = collectionId ? 'JOIN external_source_collection_items ci ON ci.source_item_id = i.id AND ci.collection_id = ?' : ''
     const params = collectionId ? [collectionId, learnerId, pattern, pattern] : [learnerId, pattern, pattern]
@@ -321,7 +350,15 @@ export class ZhihuGateway {
       WHERE i.learner_id = ? AND i.status = 'active' AND (i.title LIKE ? OR i.excerpt LIKE ?)
       ORDER BY i.updated_at DESC LIMIT 50
     `).all(...params) as Array<Record<string, unknown>>
-    return { items: rows.map((row) => ({ ...row, saved: Boolean(row.saved), collectionId: collectionId ?? null, tags: this.json<string[]>(row.tagsJson, []) })), nextCursor: null }
+    return {
+      items: rows.map((row) => ({
+        id: String(row.id), title: String(row.title), excerpt: String(row.excerpt ?? ''),
+        author: row.author == null ? null : String(row.author), url: String(row.url),
+        saved: Boolean(row.saved), publishedAt: row.publishedAt == null ? null : String(row.publishedAt),
+        tags: this.json<string[]>(row.tagsJson, []), collectionId: collectionId ?? null,
+      })),
+      nextCursor: null,
+    }
   }
 
   async search(learnerId: string, query: string) {
@@ -336,18 +373,25 @@ export class ZhihuGateway {
             id,learner_id,provider,external_id,url,title,author,excerpt,content_json,visibility,
             content_hash,status,saved,tags_json,published_at,removed_at,created_at,updated_at
           ) VALUES(?,?,'zhihu',?,?,?,?,?,?,'public',?,'active',0,'[]',NULL,NULL,?,?)
-          ON CONFLICT(learner_id,provider,external_id) DO UPDATE SET
-            url=excluded.url,title=excluded.title,author=excluded.author,excerpt=excluded.excerpt,
+          ON CONFLICT(id) DO UPDATE SET
+            external_id=excluded.external_id,url=excluded.url,title=excluded.title,author=excluded.author,excerpt=excluded.excerpt,
             content_json=excluded.content_json,content_hash=excluded.content_hash,
-            visibility='public',status='active',removed_at=NULL,updated_at=excluded.updated_at
+            visibility=CASE WHEN learner_source_items.visibility='private' THEN 'private' ELSE 'public' END,
+            saved=learner_source_items.saved,status='active',removed_at=NULL,updated_at=excluded.updated_at
         `)
         this.repository.db.transaction(() => {
           for (const result of results) {
             if (!result.externalId) continue
             const normalizedResult = JSON.stringify({ retrievedAt: result.retrievedAt, metadata: result.metadata, query: normalized })
+            // Triple dedupe: reuse an existing row by (provider, external_id),
+            // canonical URL, or content hash so a public search hit never
+            // duplicates a private favorite already in this learner's library.
+            const url = canonicalUrl(result.url)
+            const hash = contentFingerprint(result.title, result.author, result.excerpt)
+            const sourceId = this.resolveSourceId(learnerId, result.externalId, url, hash) ?? randomUUID()
             upsert.run(
-              randomUUID(), learnerId, result.externalId, result.url, result.title, result.author,
-              result.excerpt.slice(0, 4000), normalizedResult, this.hash(`${result.url}\n${result.title}\n${result.excerpt}`), timestamp, timestamp,
+              sourceId, learnerId, result.externalId, url, result.title, result.author,
+              result.excerpt.slice(0, 4000), normalizedResult, hash, timestamp, timestamp,
             )
           }
         })()
@@ -407,36 +451,43 @@ export class ZhihuGateway {
       const checkpoint = this.json<SyncCursor | null>(job.cursor, null)
       let imported = checkpoint?.imported ?? Number(job.imported_count ?? 0)
       let updated = checkpoint?.updated ?? Number(job.updated_count ?? 0)
-      // Official user collections are a bounded recent-favourites feed.  Its
-      // metadata is enough for source selection; full text is never retained.
+
+      // Favorites-list sync: list the user's favourite collections, fetch the
+      // homepage of each one first, then follow the documented cursor. We no
+      // longer keep only the latest 20 favourites. Full text is never retained;
+      // the metadata is enough for source selection.
       if (!checkpoint || checkpoint.phase === 'favorites') {
-        const favoriteCollection = this.upsertSyntheticCollection(learnerId, connection, 'favorites')
-        const favorites = this.userItems(await this.authorizedUserPage(connection, this.options.collectionsPath, { Limit: '20' }))
-        const result = this.persistSourcePage(jobId, learnerId, favoriteCollection, favorites, 0, 0, { phase: 'favorites', collectionIndex: 0, imported, updated }, null, true)
-        imported += result.imported; updated += result.updated
+        const favorites = await this.syncFavorites(jobId, learnerId, connection, checkpoint, imported, updated)
+        imported = favorites.imported; updated = favorites.updated
+        if (favorites.capped) {
+          // The run hit a cap mid-way and only saw a partial remote view: keep
+          // the per-collection cursor so the next cycle resumes, and do NOT
+          // mark remote sources deleted on a partial view.
+          this.saveJobCursor(jobId, { phase: 'favorites', collectionIndex: favorites.collectionIndex, next: favorites.next, imported, updated })
+          this.finishSync(jobId, imported, updated, { phase: 'favorites', collectionIndex: favorites.collectionIndex, next: favorites.next, imported, updated })
+          return
+        }
       }
+
       // Own content has documented Offset/Limit pagination. We deliberately do
       // not follow arbitrary remote next URLs, preventing provider-driven SSRF.
-      const startOffset = checkpoint?.phase === 'own' && checkpoint.next ? Number(checkpoint.next) : 0
-      const ownCollection = this.upsertSyntheticCollection(learnerId, connection, 'own')
-      for (let offset = Number.isFinite(startOffset) && startOffset >= 0 ? startOffset : 0; offset < 200; offset += 50) {
-        const page = await this.authorizedUserPage(connection, this.options.contentPath, { ContentType: 'all', Offset: String(offset), Limit: '50' })
-        const items = this.userItems(page)
-        const result = this.persistSourcePage(jobId, learnerId, ownCollection, items, 0, 0, { phase: 'own', collectionIndex: 0, imported, updated }, String(offset + 50), offset === 0)
-        imported += result.imported; updated += result.updated
-        if (this.userPagingEnded(page) || items.length < 50) break
+      if (!checkpoint || checkpoint.phase === 'favorites' || checkpoint.phase === 'own') {
+        const own = await this.syncOwn(jobId, learnerId, connection, checkpoint?.phase === 'own' ? checkpoint : null, imported, updated)
+        imported = own.imported; updated = own.updated
       }
-      this.repository.db.prepare(`
-        UPDATE learner_source_items SET status='removed',removed_at=?,updated_at=?
-        WHERE learner_id=? AND provider='zhihu' AND visibility='private' AND status='active'
-          AND NOT EXISTS (SELECT 1 FROM external_source_collection_items ci WHERE ci.source_item_id=learner_source_items.id)
-          AND NOT EXISTS (SELECT 1 FROM practice_card_sources pcs WHERE pcs.source_item_id=learner_source_items.id)
-      `).run(new Date().toISOString(), new Date().toISOString(), learnerId)
-      const completedAt = new Date().toISOString()
-      this.repository.db.prepare(`
-        UPDATE source_sync_jobs SET status='completed', imported_count=?, updated_count=?, cursor=NULL,
-          completed_at=?, updated_at=?, error_code=NULL, error_message=NULL WHERE id=?
-      `).run(imported, updated, completedAt, completedAt, jobId)
+
+      // Moments/activities: recent 30 days or at most 200 items, whichever
+      // limit is reached first.
+      if (!checkpoint || checkpoint.phase === 'favorites' || checkpoint.phase === 'own' || checkpoint.phase === 'activities') {
+        const activities = await this.syncActivities(jobId, learnerId, connection, checkpoint?.phase === 'activities' ? checkpoint : null, imported, updated)
+        imported = activities.imported; updated = activities.updated
+      }
+
+      // Only a complete, uninterrupted cycle knows the full remote view. A
+      // partial run (cap hit or error) must not mark sources deleted that we
+      // simply have not re-fetched yet.
+      this.markRemoteDeleted(learnerId)
+      this.finishSync(jobId, imported, updated, null)
     } catch (error) {
       const safe = publicError(error)
       this.repository.db.prepare(`
@@ -446,37 +497,175 @@ export class ZhihuGateway {
     }
   }
 
-  private persistSourcePage(jobId: string, learnerId: string, collectionId: string, items: SourceItem[], priorImported: number, priorUpdated: number, base: Omit<SyncCursor, 'next'>, next: string | null, clearCollection: boolean) {
-    let imported = 0
-    let updated = 0
+  private async syncFavorites(jobId: string, learnerId: string, connection: ConnectionRow, checkpoint: SyncCursor | null, imported: number, updated: number): Promise<{ imported: number; updated: number; capped: boolean; collectionIndex: number; next: string | null }> {
+    const favlists = await this.favlistItems(await this.authorizedUserPage(connection, this.options.favlistsPath, { Limit: '50' }))
+    const startIndex = checkpoint?.phase === 'favorites' && checkpoint.collectionIndex > 0 ? checkpoint.collectionIndex : 0
+    for (let index = startIndex; index < favlists.length; index += 1) {
+      const favlist = favlists[index]
+      const collectionId = this.upsertCollection(learnerId, connection, favlist, 'favorites')
+      // Homepage-first on the first visit; afterwards resume from the saved
+      // per-collection cursor so a cap never loses already-synced pages.
+      const resumeCursor = index === startIndex && checkpoint?.phase === 'favorites' ? checkpoint.next : null
+      let next = resumeCursor ?? this.collectionCursor(collectionId)
+      if (!next) this.clearCollectionItems(collectionId)
+      let pageCount = 0
+      let capped = false
+      while (pageCount < MAX_FAVLIST_PAGES_PER_RUN) {
+        const page = await this.favlistPage(connection, favlist.id, next)
+        const items = this.userItems(page)
+        const result = this.persistSourcePage(learnerId, collectionId, items, false)
+        imported += result.imported; updated += result.updated
+        next = this.nextCursor(page)
+        this.writeCollectionCursor(collectionId, next)
+        pageCount += 1
+        if (!next) break
+        if (imported + updated >= FAVORITES_CAP) { capped = true; break }
+      }
+      if (capped || (pageCount >= MAX_FAVLIST_PAGES_PER_RUN && next)) {
+        this.saveJobCursor(jobId, { phase: 'favorites', collectionIndex: index, next, imported, updated })
+        return { imported, updated, capped: true, collectionIndex: index, next }
+      }
+      this.saveJobCursor(jobId, { phase: 'favorites', collectionIndex: index + 1, next, imported, updated })
+    }
+    return { imported, updated, capped: false, collectionIndex: favlists.length, next: null }
+  }
+
+  private async syncOwn(jobId: string, learnerId: string, connection: ConnectionRow, checkpoint: SyncCursor | null, imported: number, updated: number): Promise<{ imported: number; updated: number }> {
+    const ownCollection = this.upsertSyntheticCollection(learnerId, connection, 'own')
+    const startOffset = checkpoint?.phase === 'own' && checkpoint.next ? Number(checkpoint.next) : 0
+    for (let offset = Number.isFinite(startOffset) && startOffset >= 0 ? startOffset : 0; offset < OWN_CAP; offset += 50) {
+      const page = await this.authorizedUserPage(connection, this.options.contentPath, { ContentType: 'all', Offset: String(offset), Limit: '50' })
+      const items = this.userItems(page)
+      const result = this.persistSourcePage(learnerId, ownCollection, items, offset === 0)
+      imported += result.imported; updated += result.updated
+      this.saveJobCursor(jobId, { phase: 'own', collectionIndex: 0, next: String(offset + 50), imported, updated })
+      if (this.userPagingEnded(page) || items.length < 50) break
+    }
+    return { imported, updated }
+  }
+
+  private async syncActivities(jobId: string, learnerId: string, connection: ConnectionRow, checkpoint: SyncCursor | null, imported: number, updated: number): Promise<{ imported: number; updated: number }> {
+    const activitiesCollection = this.upsertSyntheticCollection(learnerId, connection, 'activities')
+    const cutoff = new Date(Date.now() - ACTIVITIES_WINDOW_DAYS * 24 * 3600 * 1000).toISOString()
+    const startOffset = checkpoint?.phase === 'activities' && checkpoint.next ? Number(checkpoint.next) : 0
+    for (let offset = Number.isFinite(startOffset) && startOffset >= 0 ? startOffset : 0; offset < ACTIVITIES_CAP; offset += 50) {
+      const page = await this.authorizedUserPage(connection, this.options.followeesPath, { Offset: String(offset), Limit: '50' })
+      const items = this.userItems(page)
+      const recentItems = items.filter((item) => { const published = asIso(item.published_at); return published == null || published >= cutoff })
+      const result = this.persistSourcePage(learnerId, activitiesCollection, recentItems, offset === 0)
+      imported += result.imported; updated += result.updated
+      this.saveJobCursor(jobId, { phase: 'activities', collectionIndex: 0, next: String(offset + 50), imported, updated })
+      const oldest = items.length > 0 ? asIso(items[items.length - 1].published_at) : null
+      if (this.userPagingEnded(page) || items.length < 50 || (oldest != null && oldest < cutoff)) break
+    }
+    return { imported, updated }
+  }
+
+  private markRemoteDeleted(learnerId: string): void {
+    this.repository.db.prepare(`
+      UPDATE learner_source_items SET status='removed',removed_at=?,updated_at=?
+      WHERE learner_id=? AND provider='zhihu' AND visibility='private' AND status='active'
+        AND NOT EXISTS (SELECT 1 FROM external_source_collection_items ci WHERE ci.source_item_id=learner_source_items.id)
+        AND NOT EXISTS (SELECT 1 FROM practice_card_sources pcs WHERE pcs.source_item_id=learner_source_items.id)
+    `).run(new Date().toISOString(), new Date().toISOString(), learnerId)
+  }
+
+  private finishSync(jobId: string, imported: number, updated: number, cursor: SyncCursor | null): void {
+    const completedAt = new Date().toISOString()
+    this.repository.db.prepare(`
+      UPDATE source_sync_jobs SET status='completed', imported_count=?, updated_count=?, cursor=?,
+        completed_at=?, updated_at=?, error_code=NULL, error_message=NULL WHERE id=?
+    `).run(imported, updated, cursor ? JSON.stringify(cursor) : null, completedAt, completedAt, jobId)
+  }
+
+  private saveJobCursor(jobId: string, cursor: SyncCursor): void {
+    this.repository.db.prepare('UPDATE source_sync_jobs SET cursor=?,imported_count=?,updated_count=?,updated_at=? WHERE id=?')
+      .run(JSON.stringify(cursor), cursor.imported, cursor.updated, new Date().toISOString(), jobId)
+  }
+
+  private persistSourcePage(learnerId: string, collectionId: string, items: SourceItem[], clearCollection: boolean): { imported: number; updated: number } {
+    let localImported = 0
+    let localUpdated = 0
     const timestamp = new Date().toISOString()
     this.repository.db.transaction(() => {
       if (clearCollection) this.repository.db.prepare('DELETE FROM external_source_collection_items WHERE collection_id=?').run(collectionId)
       for (const item of items) {
-        const exists = this.repository.db.prepare("SELECT id FROM learner_source_items WHERE learner_id=? AND provider='zhihu' AND external_id=?").get(learnerId, item.id) as { id: string } | undefined
-        const sourceId = exists?.id ?? randomUUID()
         const title = item.title ?? item.name ?? '知乎内容'
-        const url = item.url ?? item.link ?? `https://www.zhihu.com/content/${encodeURIComponent(item.id)}`
+        const url = canonicalUrl(item.url ?? item.link ?? `https://www.zhihu.com/content/${encodeURIComponent(item.id)}`)
         const author = typeof item.author === 'string' ? item.author : item.author?.name ?? null
         const excerpt = (item.excerpt ?? item.summary ?? '').slice(0, 4000)
+        const contentHash = contentFingerprint(title, author, excerpt)
+        // Triple dedupe: (provider, external_id), canonical URL, then content
+        // hash. A page that carries the same article under a different
+        // external id still resolves to one learner_source_items row.
+        const existingId = this.resolveSourceId(learnerId, item.id, url, contentHash)
+        const sourceId = existingId ?? randomUUID()
         const metadata = JSON.stringify({ externalId: item.id, sourceKind: 'oauth_sync', publishedAt: asIso(item.published_at) })
         this.repository.db.prepare(`
           INSERT INTO learner_source_items(id,learner_id,provider,external_id,url,title,author,excerpt,content_json,visibility,content_hash,status,saved,tags_json,published_at,removed_at,created_at,updated_at)
           VALUES(?,?,'zhihu',?,?,?,?,?,?,'private',?,'active',1,'[]',?,NULL,?,?)
-          ON CONFLICT(learner_id,provider,external_id) DO UPDATE SET url=excluded.url,title=excluded.title,author=excluded.author,
+          ON CONFLICT(id) DO UPDATE SET external_id=excluded.external_id,url=excluded.url,title=excluded.title,author=excluded.author,
             excerpt=excluded.excerpt,content_json=excluded.content_json,content_hash=excluded.content_hash,visibility='private',status='active',
             removed_at=NULL,published_at=excluded.published_at,updated_at=excluded.updated_at
-        `).run(sourceId, learnerId, item.id, url, title, author, excerpt, metadata, this.hash(`${url}\n${title}\n${excerpt}`), asIso(item.published_at), timestamp, timestamp)
-        this.repository.db.prepare('INSERT OR IGNORE INTO external_source_collection_items(collection_id,source_item_id,position,created_at) VALUES(?,?,?,?)').run(collectionId, sourceId, priorImported + priorUpdated + imported + updated, timestamp)
-        if (exists) updated += 1
-        else imported += 1
+        `).run(sourceId, learnerId, item.id, url, title, author, excerpt, metadata, contentHash, asIso(item.published_at), timestamp, timestamp)
+        const position = Number((this.repository.db.prepare('SELECT COUNT(*) count FROM external_source_collection_items WHERE collection_id=?').get(collectionId) as { count: number }).count)
+        this.repository.db.prepare('INSERT OR IGNORE INTO external_source_collection_items(collection_id,source_item_id,position,created_at) VALUES(?,?,?,?)').run(collectionId, sourceId, position, timestamp)
+        if (existingId) localUpdated += 1
+        else localImported += 1
       }
-      const cursor: SyncCursor = { ...base, next, imported: base.imported + priorImported + imported, updated: base.updated + priorUpdated + updated }
-      this.repository.db.prepare('UPDATE source_sync_jobs SET cursor=?,imported_count=?,updated_count=?,updated_at=? WHERE id=?').run(
-        JSON.stringify(cursor), cursor.imported, cursor.updated, timestamp, jobId,
-      )
     })()
-    return { imported, updated }
+    return { imported: localImported, updated: localUpdated }
+  }
+
+  private resolveSourceId(learnerId: string, externalId: string, url: string, contentHash: string): string | null {
+    const byExternal = this.repository.db.prepare("SELECT id FROM learner_source_items WHERE learner_id=? AND provider='zhihu' AND external_id=?").get(learnerId, externalId) as { id: string } | undefined
+    if (byExternal) return byExternal.id
+    const byUrl = this.repository.db.prepare("SELECT id FROM learner_source_items WHERE learner_id=? AND provider='zhihu' AND url=? ORDER BY created_at LIMIT 1").get(learnerId, url) as { id: string } | undefined
+    if (byUrl) return byUrl.id
+    const byHash = this.repository.db.prepare("SELECT id FROM learner_source_items WHERE learner_id=? AND provider='zhihu' AND content_hash=? ORDER BY created_at LIMIT 1").get(learnerId, contentHash) as { id: string } | undefined
+    return byHash?.id ?? null
+  }
+
+  private favlistItems(value: unknown): SourceItem[] {
+    const body = value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : null
+    const values = body && Array.isArray(body.Items) ? body.Items : body && Array.isArray(body.items) ? body.items : []
+    return values.flatMap((value) => {
+      const item = value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : null
+      if (!item) return []
+      const id = safeString(item.Id ?? item.id ?? item.FavlistId ?? item.favlist_id, 512)
+      const title = safeString(item.Title ?? item.title ?? item.Name ?? item.name, 1000)
+      if (!id || !title) return []
+      const url = safeHttpUrl(item.Url ?? item.url) ?? `https://www.zhihu.com/favlist/${encodeURIComponent(id)}`
+      return [{ id, title, name: title, url }]
+    })
+  }
+
+  private async favlistPage(connection: ConnectionRow, favlistId: string, cursor: string | null): Promise<unknown> {
+    const query: Record<string, string> = { FavlistId: favlistId, Limit: '50' }
+    if (cursor) query.Cursor = cursor
+    return this.authorizedUserPage(connection, this.options.favlistContentsPath, query)
+  }
+
+  private nextCursor(value: unknown): string | null {
+    const body = value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : null
+    if (!body) return null
+    const paging = body.Paging && typeof body.Paging === 'object' ? body.Paging as Record<string, unknown> : body.paging && typeof body.paging === 'object' ? body.paging as Record<string, unknown> : null
+    if (paging) for (const key of ['Next', 'next', 'Cursor', 'cursor']) if (typeof paging[key] === 'string' && paging[key]) return String(paging[key])
+    for (const key of ['Cursor', 'cursor', 'Next', 'next']) if (typeof body[key] === 'string' && body[key]) return String(body[key])
+    return null
+  }
+
+  private collectionCursor(collectionId: string): string | null {
+    const row = this.repository.db.prepare('SELECT cursor FROM external_source_collections WHERE id=?').get(collectionId) as { cursor: string | null } | undefined
+    return row?.cursor ?? null
+  }
+
+  private writeCollectionCursor(collectionId: string, next: string | null): void {
+    this.repository.db.prepare('UPDATE external_source_collections SET cursor=?, updated_at=? WHERE id=?').run(next, new Date().toISOString(), collectionId)
+  }
+
+  private clearCollectionItems(collectionId: string): void {
+    this.repository.db.prepare('DELETE FROM external_source_collection_items WHERE collection_id=?').run(collectionId)
   }
 
   private async authorizedUserPage(connection: ConnectionRow, path: string, query: Record<string, string>): Promise<unknown> {
