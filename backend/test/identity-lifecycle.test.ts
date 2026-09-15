@@ -41,8 +41,10 @@ function tokenFetch(uid: string) {
   return vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
     const url = new URL(String(input))
     if (url.pathname === '/access_token') return Response.json({ access_token: `token-${uid}`, uid, expires_in: 3600 })
-    if (url.pathname === '/api/v1/user/collections') return Response.json({ Code: 0, Data: { Items: [{ Title: 'MySQL EXPLAIN 实战', Url: 'https://www.zhihu.com/question/1/answer/1', Summary: '使用执行计划验证索引是否命中。' }] } })
+    if (url.pathname === '/api/v1/user/favlists') return Response.json({ Code: 0, Data: { Items: [{ Id: 'fav-1', Title: 'MySQL 收藏夹' }] } })
+    if (url.pathname === '/api/v1/user/favlist_contents') return Response.json({ Code: 0, Data: { Items: [{ Title: 'MySQL EXPLAIN 实战', Url: 'https://www.zhihu.com/question/1/answer/1', Summary: '使用执行计划验证索引是否命中。' }], Paging: { IsEnd: true } } })
     if (url.pathname === '/api/v1/user/contents') return Response.json({ Code: 0, Data: { Items: [], Paging: { IsEnd: true } } })
+    if (url.pathname === '/api/v1/user/followees') return Response.json({ Code: 0, Data: { Items: [], Paging: { IsEnd: true } } })
     return new Response('', { status: 404 })
   }) as typeof fetch
 }

@@ -268,16 +268,18 @@ describe('signed device identity and Zhihu OAuth', () => {
         expect(payload.get('app_key')).toBe('app-key')
         return Response.json({ access_token: 'initial-token', uid: 'zhihu-user-1', expires_in: 3600 })
       }
-      if (url.pathname === '/api/v1/user/collections') {
+      if (url.pathname === '/api/v1/user/favlists') {
         collectionAttempts += 1
         const authorization = new Headers(init?.headers).get('authorization')
         expect(authorization).toBe('Bearer data-access-secret')
         expect(new Headers(init?.headers).get('x-oauth-token')).toBe('initial-token')
         expect(new Headers(init?.headers).get('x-request-timestamp')).toMatch(/^\d+$/)
         if (collectionAttempts === 1) return new Response('', { status: 429, headers: { 'retry-after': '0' } })
-        return Response.json({ Code: 0, Data: { Items: [{ Title: 'MySQL EXPLAIN 实战', Url: 'https://www.zhihu.com/question/1/answer/1', Summary: '使用执行计划验证索引是否命中。' }] } })
+        return Response.json({ Code: 0, Data: { Items: [{ Id: 'fav-1', Title: 'MySQL 收藏夹' }] } })
       }
+      if (url.pathname === '/api/v1/user/favlist_contents') return Response.json({ Code: 0, Data: { Items: [{ Title: 'MySQL EXPLAIN 实战', Url: 'https://www.zhihu.com/question/1/answer/1', Summary: '使用执行计划验证索引是否命中。' }], Paging: { IsEnd: true } } })
       if (url.pathname === '/api/v1/user/contents') return Response.json({ Code: 0, Data: { Items: [], Paging: { IsEnd: true } } })
+      if (url.pathname === '/api/v1/user/followees') return Response.json({ Code: 0, Data: { Items: [], Paging: { IsEnd: true } } })
       return new Response('', { status: 404 })
     }) as typeof fetch
     const client = gateway(state.repository, fetchImpl, async (milliseconds) => { sleeps.push(milliseconds) })
@@ -308,8 +310,10 @@ describe('signed device identity and Zhihu OAuth', () => {
       const url = new URL(String(input))
       if (url.pathname === '/access_token') return Response.json({ access_token: 'token', uid: 'zhihu-user-1', expires_in: 3600 })
       requests.push({ path: url.pathname, authorization: new Headers(init?.headers).get('authorization'), oauth: new Headers(init?.headers).get('x-oauth-token') })
-      if (url.pathname === '/api/v1/user/collections') return Response.json({ Code: '0', Data: { Items: [] } })
+      if (url.pathname === '/api/v1/user/favlists') return Response.json({ Code: '0', Data: { Items: [] } })
+      if (url.pathname === '/api/v1/user/favlist_contents') return Response.json({ Code: '0', Data: { Items: [] } })
       if (url.pathname === '/api/v1/user/contents') return Response.json({ Code: '0', Data: { Items: [{ Title: '我的文章', Url: 'https://www.zhihu.com/p/1', Summary: '摘要' }], Paging: { IsEnd: true } } })
+      if (url.pathname === '/api/v1/user/followees') return Response.json({ Code: '0', Data: { Items: [], Paging: { IsEnd: true } } })
       return new Response('', { status: 404 })
     }) as typeof fetch
     const client = gateway(state.repository, fetchImpl)
@@ -320,8 +324,9 @@ describe('signed device identity and Zhihu OAuth', () => {
     await vi.waitFor(() => expect(client.syncJobs('learner-a')[0]?.status).toBe('completed'))
     expect(client.syncJobs('learner-a')[0]).toMatchObject({ importedCount: 1, updatedCount: 0 })
     expect(requests).toEqual(expect.arrayContaining([
-      expect.objectContaining({ path: '/api/v1/user/collections', authorization: 'Bearer data-access-secret', oauth: 'token' }),
+      expect.objectContaining({ path: '/api/v1/user/favlists', authorization: 'Bearer data-access-secret', oauth: 'token' }),
       expect.objectContaining({ path: '/api/v1/user/contents', authorization: 'Bearer data-access-secret', oauth: 'token' }),
+      expect.objectContaining({ path: '/api/v1/user/followees', authorization: 'Bearer data-access-secret', oauth: 'token' }),
     ]))
     expect(requests.some((request) => request.path === '/user' || request.path.startsWith('/api/v4/'))).toBe(false)
   })
