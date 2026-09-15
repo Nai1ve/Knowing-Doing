@@ -103,6 +103,10 @@ try {
   await app.listen({ host: config.apiHost, port: config.apiPort })
 } catch (error) {
   await scheduler.shutdown()
+  // Fastify's logger is intentionally disabled in this service. Preserve a
+  // concise startup failure in systemd so a canary cannot fail silently; do
+  // not serialize config or request objects because they may contain secrets.
+  console.error('[zhixing-server] startup_failed', error instanceof Error ? error.message : String(error))
   app.log.error(error)
   process.exit(1)
 }
