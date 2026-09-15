@@ -90,7 +90,7 @@ describe('signed device identity and Zhihu OAuth', () => {
     expect(authorizationUrl.searchParams.get('state')).toBeTruthy()
   })
 
-  it('uses token uid when the profile endpoint is unavailable and rebinds a second device to the canonical learner', async () => {
+  it('rejects reconnecting an account already bound to another learner instead of silently merging histories', async () => {
     const state = database(); cleanup.push(() => { state.repository.close(); rmSync(state.directory, { recursive: true, force: true }) })
     const identity = new IdentityService(state.repository)
     const fetchImpl = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
@@ -101,18 +101,23 @@ describe('signed device identity and Zhihu OAuth', () => {
     }) as typeof fetch
     const client = gateway(state.repository, fetchImpl)
     const first = identity.issue()
-    const firstState = new URL(client.start(first.learnerId).authorizationUrl).searchParams.get('state')!
-    const firstResult = await client.callback(first.learnerId, firstState, 'first-code')
+    const firstState = new URL(client.start(first.learnerId, first.id).authorizationUrl).searchParams.get('state')!
+    const firstResult = await client.callback(first.learnerId, first.id, firstState, 'first-code')
     expect(firstResult).toEqual({ learnerId: first.learnerId, profile: null })
 
     const second = identity.issue()
-    const secondState = new URL(client.start(second.learnerId).authorizationUrl).searchParams.get('state')!
-    const secondResult = await client.callback(second.learnerId, secondState, 'second-code')
-    identity.rebind(second.id, secondResult.learnerId)
+    const secondState = new URL(client.start(second.learnerId, second.id).authorizationUrl).searchParams.get('state')!
+    await expect(client.callback(second.learnerId, second.id, secondState, 'second-code')).rejects.toMatchObject({ code: 'identity_merge_required' })
 
-    expect(secondResult.learnerId).toBe(first.learnerId)
-    expect(identity.resolve(second.id)?.learnerId).toBe(first.learnerId)
+    // The second device session keeps its own learner; no empty learner is
+    // created and the global (provider, provider_user_id) identity stays unique.
+    expect(identity.resolve(second.id)?.learnerId).toBe(second.learnerId)
     expect(state.repository.db.prepare("SELECT COUNT(*) count FROM provider_connections WHERE provider='zhihu' AND provider_user_id='stable-zhihu-uid'").get()).toEqual({ count: 1 })
+    const learnerIds = (state.repository.db.prepare('SELECT id FROM learners').all() as Array<{ id: string }>).map((row) => row.id)
+    expect(learnerIds).toEqual(expect.arrayContaining([first.learnerId, second.learnerId]))
+    // Only the two device learners exist alongside the seeded demo learner: the
+    // rejected callback must not have created a silent empty learner.
+    expect(learnerIds.filter((id) => id !== 'demo-learner')).toHaveLength(2)
   })
 
   it('keeps different Zhihu accounts isolated and never treats token material as an identity', async () => {
@@ -129,8 +134,8 @@ describe('signed device identity and Zhihu OAuth', () => {
     const client = gateway(state.repository, fetchImpl)
     const first = 'learner-account-one'; const second = 'learner-account-two'
     state.repository.ensureLearner(first); state.repository.ensureLearner(second)
-    const firstResult = await client.callback(first, new URL(client.start(first).authorizationUrl).searchParams.get('state')!, 'one')
-    const secondResult = await client.callback(second, new URL(client.start(second).authorizationUrl).searchParams.get('state')!, 'two')
+    const firstResult = await client.callback(first, 'device-a', new URL(client.start(first, 'device-a').authorizationUrl).searchParams.get('state')!, 'one')
+    const secondResult = await client.callback(second, 'device-b', new URL(client.start(second, 'device-b').authorizationUrl).searchParams.get('state')!, 'two')
 
     expect(firstResult.learnerId).toBe(first)
     expect(secondResult.learnerId).toBe(second)
@@ -148,9 +153,9 @@ describe('signed device identity and Zhihu OAuth', () => {
       return new Response('', { status: 404 })
     }) as typeof fetch
     const client = gateway(state.repository, fetchImpl)
-    const stateValue = new URL(client.start('identity-missing').authorizationUrl).searchParams.get('state')!
+    const stateValue = new URL(client.start('identity-missing', 'device-missing').authorizationUrl).searchParams.get('state')!
 
-    await expect(client.callback('identity-missing', stateValue, 'identity-missing-code')).rejects.toMatchObject({ code: 'oauth_provider_identity_unavailable' })
+    await expect(client.callback('identity-missing', 'device-missing', stateValue, 'identity-missing-code')).rejects.toMatchObject({ code: 'oauth_provider_identity_unavailable' })
     expect(state.repository.db.prepare('SELECT consumed_at consumedAt FROM oauth_authorization_states').get()).toEqual({ consumedAt: null })
     expect(state.repository.db.prepare('SELECT COUNT(*) count FROM provider_connections').get()).toEqual({ count: 0 })
   })
@@ -165,10 +170,10 @@ describe('signed device identity and Zhihu OAuth', () => {
       return new Response('', { status: 404 })
     }) as typeof fetch
     const client = gateway(state.repository, fetchImpl)
-    const stateValue = new URL(client.start('race-learner').authorizationUrl).searchParams.get('state')!
+    const stateValue = new URL(client.start('race-learner', 'device-race').authorizationUrl).searchParams.get('state')!
     const results = await Promise.allSettled([
-      client.callback('race-learner', stateValue, 'race-code'),
-      client.callback('race-learner', stateValue, 'race-code'),
+      client.callback('race-learner', 'device-race', stateValue, 'race-code'),
+      client.callback('race-learner', 'device-race', stateValue, 'race-code'),
     ])
 
     expect(results.filter((result) => result.status === 'fulfilled')).toHaveLength(1)
@@ -194,7 +199,7 @@ describe('signed device identity and Zhihu OAuth', () => {
     const created = await app.inject({ method: 'POST', url: '/api/auth/session', headers: { origin: 'http://119.45.243.102' } })
     const cookie = (Array.isArray(created.headers['set-cookie']) ? created.headers['set-cookie'][0] : created.headers['set-cookie'])!.split(';')[0]
     const createdBody = created.json<{ learnerId: string; csrfToken: string; auth: { required: boolean; authenticated: boolean } }>()
-    expect(createdBody.auth).toEqual({ required: true, authenticated: false, provider: null, profile: null })
+    expect(createdBody.auth).toEqual({ required: true, authenticated: false, provider: null, profile: null, status: 'disconnected' })
     state.repository.db.prepare(`
       INSERT INTO provider_connections(id, learner_id, provider, provider_user_id, token_ciphertext, token_iv, token_tag, scopes_json, status, profile_json, created_at, updated_at)
       VALUES ('malformed-active-connection', ?, 'zhihu', NULL, 'ciphertext', 'iv', 'tag', '[]', 'active', '{}', ?, ?)
@@ -203,7 +208,7 @@ describe('signed device identity and Zhihu OAuth', () => {
 
     const unauthenticated = await app.inject({ method: 'GET', url: '/api/auth/session', headers: { cookie } })
     expect(unauthenticated.statusCode).toBe(200)
-    expect(unauthenticated.json()).toMatchObject({ learnerId: createdBody.learnerId, auth: { required: true, authenticated: false, provider: null, profile: null } })
+    expect(unauthenticated.json()).toMatchObject({ learnerId: createdBody.learnerId, auth: { required: true, authenticated: false, provider: null, profile: null, status: 'pending' } })
     expect(unauthenticated.json()).not.toHaveProperty('csrfToken')
 
     const start = await app.inject({ method: 'POST', url: '/api/auth/oauth/zhihu/start', headers: { cookie, origin: 'http://119.45.243.102', 'x-csrf-token': createdBody.csrfToken } })
@@ -211,7 +216,7 @@ describe('signed device identity and Zhihu OAuth', () => {
     const callback = await app.inject({ method: 'GET', url: `/api/auth/oauth/zhihu/callback?state=${encodeURIComponent(oauthState)}&authorization_code=session-code`, headers: { cookie } })
     expect(callback.statusCode).toBe(302)
     const authenticated = await app.inject({ method: 'GET', url: '/api/auth/session', headers: { cookie } })
-    expect(authenticated.json()).toMatchObject({ auth: { required: true, authenticated: true, provider: 'zhihu', profile: null } })
+    expect(authenticated.json()).toMatchObject({ auth: { required: true, authenticated: true, provider: 'zhihu', profile: null, status: 'connected' } })
     expect(JSON.stringify(authenticated.json())).not.toContain('session-secret-token')
     expect(state.repository.db.prepare("SELECT provider_user_id providerUserId FROM provider_connections WHERE learner_id=? AND provider='zhihu'").get(createdBody.learnerId)).toEqual({ providerUserId: 'session-user' })
     expect((await app.inject({ method: 'GET', url: '/api/product/runtime-status', headers: { cookie } })).statusCode).toBe(200)
@@ -227,7 +232,7 @@ describe('signed device identity and Zhihu OAuth', () => {
     `).run(JSON.stringify({ displayName: '普通昵称', avatarUrl: 'javascript:alert(1)', profileUrl: 'data:text/html,unsafe' }), now, now)
     const client = gateway(state.repository)
 
-    expect(client.authentication('empty-identity', true)).toEqual({ required: true, authenticated: false, provider: null, profile: null })
+    expect(client.authentication('empty-identity', true)).toEqual({ required: true, authenticated: false, provider: null, profile: null, status: 'pending' })
     expect(client.connections('empty-identity')).toEqual([{
       provider: 'zhihu', status: 'pending', account: undefined, scopes: [], profile: { displayName: '普通昵称', avatarUrl: null, profileUrl: null },
     }])
@@ -243,9 +248,9 @@ describe('signed device identity and Zhihu OAuth', () => {
       return new Response('', { status: 404 })
     }) as typeof fetch
     const client = gateway(state.repository, fetchImpl)
-    const stateValue = new URL(client.start('profile-priority').authorizationUrl).searchParams.get('state')!
+    const stateValue = new URL(client.start('profile-priority', 'device-profile').authorizationUrl).searchParams.get('state')!
 
-    await expect(client.callback('profile-priority', stateValue, 'profile-code')).resolves.toEqual({ learnerId: 'profile-priority', profile: null })
+    await expect(client.callback('profile-priority', 'device-profile', stateValue, 'profile-code')).resolves.toEqual({ learnerId: 'profile-priority', profile: null })
     expect(state.repository.db.prepare("SELECT provider_user_id providerUserId FROM provider_connections WHERE learner_id='profile-priority'").get()).toEqual({ providerUserId: 'token-uid-wins' })
   })
 
@@ -276,13 +281,13 @@ describe('signed device identity and Zhihu OAuth', () => {
       return new Response('', { status: 404 })
     }) as typeof fetch
     const client = gateway(state.repository, fetchImpl, async (milliseconds) => { sleeps.push(milliseconds) })
-    const started = client.start('learner-a')
+    const started = client.start('learner-a', 'device-a')
     const authUrl = new URL(started.authorizationUrl)
     const rawState = authUrl.searchParams.get('state')!
     expect(JSON.stringify(state.repository.db.prepare('SELECT * FROM oauth_authorization_states').all())).not.toContain(rawState)
-    await expect(client.callback('learner-b', rawState, 'code')).rejects.toMatchObject({ code: 'oauth_state_invalid' })
-    await client.callback('learner-a', rawState, 'code')
-    await expect(client.callback('learner-a', rawState, 'code')).rejects.toMatchObject({ code: 'oauth_state_invalid' })
+    await expect(client.callback('learner-b', 'device-b', rawState, 'code')).rejects.toMatchObject({ code: 'oauth_state_invalid' })
+    await client.callback('learner-a', 'device-a', rawState, 'code')
+    await expect(client.callback('learner-a', 'device-a', rawState, 'code')).rejects.toMatchObject({ code: 'oauth_state_invalid' })
     const stored = state.repository.db.prepare('SELECT token_ciphertext, token_iv, token_tag FROM provider_connections').get() as Record<string, string>
     expect(JSON.stringify(stored)).not.toContain('initial-token')
 
@@ -308,8 +313,8 @@ describe('signed device identity and Zhihu OAuth', () => {
       return new Response('', { status: 404 })
     }) as typeof fetch
     const client = gateway(state.repository, fetchImpl)
-    const authorization = client.start('learner-a')
-    await client.callback('learner-a', new URL(authorization.authorizationUrl).searchParams.get('state')!, 'code')
+    const authorization = client.start('learner-a', 'device-a')
+    await client.callback('learner-a', 'device-a', new URL(authorization.authorizationUrl).searchParams.get('state')!, 'code')
 
     client.syncAll('learner-a', 'resume-sync')
     await vi.waitFor(() => expect(client.syncJobs('learner-a')[0]?.status).toBe('completed'))

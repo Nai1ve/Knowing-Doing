@@ -136,7 +136,7 @@ export class ZhihuGateway {
     this.sleep = options.sleep ?? ((milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)))
   }
 
-  start(learnerId: string): { authorizationUrl: string; expiresInSeconds: number } {
+  start(learnerId: string, sessionId?: string | null): { authorizationUrl: string; expiresInSeconds: number } {
     if (this.options.redirectUri !== ZHIHU_OAUTH_CALLBACK) throw new LabError('oauth_callback_invalid', 'OAuth 回调地址未按部署契约配置', 500)
     if (!this.options.clientId || !this.options.clientSecret) throw new LabError('oauth_not_configured', '知乎 OAuth 尚未配置', 503)
     if (this.options.redirectUri.startsWith('http://') && !this.options.allowInsecureCallback) throw new LabError('oauth_insecure_callback_disabled', 'HTTP OAuth 回调未显式启用', 503)
@@ -144,8 +144,8 @@ export class ZhihuGateway {
     const state = randomBytes(32).toString('base64url')
     const createdAt = new Date()
     this.repository.db.prepare(
-      'INSERT INTO oauth_authorization_states(id, learner_id, provider, state_hash, redirect_uri, expires_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
-    ).run(randomUUID(), learnerId, 'zhihu', this.hash(state), this.options.redirectUri, new Date(createdAt.getTime() + 5 * 60_000).toISOString(), createdAt.toISOString())
+      'INSERT INTO oauth_authorization_states(id, learner_id, learner_session_id, provider, state_hash, redirect_uri, expires_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+    ).run(randomUUID(), learnerId, sessionId ?? null, 'zhihu', this.hash(state), this.options.redirectUri, new Date(createdAt.getTime() + 5 * 60_000).toISOString(), createdAt.toISOString())
 
     const url = new URL(this.options.authorizePath, this.options.baseUrl)
     // Zhihu's OAuth application contract uses app_id (not the generic OAuth client_id).
@@ -157,10 +157,13 @@ export class ZhihuGateway {
     return { authorizationUrl: url.toString(), expiresInSeconds: 300 }
   }
 
-  async callback(learnerId: string, state: string, code: string): Promise<ZhihuCallbackResult> {
+  async callback(learnerId: string, sessionId: string, state: string, code: string): Promise<ZhihuCallbackResult> {
+    // The state is bound to the concrete device session that started the flow.
+    // Replaying a captured state on another session, after expiry, or after it
+    // was already consumed all resolve to the same safe oauth_state_invalid.
     const stateRow = this.repository.db.prepare(
-      "SELECT * FROM oauth_authorization_states WHERE provider = 'zhihu' AND learner_id = ? AND state_hash = ? AND consumed_at IS NULL AND expires_at > ?",
-    ).get(learnerId, this.hash(state), new Date().toISOString()) as ConnectionRow | undefined
+      "SELECT * FROM oauth_authorization_states WHERE provider = 'zhihu' AND learner_id = ? AND learner_session_id = ? AND state_hash = ? AND consumed_at IS NULL AND expires_at > ?",
+    ).get(learnerId, sessionId, this.hash(state), new Date().toISOString()) as ConnectionRow | undefined
     if (!stateRow) throw new LabError('oauth_state_invalid', 'OAuth state 无效、已使用、跨会话或已过期', 400)
 
     const token = await this.exchangeToken({ grant_type: 'authorization_code', code, redirect_uri: this.options.redirectUri })
@@ -175,23 +178,23 @@ export class ZhihuGateway {
     const sealed = this.encrypt(JSON.stringify(token))
     return this.repository.db.transaction(() => {
       const consumed = this.repository.db.prepare(
-        'UPDATE oauth_authorization_states SET consumed_at = ? WHERE id = ? AND learner_id = ? AND consumed_at IS NULL',
-      ).run(now, stateRow.id, learnerId)
+        'UPDATE oauth_authorization_states SET consumed_at = ? WHERE id = ? AND learner_id = ? AND learner_session_id = ? AND consumed_at IS NULL',
+      ).run(now, stateRow.id, learnerId, sessionId)
       if (consumed.changes !== 1) throw new LabError('oauth_state_invalid', 'OAuth state 已被消费', 400)
       const existing = this.repository.db.prepare(`
         SELECT learner_id learnerId FROM provider_connections
         WHERE provider = 'zhihu' AND provider_user_id = ? LIMIT 1
       `).get(providerUserId) as { learnerId: string } | undefined
-      let canonicalLearnerId = existing?.learnerId ?? learnerId
-      if (!existing) {
-        const current = this.repository.db.prepare(
-          "SELECT provider_user_id providerUserId FROM provider_connections WHERE learner_id = ? AND provider = 'zhihu'",
-        ).get(learnerId) as { providerUserId: string | null } | undefined
-        if (current?.providerUserId && current.providerUserId !== providerUserId) {
-          canonicalLearnerId = randomUUID()
-          this.repository.ensureLearner(canonicalLearnerId)
-        }
-      }
+      // Never silently merge two learner histories: if this Zhihu account is
+      // already bound to another learner, the caller must resolve the conflict
+      // explicitly. This also prevents a re-auth callback from silently creating
+      // an empty learner or abandoning the device learner's existing history.
+      if (existing && existing.learnerId !== learnerId) throw new LabError('identity_merge_required', '该知乎账号已绑定其他学习档案，请先断开该账号或使用对应账号登录', 409)
+      const current = this.repository.db.prepare(
+        "SELECT provider_user_id providerUserId FROM provider_connections WHERE learner_id = ? AND provider = 'zhihu'",
+      ).get(learnerId) as { providerUserId: string | null } | undefined
+      if (current?.providerUserId && current.providerUserId !== providerUserId) throw new LabError('identity_merge_required', '当前学习档案已绑定其他知乎账号，请先断开后再连接新账号', 409)
+      const canonicalLearnerId = learnerId
       this.repository.db.prepare(`
         INSERT INTO provider_connections(
           id, learner_id, provider, provider_user_id, token_ciphertext, token_iv, token_tag,
@@ -219,25 +222,34 @@ export class ZhihuGateway {
     return rows.map((row) => {
       const providerUserId = typeof row.providerUserId === 'string' && row.providerUserId.trim() ? row.providerUserId.trim() : null
       const connected = row.status === 'active' && providerUserId !== null
+      const status = row.status === 'reauthorization_required' ? 'reauthorization_required' as const : connected ? 'connected' as const : 'pending' as const
       return {
         provider: 'zhihu' as const,
-        status: connected ? 'connected' as const : 'pending' as const,
+        status,
         account: providerUserId ?? undefined,
         scopes: this.json<string[]>(row.scopesJson, []),
-        profile: storedPublicProfile(row.profileJson),
+        profile: status === 'reauthorization_required' ? null : storedPublicProfile(row.profileJson),
       }
     })
   }
 
+  // The session DTO consumes this to distinguish "never connected" from
+  // "connected but the token can no longer be used" so the frontend can route
+  // to a reauthorization flow instead of showing a broken business page.
   authentication(learnerId: string, required: boolean) {
     const connection = this.repository.db.prepare(
-      "SELECT profile_json profileJson FROM provider_connections WHERE learner_id = ? AND provider = 'zhihu' AND status = 'active' AND provider_user_id IS NOT NULL AND LENGTH(TRIM(provider_user_id)) > 0",
-    ).get(learnerId) as { profileJson: string } | undefined
+      "SELECT profile_json profileJson, status, provider_user_id providerUserId FROM provider_connections WHERE learner_id = ? AND provider = 'zhihu'",
+    ).get(learnerId) as { profileJson: string; status: string; providerUserId: string | null } | undefined
+    if (!connection) return { required, authenticated: false, provider: null, profile: null, status: 'disconnected' as const }
+    if (connection.status === 'reauthorization_required') return { required, authenticated: false, provider: 'zhihu' as const, profile: null, status: 'reauthorization_required' as const }
+    const providerUserId = connection.providerUserId ?? null
+    const connected = Boolean(providerUserId && providerUserId.trim().length > 0)
     return {
       required,
-      authenticated: Boolean(connection),
-      provider: connection ? 'zhihu' as const : null,
-      profile: connection ? storedPublicProfile(connection.profileJson) : null,
+      authenticated: connected,
+      provider: connected ? 'zhihu' as const : null,
+      profile: connected ? storedPublicProfile(connection.profileJson) : null,
+      status: connected ? 'connected' as const : 'pending' as const,
     }
   }
 
@@ -358,19 +370,20 @@ export class ZhihuGateway {
 
   disconnect(learnerId: string) {
     this.repository.db.transaction(() => {
+      // Collection membership is dropped first so the collections themselves
+      // can be removed without violating their FK from collection_items.
       this.repository.db.prepare(`
         DELETE FROM external_source_collection_items
-        WHERE source_item_id IN (
-          SELECT i.id FROM learner_source_items i
-          WHERE i.learner_id = ? AND i.provider = 'zhihu'
-            AND NOT EXISTS (SELECT 1 FROM practice_card_sources pcs WHERE pcs.source_item_id = i.id)
-        )
+        WHERE collection_id IN (SELECT id FROM external_source_collections WHERE learner_id = ? AND provider = 'zhihu')
       `).run(learnerId)
       this.repository.db.prepare(`
         DELETE FROM learner_source_items
         WHERE learner_id = ? AND provider = 'zhihu'
           AND NOT EXISTS (SELECT 1 FROM practice_card_sources pcs WHERE pcs.source_item_id = learner_source_items.id)
       `).run(learnerId)
+      // Sources still referenced by Practice Cards survive as a de-identified
+      // snapshot: content is emptied, the row is marked removed, and the card
+      // keeps only its digest reference to a non-private record.
       this.repository.db.prepare(`
         UPDATE learner_source_items SET content_json = '{}', status = 'removed', removed_at = ?, updated_at = ?
         WHERE learner_id = ? AND provider = 'zhihu'
@@ -566,7 +579,13 @@ export class ZhihuGateway {
 
   private token(connection: ConnectionRow): Token {
     try { return tokenSchema.parse(JSON.parse(this.decrypt(connection))) }
-    catch { throw new LabError('oauth_token_unreadable', '知乎连接凭据无法读取，请重新授权', 409) }
+    catch {
+      // An undecryptable token is a hard failure: mark the connection so the
+      // session DTO exposes reauthorization_required, and fail with the same
+      // safe code used for a remote 401.
+      this.markReauthorization(String(connection.id))
+      throw new LabError('reauthorization_required', '知乎连接凭据无法读取，请重新授权', 401)
+    }
   }
 
   private updateToken(connection: ConnectionRow, token: Token): void {
