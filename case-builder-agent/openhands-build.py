@@ -182,9 +182,14 @@ def write_mysql_context(request: dict[str, Any], context: Path) -> None:
 def write_python_context(context: Path) -> None:
     context.mkdir(parents=True, exist_ok=True)
     base_image = base_image_for("docker_workspace")
+    # The deployment-owned Python image is prebuilt with the pinned pytest
+    # toolchain. Reinstalling it would make an otherwise offline runtime build
+    # depend on PyPI again. Keep the fallback install only for an explicitly
+    # configured external base image used in a non-production setup.
+    install_pytest = "" if base_image == "zhixing-python-pytest-v1:local" else "RUN pip install --no-cache-dir pytest==8.4.1\n"
     (context / "Dockerfile").write_text(
         f"FROM {base_image}\n"
-        "RUN pip install --no-cache-dir pytest==8.4.1\n"
+        f"{install_pytest}"
         "WORKDIR /workspace\n",
         encoding="utf-8",
     )
