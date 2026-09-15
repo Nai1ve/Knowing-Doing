@@ -75,6 +75,7 @@ export function buildApp(dependencies: AppDependencies): { app: FastifyInstance;
       const path = request.url.split('?')[0]
       const isBootstrap = request.method === 'POST' && path === '/api/auth/session'
       const isCallback = request.method === 'GET' && path === '/api/auth/oauth/zhihu/callback'
+      const isLogout = request.method === 'POST' && path === '/api/auth/logout'
       const origin = typeof request.headers.origin === 'string' ? request.headers.origin.replace(/\/$/, '') : null
       const acceptedOrigins = new Set([dependencies.config.publicOrigin, dependencies.config.corsOrigin].map((value) => value.replace(/\/$/, '')))
       if (!['GET', 'HEAD', 'OPTIONS'].includes(request.method) && origin && !acceptedOrigins.has(origin)) {
@@ -84,9 +85,16 @@ export function buildApp(dependencies: AppDependencies): { app: FastifyInstance;
 
       const sessionId = sessionCookie(request)
       const session = dependencies.identityService.resolve(sessionId)
-      if (!session) return reply.code(401).send({ error: { code: 'session_required', message: '需要有效的设备会话', retryable: false } })
+      if (!session) {
+        // Logout is idempotent per the frozen contract: revoking an absent or
+        // already-expired session still returns 200 so a stale client can always
+        // clear its device cookie. Every other authenticated route stays 401.
+        if (isLogout) return
+        return reply.code(401).send({ error: { code: 'session_required', message: '需要有效的设备会话', retryable: false } })
+      }
       request.headers['x-authenticated-learner-id'] = session.learnerId
-      reply.header('Set-Cookie', sessionCookieHeader(session.id))
+      if (!isLogout) reply.header('Set-Cookie', sessionCookieHeader(session.id))
+      if (isLogout) return
       if (dependencies.config.zhihuLoginRequired && path.startsWith('/api/product/') && !dependencies.zhihuGateway?.authentication(session.learnerId, true).authenticated) {
         return reply.code(401).send({ error: { code: 'zhihu_auth_required', message: '需要连接知乎账号后才能访问学习内容', retryable: false } })
       }
@@ -288,6 +296,10 @@ function sessionCookieHeader(id: string): string {
   return `zhixing_session=${encodeURIComponent(id)}; HttpOnly; SameSite=Lax; Path=/; Max-Age=604800`
 }
 
+function sessionExpiredCookieHeader(): string {
+  return 'zhixing_session=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0'
+}
+
 function registerIdentityRoutes(app: FastifyInstance, identity: IdentityService, publicOrigin: string, zhihu?: ZhihuGateway, oauthEnabled = false, zhihuLoginRequired = false, sourceSyncEnabled = false, sourceLibraryEnabled = false): void {
   app.get('/api/auth/session', async (request, reply) => {
     const session = identity.resolve(sessionCookie(request))
@@ -298,11 +310,25 @@ function registerIdentityRoutes(app: FastifyInstance, identity: IdentityService,
     const session = identity.issue(sessionCookie(request))
     reply.header('Set-Cookie', sessionCookieHeader(session.id)).code(201).send({ learnerId: session.learnerId, csrfToken: session.csrfToken, expiresAt: session.expiresAt, auth: zhihu?.authentication(session.learnerId, zhihuLoginRequired) ?? { required: zhihuLoginRequired, authenticated: false, provider: null, profile: null } })
   })
+  app.post('/api/auth/logout', async (request, reply) => {
+    // Revoke the current learner_sessions row and clear the device cookie. The
+    // onRequest hook already treated this path as idempotent, so a missing or
+    // expired session also reaches here and returns the same success body.
+    const sessionId = sessionCookie(request)
+    const session = identity.resolve(sessionId)
+    if (session) identity.revoke(session.id)
+    reply.header('Set-Cookie', sessionExpiredCookieHeader())
+    reply.send({ ok: true })
+  })
   if (!zhihu) return
   app.get('/api/auth/connections', async (request, reply) => reply.send(zhihu.connections(learnerId(request))))
   if (oauthEnabled) {
   app.delete('/api/auth/connections/zhihu', async (request, reply) => reply.send(zhihu.disconnect(learnerId(request))))
-  app.post('/api/auth/oauth/zhihu/start', async (request, reply) => reply.send(zhihu.start(learnerId(request))))
+  app.post('/api/auth/oauth/zhihu/start', async (request, reply) => {
+    const session = identity.resolve(sessionCookie(request))
+    if (!session) throw new LabError('session_required', '需要有效的设备会话', 401)
+    reply.send(zhihu.start(session.learnerId, session.id))
+  })
   app.get('/api/auth/oauth/zhihu/callback', async (request, reply) => {
     const query = request.query as { state?: string; authorization_code?: string; code?: string }
     try {
@@ -310,7 +336,7 @@ function registerIdentityRoutes(app: FastifyInstance, identity: IdentityService,
       if (!query.state || !authorizationCode) throw new LabError('oauth_callback_missing', '缺少 OAuth state 或 authorization_code', 400)
       const session = identity.resolve(sessionCookie(request))
       if (!session) throw new LabError('session_required', '需要有效的设备会话', 401)
-      const result = await zhihu.callback(session.learnerId, query.state, authorizationCode)
+      const result = await zhihu.callback(session.learnerId, session.id, query.state, authorizationCode)
       const rebound = identity.rebind(session.id, result.learnerId)
       reply.header('Set-Cookie', sessionCookieHeader(rebound.id))
       reply.redirect(`${publicOrigin}/settings?connection=zhihu&result=success`, 302)

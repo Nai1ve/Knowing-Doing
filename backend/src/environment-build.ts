@@ -183,3 +183,40 @@ export function safeBuildDiagnostic(input: { code: string; message: unknown; pha
 export function manifestFingerprint(manifest: EnvironmentBuildManifest): string {
   return createHash('sha256').update(JSON.stringify(manifest)).digest('hex')
 }
+
+export interface EnvironmentManifestContext {
+  jobId: string
+  attemptId: string
+  runtimeKind: RuntimeKind
+  environmentKey: string
+  environmentVersion: string
+  mysqlContract: OpenHandsMySqlBuildContract | null
+  resolveCommandKey?: (key: string) => boolean
+}
+
+/**
+ * The server independently verifies everything an OpenHands task hands back.
+ * The manifest is deliberately not a command execution authority: command
+ * keys, image labels, asset boundaries, and the frozen MySQL contract are all
+ * re-checked here against the server's source of truth before any build can
+ * proceed.
+ */
+export function validateEnvironmentManifest(manifest: EnvironmentBuildManifest, context: EnvironmentManifestContext): void {
+  if (manifest.runtimeKind !== context.runtimeKind || manifest.environment.key !== context.environmentKey || manifest.environment.version !== context.environmentVersion) throw new OpenHandsBuildAdapterError('manifest_environment_mismatch', 'OpenHands Manifest 与当前 Gym 环境不一致', 'agent_failure')
+  if (manifest.verification.commandKeys.some((key) => context.resolveCommandKey ? !context.resolveCommandKey(key) : false)) throw new OpenHandsBuildAdapterError('manifest_command_not_allowed', 'OpenHands Manifest 包含未授权验证命令', 'agent_failure')
+  if (new Set(manifest.starterFiles.map((file) => file.path)).size !== manifest.starterFiles.length || new Set(manifest.referenceFiles.map((file) => file.path)).size !== manifest.referenceFiles.length) throw new OpenHandsBuildAdapterError('manifest_duplicate_files', 'OpenHands Manifest 包含重复文件路径', 'agent_failure')
+  const manifestFiles = [...manifest.starterFiles, ...manifest.referenceFiles]
+  const fileBytes = manifestFiles.reduce((total, file) => total + Buffer.byteLength(file.content, 'utf8'), 0)
+  if (fileBytes > 2 * 1024 * 1024 || manifestFiles.some((file) => file.path.startsWith('/') || file.path.includes('..') || file.path.includes('\\') || Buffer.byteLength(file.content, 'utf8') > 256 * 1024 || (manifest.runtimeKind === 'docker_workspace' && !/\.(py|json|md|txt)$/.test(file.path)))) throw new OpenHandsBuildAdapterError('manifest_asset_boundary_invalid', 'OpenHands Manifest 包含越界的环境资产', 'agent_failure')
+  for (const resource of manifest.resources) {
+    if (resource.labels['zhixing.case-build'] !== context.jobId) throw new OpenHandsBuildAdapterError('manifest_resource_label_missing', 'OpenHands 资源缺少当前构建标签', 'agent_failure')
+    if (resource.labels['zhixing.case-attempt'] !== context.attemptId || resource.labels['zhixing.protocol-version'] !== String(ENVIRONMENT_BUILD_PROTOCOL_VERSION) || resource.labels['zhixing.resource-role'] !== resource.role) throw new OpenHandsBuildAdapterError('manifest_resource_label_invalid', 'OpenHands 资源标签与当前构建不一致', 'agent_failure')
+  }
+  const runtimeImage = manifest.resources.find((resource) => resource.kind === 'image' && resource.role === 'runtime_artifact')
+  if (!runtimeImage || runtimeImage.labels['zhixing.runtime-kind'] !== context.runtimeKind || runtimeImage.labels['zhixing.runtime-image-digest'] !== manifest.environment.runtimeImageDigest || runtimeImage.labels['zhixing.environment-key'] !== context.environmentKey || runtimeImage.labels['zhixing.environment-version'] !== context.environmentVersion) throw new OpenHandsBuildAdapterError('manifest_runtime_artifact_missing', 'OpenHands Manifest 缺少已标记的运行时镜像产物', 'agent_failure')
+  if (context.runtimeKind === 'mysql_lab') {
+    if (!context.mysqlContract || !manifest.mysql) throw new OpenHandsBuildAdapterError('manifest_mysql_contract_missing', 'MySQL Manifest 缺少服务端冻结的案例契约', 'agent_failure')
+    if (manifest.mysql.contractFingerprint !== context.mysqlContract.materializationFingerprint || manifest.mysql.starterExplain !== context.mysqlContract.starterExplain || manifest.mysql.referenceSql.length !== 1 || manifest.mysql.referenceSql[0] !== context.mysqlContract.referenceSql || !manifest.mysql.initializationSql.includes(context.mysqlContract.schemaSql) || !manifest.mysql.initializationSql.includes(context.mysqlContract.faultSql)) throw new OpenHandsBuildAdapterError('manifest_mysql_contract_mismatch', 'MySQL Manifest 与当前案例物料不一致', 'agent_failure')
+    if (runtimeImage.labels['zhixing.mysql-contract-fingerprint'] !== context.mysqlContract.materializationFingerprint) throw new OpenHandsBuildAdapterError('manifest_mysql_artifact_contract_missing', 'MySQL 运行时镜像缺少案例物料标签', 'agent_failure')
+  }
+}

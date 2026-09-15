@@ -121,6 +121,7 @@ export function loadConfig(): LabConfig {
   if (process.env.ZHIHU_SOURCE_SYNC_ENABLED === 'true' && !zhihuOauthEnabled) throw new Error('ZHIHU_OAUTH_ENABLED=true is required when ZHIHU_SOURCE_SYNC_ENABLED=true')
   if (process.env.ZHIHU_RESEARCH_ENABLED === 'true' && !zhihuOauthEnabled) throw new Error('ZHIHU_OAUTH_ENABLED=true is required when ZHIHU_RESEARCH_ENABLED=true')
   if (process.env.ZHIHU_RESEARCH_ENABLED === 'true' && process.env.ZHIHU_SOURCE_SYNC_ENABLED !== 'true') throw new Error('ZHIHU_SOURCE_SYNC_ENABLED=true is required when ZHIHU_RESEARCH_ENABLED=true')
+  if (process.env.ZHIHU_PDF_PARSE_ENABLED === 'true' && !process.env.ZHIXING_ZHIHU_ACCESS_SECRET) throw new Error('ZHIXING_ZHIHU_ACCESS_SECRET is required when ZHIHU_PDF_PARSE_ENABLED=true')
   if (process.env.MIXED_GYM_ENABLED === 'true' && process.env.PRACTICE_CARD_V2_ENABLED !== 'true') throw new Error('PRACTICE_CARD_V2_ENABLED=true is required when MIXED_GYM_ENABLED=true')
   if (identityMode === 'shared_demo' && zhihuOauthEnabled) throw new Error('ZHIHU_OAUTH_ENABLED is not permitted in shared_demo identity mode')
   if (zhihuOauthEnabled && (!process.env.ZHIHU_OAUTH_APP_ID || !process.env.ZHIHU_OAUTH_APP_KEY)) throw new Error('ZHIHU_OAUTH_APP_ID and ZHIHU_OAUTH_APP_KEY are required when ZHIHU_OAUTH_ENABLED=true')

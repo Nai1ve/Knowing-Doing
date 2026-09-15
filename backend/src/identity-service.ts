@@ -72,6 +72,14 @@ export class IdentityService {
     return expected.length === actual.length && timingSafeEqual(expected, actual)
   }
 
+  // Revoking deletes the learner_sessions row so any later request carrying
+  // the same cookie resolves to null and receives 401. It is idempotent: an
+  // already-absent session simply has no row to delete.
+  revoke(id: string | undefined): void {
+    if (!id) return
+    this.repository.db.prepare('DELETE FROM learner_sessions WHERE id = ?').run(id)
+  }
+
   rebind(id: string, learnerId: string): ResolvedDeviceSession {
     const now = new Date().toISOString()
     const expiresAt = new Date(Date.now() + SESSION_TTL_MS).toISOString()

@@ -1,4 +1,5 @@
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
+import { randomUUID } from 'node:crypto'
 import { Readable } from 'node:stream'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
@@ -6,6 +7,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { applyProductMigrations } from '../src/product-migrate.js'
 import { ProductRepository } from '../src/product-repository.js'
 import { PlanningService } from '../src/planning.js'
+import type { RemoteResumePdfParser } from '../src/resume-parser.js'
 
 function withPlanning<T>(callback: (service: PlanningService, repository: ProductRepository, storagePath: string) => Promise<T> | T): Promise<T> {
   const directory = mkdtempSync(path.join(tmpdir(), 'zhixing-resume-'))
@@ -88,5 +90,83 @@ describe('PlanningService learner resume documents', () => {
     const limited = new PlanningService(repository, { resumeStoragePath: storagePath, resumeMaxBytes: 8 })
     const session = service.createSession('resume-limit', { goal: '学习后端系统', clientRequestId: 'resume-limit-session' })
     await expect(limited.uploadResume('resume-limit', session.id, { filename: 'resume.pdf', mimetype: 'application/pdf', file: Readable.from(Buffer.from('%PDF-1.7\nlarge')) })).rejects.toMatchObject({ code: 'resume_too_large' })
+  }))
+
+  it('maps remote quota, scanned, and local fallback failures to safe parse error codes', async () => {
+    const directory = mkdtempSync(path.join(tmpdir(), 'zhixing-resume-codes-'))
+    const dbPath = path.join(directory, 'product.db')
+    const storagePath = path.join(directory, 'resumes')
+    applyProductMigrations(dbPath)
+    const repository = new ProductRepository(dbPath)
+    const sessionId = randomUUID()
+    try {
+      const remoteParser: RemoteResumePdfParser = {
+        async parse() { throw Object.assign(new Error('remote down'), { code: 'zhihu_quota_exhausted' }) },
+      }
+      const service = new PlanningService(repository, { resumeStoragePath: storagePath, remoteResumeParser: remoteParser })
+      const session = service.createSession('resume-codes', { goal: '学习后端系统', clientRequestId: 'codes-session' })
+      const fallback = await service.uploadResume('resume-codes', session.id, { filename: 'resume.pdf', mimetype: 'application/pdf', file: Readable.from(textPdf('payment service and MySQL performance')) })
+      await waitForStatus(repository, fallback.id, 'ready')
+      // Remote quota exhaustion is recorded while local parsing saved the document.
+      expect(repository.db.prepare('SELECT parse_provider, parse_error_code FROM learner_resume_documents WHERE id=?').get(fallback.id)).toMatchObject({ parse_provider: 'local', parse_error_code: 'zhihu_quota_exhausted' })
+      expect(service.getSession('resume-codes', session.id).resume?.parseErrorCode).toBe('zhihu_quota_exhausted')
+
+      // A scanned PDF with no extractable text maps to a safe scanned code.
+      const scanned = await service.uploadResume('resume-codes', session.id, { filename: 'scanned.pdf', mimetype: 'application/pdf', file: Readable.from(textPdf('')) })
+      await waitForStatus(repository, scanned.id, 'failed')
+      expect(repository.db.prepare('SELECT parse_error_code FROM learner_resume_documents WHERE id=?').get(scanned.id)).toMatchObject({ parse_error_code: 'resume_text_unavailable' })
+
+      // A corrupt PDF that even the local fallback cannot parse maps to a safe code.
+      const broken = await service.uploadResume('resume-codes', session.id, { filename: 'broken.pdf', mimetype: 'application/pdf', file: Readable.from(Buffer.from('%PDF-1.7\nbroken garbage')) })
+      await waitForStatus(repository, broken.id, 'failed')
+      expect(repository.db.prepare('SELECT parse_error_code FROM learner_resume_documents WHERE id=?').get(broken.id)).toMatchObject({ parse_error_code: 'resume_parse_failed' })
+    } finally {
+      repository.close()
+      rmSync(directory, { recursive: true, force: true })
+    }
+  })
+
+  it('fences parse leases and resumes interrupted processing after a service restart', async () => {
+    const directory = mkdtempSync(path.join(tmpdir(), 'zhixing-resume-lease-'))
+    const dbPath = path.join(directory, 'product.db')
+    applyProductMigrations(dbPath)
+    const repository = new ProductRepository(dbPath)
+    try {
+      repository.ensureLearner('lease-learner')
+      const now = new Date().toISOString()
+      const future = new Date(Date.now() + 5 * 60_000).toISOString()
+      repository.db.prepare(`
+        INSERT INTO learner_resume_documents(id, learner_id, original_filename, stored_filename, mime_type, size_bytes, sha256, parse_status, page_count, text_length, extracted_text, parse_error, version, is_current, created_at, updated_at, parse_lease_until, parse_lease_token)
+        VALUES (?, 'lease-learner', 'resume.pdf', 'lease-doc.pdf', 'application/pdf', 1, 'h', 'processing', 0, 0, '', NULL, 1, 1, ?, ?, ?, 'active-lease-token')
+      `).run('lease-doc', now, now, future)
+
+      // An unexpired lease cannot be reclaimed by another worker.
+      expect(repository.claimResumeParse('lease-doc')).toBeNull()
+      // Restart recovery clears the lease and reopens the document for processing.
+      repository.recoverResumeParses()
+      expect(repository.db.prepare('SELECT parse_status, parse_lease_until, parse_lease_token FROM learner_resume_documents WHERE id=?').get('lease-doc')).toMatchObject({ parse_status: 'pending', parse_lease_until: null, parse_lease_token: null })
+      // The recovered document can now be claimed again.
+      expect(repository.claimResumeParse('lease-doc')).not.toBeNull()
+    } finally {
+      repository.close()
+      rmSync(directory, { recursive: true, force: true })
+    }
+  })
+
+  it('reclaims interrupted uploads and superseded files without touching current documents', async () => withPlanning(async (service, repository, storagePath) => {
+    const session = service.createSession('cleanup-learner', { goal: '学习后端系统', clientRequestId: 'cleanup-session' })
+    const first = await service.uploadResume('cleanup-learner', session.id, { filename: 'resume.pdf', mimetype: 'application/pdf', file: Readable.from(textPdf('first resume')) })
+    await waitForStatus(repository, first.id, 'ready')
+    const second = await service.uploadResume('cleanup-learner', session.id, { filename: 'resume-v2.pdf', mimetype: 'application/pdf', file: Readable.from(textPdf('second resume')) })
+    await waitForStatus(repository, second.id, 'ready')
+    writeFileSync(path.join(storagePath, 'orphan.pdf'), '%PDF-1.4 orphan')
+    writeFileSync(path.join(storagePath, 'interrupted.uploading'), 'partial upload')
+
+    const result = await service.cleanupStaleResumeFiles({ uploadTempMaxAgeMs: -1, retentionMs: -1 })
+    expect(result.removedFiles).toEqual(expect.arrayContaining(['orphan.pdf', 'interrupted.uploading', `${first.id}.pdf`]))
+    // The current document's file is retained.
+    expect(existsSync(path.join(storagePath, `${second.id}.pdf`))).toBe(true)
+    expect(existsSync(path.join(storagePath, 'orphan.pdf'))).toBe(false)
+    expect(existsSync(path.join(storagePath, `${first.id}.pdf`))).toBe(false)
   }))
 })

@@ -44,6 +44,12 @@ const writingService = new WritingService(productRepository, curation, new DeepS
 writingService.resumeGenerations()
 const planningService = new PlanningService(productRepository, { resumeStoragePath: config.resumeStoragePath, resumeMaxBytes: config.resumeMaxBytes, remoteResumeParser: zhihuPdfParser })
 planningService.resumePendingParses()
+// Uploaded resume files are reclaimed on startup and then every six hours so
+// interrupted uploads and superseded versions cannot accumulate unboundedly.
+const runResumeCleanup = () => { void planningService.cleanupStaleResumeFiles().catch((error) => console.warn('[zhixing-resume] cleanup_failed', error instanceof Error ? error.message : String(error))) }
+runResumeCleanup()
+const resumeCleanupTimer = setInterval(runResumeCleanup, 6 * 60 * 60_000)
+resumeCleanupTimer.unref()
 const agentPlanningService = new AgentPlanningService(productRepository, new DeepSeekPlanningAgent(config), { modelName: config.modelName, plannerAssessmentV2Enabled: config.plannerAssessmentV2Enabled }, zhihuOpenApi)
 agentPlanningService.recoverRoadmapGenerations()
 const workspaceRunner = config.workspaceRunnerFake
@@ -97,6 +103,7 @@ try {
 }
 
 const shutdown = async () => {
+  clearInterval(resumeCleanupTimer)
   await scheduler.shutdown()
   productRepository.close()
   await app.close()
