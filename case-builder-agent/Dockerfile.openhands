@@ -15,4 +15,10 @@ WORKDIR /workspace
 COPY openhands-build.py /usr/local/bin/zhixing-openhands-build.py
 RUN chmod 0755 /usr/local/bin/zhixing-openhands-build.py
 
+# OpenHands executes the generated verification commands through its terminal
+# using PATH.  The base image deliberately keeps its SDK dependencies in
+# /app/.venv, so make that interpreter (and pytest) the default for both the
+# agent and this wrapper's independent `python3 -m pytest` preflight.
+ENV VIRTUAL_ENV=/app/.venv
+ENV PATH=/app/.venv/bin:${PATH}
 ENV OPENHANDS_SUPPRESS_BANNER=true
