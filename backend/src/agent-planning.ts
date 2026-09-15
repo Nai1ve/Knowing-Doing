@@ -318,6 +318,29 @@ function resumeEvidence(resume: LearnerResumeContext | null, focus: string): Pro
 type AssessmentDraftQuestion = z.infer<typeof AssessmentQuestionSchema>
 type AssessmentDimension = z.infer<typeof AssessmentSchema>['dimensions'][number]
 
+// Public assessment DTOs must never surface raw provider output. The stored
+// error_message can contain model or transport detail that is safe only in
+// server logs; the DTO derives a fixed, user-facing message from the failure
+// code instead. Any unknown code collapses to one generic message.
+const SAFE_ASSESSMENT_ERRORS: Record<string, string> = {
+  assessment_invalid_output: '诊断题目生成失败，请重试',
+  assessment_failed: '诊断生成失败，请重试',
+  assessment_evaluation_failed: '诊断评估失败，请重试',
+  assessment_evaluation_invalid_output: '诊断评估结果无效，请重试',
+  requirements_failed: '需求整理失败，请重试',
+  requirements_invalid_output: '需求整理结果无效，请重试',
+  service_restarted: '服务重启中断了题目生成，请重试',
+  model_not_configured: '规划模型尚未配置',
+  model_timeout: '诊断生成超时，请重试',
+  model_request_failed: '诊断服务请求失败，请重试',
+  model_empty_output: '诊断服务没有返回内容，请重试',
+}
+function safeAssessmentError(row: Row): string | null {
+  const code = nullable(row, 'failure_code')
+  if (!code) return null
+  return SAFE_ASSESSMENT_ERRORS[code] ?? '诊断处理失败，请重试'
+}
+
 function record(value: unknown): Record<string, unknown> | null {
   return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : null
 }
@@ -829,7 +852,7 @@ export class AgentPlanningService {
     const dimensions = json<Array<{ key: string; title: string; rationale: string }>>(row.dimensions_json, [])
     const summary = evaluation ? { id, status, dimensions: evaluation.dimensions.map((dimension) => ({ key: dimension.key, label: dimensions.find((item) => item.key === dimension.key)?.title ?? dimension.key, level: dimension.level, confidence: dimension.confidence, evidence: dimension.evidence, nextValidation: dimension.nextValidation })) } : null
     void includeAnswers
-    return { id, planningSessionId: text(row, 'session_id'), version: number(row, 'version'), status, recoveredFromFailure: (nullable(row, 'client_request_id') ?? '').startsWith('recovery:'), dimensions, questions, answers, skipped, currentQuestionIndex: Math.min(answerCount, Math.max(0, questions.length - 1)), progress: { completed: answerCount, total: questions.length, current: Math.min(answerCount + 1, questions.length), label: `${answerCount}/${questions.length}` }, answerCount, summary, evaluation, error: nullable(row, 'error_message'), createdAt: text(row, 'created_at'), updatedAt: text(row, 'updated_at') }
+    return { id, planningSessionId: text(row, 'session_id'), version: number(row, 'version'), status, recoveredFromFailure: (nullable(row, 'client_request_id') ?? '').startsWith('recovery:'), dimensions, questions, answers, skipped, currentQuestionIndex: Math.min(answerCount, Math.max(0, questions.length - 1)), progress: { completed: answerCount, total: questions.length, current: Math.min(answerCount + 1, questions.length), label: `${answerCount}/${questions.length}` }, answerCount, summary, evaluation, error: safeAssessmentError(row), createdAt: text(row, 'created_at'), updatedAt: text(row, 'updated_at') }
   }
 
   private requirementFrom(row: Row | undefined): RequirementBrief | null {
