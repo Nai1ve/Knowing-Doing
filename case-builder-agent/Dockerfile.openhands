@@ -13,7 +13,13 @@ RUN apt-get update \
 WORKDIR /workspace
 
 COPY openhands-build.py /usr/local/bin/zhixing-openhands-build.py
-RUN chmod 0755 /usr/local/bin/zhixing-openhands-build.py
+# Debian's docker.io package in the pinned base supplies daemon integration but
+# not a usable `docker` client binary in this image. The setup script stages
+# the deployment host's static CLI beside this Dockerfile; it is used only to
+# talk to the explicitly mounted Docker socket.
+COPY docker /usr/local/bin/docker
+RUN chmod 0755 /usr/local/bin/zhixing-openhands-build.py /usr/local/bin/docker \
+  && docker --version
 
 # OpenHands executes the generated verification commands through its terminal
 # using PATH.  The base image deliberately keeps its SDK dependencies in

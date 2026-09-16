@@ -114,6 +114,16 @@ if [ -n "$source_archive_path" ]; then
   rm -f -- "$source_archive_path"
 fi
 
+# The Builder child uses the host Docker daemon through its mounted socket.
+# Stage the known-good host CLI explicitly because the digest-pinned OpenHands
+# image's distro package may omit the client executable.
+docker_cli="$(command -v docker || true)"
+if [ -z "$docker_cli" ] || [ ! -x "$docker_cli" ]; then
+  echo 'A usable Docker CLI is required to build the Case Builder extension.' >&2
+  exit 1
+fi
+install -m 0755 "$docker_cli" "$build_root/case-builder-agent/docker"
+
 echo "Building the OpenHands task image on the deployment host from $commit"
 # Pull the digest-pinned base explicitly before this script. Avoid --pull here so
 # a one-time server bootstrap does not re-enter a slow registry request during
