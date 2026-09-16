@@ -20,6 +20,7 @@ concurrency:
 jobs:
   deploy:
     name: Deploy docs to GitHub Pages
+    if: ${{ vars.PAGES_DEPLOY_ENABLED == 'true' }}
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}

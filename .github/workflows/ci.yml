@@ -81,7 +81,10 @@ jobs:
   deploy:
     name: Deploy to server
     needs: [frontend, backend, workspace-runner, case-builder-agent]
-    if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+    # Keep code integration and production promotion independently
+    # controllable. Repository administrators explicitly enable deployment by
+    # setting the Actions variable DEPLOY_ENABLED=true.
+    if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.DEPLOY_ENABLED == 'true' }}
     runs-on: ubuntu-latest
     env:
       DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
