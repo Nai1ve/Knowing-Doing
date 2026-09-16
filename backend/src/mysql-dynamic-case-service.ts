@@ -401,13 +401,14 @@ export class MySqlDynamicCaseService {
       this.repository.db.prepare("UPDATE case_generation_jobs SET status = 'succeeded', failure_code = NULL, failure_message = NULL, completed_at = ?, updated_at = ? WHERE learning_case_id = ? AND learner_id = ? AND status = 'running'").run(now, now, item.id, learnerId)
       this.repository.db.prepare('INSERT INTO case_materialization_events(id, learner_id, learning_case_id, materialization_id, type, payload_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)').run(randomUUID(), learnerId, item.id, materialization.id, 'preflight_passed', JSON.stringify({ queryTemplateKey: plan.request.queryTemplateKey }), now)
     } catch (error) {
-      this.log('preflight_failed', { learnerId, learningCaseId: item.id, errorCode: error instanceof LabError ? error.code : 'mysql_preflight_failed' })
+      const failureCode = error instanceof LabError ? error.code : 'mysql_preflight_failed'
+      this.log('preflight_failed', { learnerId, learningCaseId: item.id, errorCode: failureCode })
       const message = safeBuildText(error instanceof Error ? error.message : 'MySQL 动态案例预检失败', 500)
-      this.repository.db.prepare("UPDATE learning_cases SET status = 'failed', preflight_status = 'failed', failure_code = 'mysql_preflight_failed', failure_message = ?, updated_at = ? WHERE id = ? AND learner_id = ?").run(message, now, item.id, learnerId)
-      this.repository.db.prepare("UPDATE case_materializations SET status = 'failed', failure_code = 'mysql_preflight_failed', failure_message = ?, updated_at = ? WHERE id = ? AND learner_id = ?").run(message, now, materialization.id, learnerId)
-      this.repository.db.prepare("UPDATE case_generation_jobs SET status = 'failed', failure_code = 'mysql_preflight_failed', failure_message = ?, completed_at = ?, updated_at = ? WHERE learning_case_id = ? AND learner_id = ? AND status = 'running'").run(message, now, now, item.id, learnerId)
+      this.repository.db.prepare("UPDATE learning_cases SET status = 'failed', preflight_status = 'failed', failure_code = ?, failure_message = ?, updated_at = ? WHERE id = ? AND learner_id = ?").run(failureCode, message, now, item.id, learnerId)
+      this.repository.db.prepare("UPDATE case_materializations SET status = 'failed', failure_code = ?, failure_message = ?, updated_at = ? WHERE id = ? AND learner_id = ?").run(failureCode, message, now, materialization.id, learnerId)
+      this.repository.db.prepare("UPDATE case_generation_jobs SET status = 'failed', failure_code = ?, failure_message = ?, completed_at = ?, updated_at = ? WHERE learning_case_id = ? AND learner_id = ? AND status = 'running'").run(failureCode, message, now, now, item.id, learnerId)
       this.repository.db.prepare('INSERT INTO case_materialization_events(id, learner_id, learning_case_id, materialization_id, type, payload_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)').run(randomUUID(), learnerId, item.id, materialization.id, 'preflight_failed', JSON.stringify({ message }), now)
-      throw new LabError('mysql_case_preflight_failed', '动态 MySQL 案例预检失败，案例不可进入 Lab', 503, true)
+      throw new LabError(failureCode, message, 503, true)
     }
   }
 }

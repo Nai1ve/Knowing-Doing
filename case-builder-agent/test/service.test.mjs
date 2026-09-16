@@ -116,3 +116,35 @@ test('MySQL controlled execution validates inputs and bounds statement size', as
     assert.throws(() => service.assertMysqlRuntimeInput({ buildId: 'b', attemptId: 'a', learningCaseId: 'c', database: 'x', mysqlContractFingerprint: FINGERPRINT, runtimeImageDigest: DIGEST, runtimeImageRef: DIGEST, leaseMs: 10 * 60_000 }), /数据库无效/)
   } finally { await service.shutdown(); cleanup() }
 })
+
+test('MySQL runtime starts as mysql while retaining the capability-drop boundary', async () => {
+  const calls = []
+  const input = {
+    buildId: 'build-1', attemptId: 'attempt-1', learningCaseId: 'case-1', database: 'zhixing_dynamic_0123456789ab',
+    mysqlContractFingerprint: FINGERPRINT, runtimeImageDigest: DIGEST, runtimeImageRef: DIGEST, leaseMs: 10 * 60_000,
+  }
+  const labels = {
+    'zhixing.case-build': input.buildId, 'zhixing.case-attempt': input.attemptId, 'zhixing.protocol-version': '1',
+    'zhixing.resource-role': 'runtime_artifact', 'zhixing.runtime-kind': 'mysql_lab',
+    'zhixing.environment-key': 'mysql-performance-v1', 'zhixing.environment-version': '1',
+    'zhixing.mysql-contract-fingerprint': input.mysqlContractFingerprint,
+  }
+  const { service, cleanup } = makeService({
+    simulated: false, dockerSocketEnabled: true, mysqlRootPassword: 'root',
+    runner: async (command, args) => {
+      calls.push([command, args])
+      if (args[0] === 'image' && args[1] === 'inspect') return { code: 0, stdout: JSON.stringify([{ Id: DIGEST, RepoDigests: [], Config: { Labels: labels } }]), stderr: '' }
+      if (args[0] === 'run') return { code: 0, stdout: 'runtime-container\n', stderr: '' }
+      return { code: 0, stdout: '', stderr: '' }
+    },
+  })
+  try {
+    const runtime = await service.startMysqlRuntime(input)
+    const dockerRun = calls.find(([, args]) => args[0] === 'run')?.[1]
+    assert.ok(dockerRun)
+    assert.ok(dockerRun.includes('--cap-drop=ALL'))
+    assert.deepEqual(dockerRun.slice(dockerRun.indexOf('--security-opt'), dockerRun.indexOf('--security-opt') + 2), ['--security-opt', 'no-new-privileges'])
+    assert.deepEqual(dockerRun.slice(dockerRun.indexOf('--user'), dockerRun.indexOf('--user') + 2), ['--user', 'mysql'])
+    await service.endMySqlRuntime(runtime.runtimeId)
+  } finally { await service.shutdown(); cleanup() }
+})

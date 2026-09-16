@@ -89,7 +89,7 @@ describe('MySqlDynamicCaseService', () => {
     const scheduler = { ...successfulScheduler(), execute: async () => ({ status: 'failed', result: null }) }
     const scenario = setup(scheduler); const { directory, repository, learnerId, service } = scenario
     try {
-      await expect(service.createCase(learnerId, { roadmapNodeId: 'mysql-node', request, clientRequestId: 'failed-preflight' })).rejects.toMatchObject({ code: 'mysql_case_preflight_failed', statusCode: 503 })
+      await expect(service.createCase(learnerId, { roadmapNodeId: 'mysql-node', request, clientRequestId: 'failed-preflight' })).rejects.toMatchObject({ code: 'mysql_preflight_failed', statusCode: 503 })
       expect(repository.db.prepare('SELECT status, failure_code FROM case_materializations').get()).toMatchObject({ status: 'failed', failure_code: 'mysql_preflight_failed' })
     } finally { repository.close(); rmSync(directory, { recursive: true, force: true }) }
   })

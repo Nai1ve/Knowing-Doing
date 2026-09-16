@@ -561,7 +561,7 @@ export class EnvironmentBuildOrchestrator {
   private failureCategory(error: unknown): EnvironmentBuildFailureCategory {
     if (error instanceof OpenHandsBuildAdapterError) return error.category
     const code = error instanceof LabError ? error.code : error instanceof Error ? error.message : 'unknown'
-    if (/case_builder|runner_|docker_|socket|credential|authentication|state_machine|claim_lost|service_restarted/i.test(code)) return 'platform_fault'
+    if (/case_builder|runner_|docker_|socket|credential|authentication|state_machine|claim_lost|service_restarted|mysql_runtime_|bound_mysql_runtime_/i.test(code)) return 'platform_fault'
     if (/case_design|model|agent/i.test(code)) return 'agent_failure'
     return 'preflight_failure'
   }

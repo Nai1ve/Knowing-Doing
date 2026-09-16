@@ -11,10 +11,11 @@ import { applyProductMigrations } from '../src/product-migrate.js'
 import { ProductRepository } from '../src/product-repository.js'
 import { DockerWorkspaceRuntimeAdapter } from '../src/runtime-adapter.js'
 import { FakeWorkspaceRunnerClient } from '../src/workspace-runner-client.js'
+import { LabError } from '../src/errors.js'
 import { OpenHandsBuildAdapterError, type OpenHandsBuildAdapter, type OpenHandsBuildTaskInput } from '../src/environment-build.js'
 import { EnvironmentRuntimeReferenceService, verifyEnvironmentRuntimeReference } from '../src/environment-runtime-reference.js'
 
-function setup(executeStatus: 'succeeded' | 'failed' = 'succeeded') {
+function setup(executeStatus: 'succeeded' | 'failed' = 'succeeded', createRunError?: LabError) {
   const directory = mkdtempSync(path.join(tmpdir(), 'zhixing-gym-build-'))
   const dbPath = path.join(directory, 'product.db')
   applyProductMigrations(dbPath)
@@ -30,7 +31,10 @@ function setup(executeStatus: 'succeeded' | 'failed' = 'succeeded') {
 
   const scheduler = {
     registerDynamicCase: async () => undefined,
-    createRun: async () => ({ kind: 'started' as const, run: { runId: 'preflight-run', caseId: 'dynamic', revision: 1, status: 'active' as const, fixtureVersion: 'fixture', expiresAt: now, idleExpiresAt: now, sessions: [] }, accessToken: 'token' }),
+    createRun: async () => {
+      if (createRunError) throw createRunError
+      return { kind: 'started' as const, run: { runId: 'preflight-run', caseId: 'dynamic', revision: 1, status: 'active' as const, fixtureVersion: 'fixture', expiresAt: now, idleExpiresAt: now, sessions: [] }, accessToken: 'token' }
+    },
     getAccess: () => null,
     isRunActive: () => false,
     createSession: async () => ({ id: 'session-1', name: 'default' as const, status: 'open' as const }),
@@ -108,6 +112,18 @@ describe('GymBuildService', () => {
       expect(view.failure).toMatchObject({ source: 'case_preflight', code: 'mysql_preflight_failed', message: 'mysql_preflight_initial_explain_failed', canEnterLab: false })
       expect(view.case).toMatchObject({ status: 'failed', preflightStatus: 'failed', failureCode: 'mysql_preflight_failed', failureMessage: 'mysql_preflight_initial_explain_failed' })
       await expect(state.service.start(state.learnerId, created.job.id)).rejects.toMatchObject({ code: 'mysql_preflight_failed', message: 'mysql_preflight_initial_explain_failed' })
+    } finally { close(state) }
+  })
+
+  it('fails a MySQL runtime platform fault without consuming Agent repair rounds', async () => {
+    const state = setup('succeeded', new LabError('mysql_runtime_start_failed', '受控 MySQL 运行时不可用', 503, true))
+    try {
+      const created = state.service.create(state.learnerId, 'gym-plan', 'gym-unit', 'mysql-runtime-platform-fault')
+      await vi.waitFor(() => expect(state.service.get(state.learnerId, created.job.id).job.status).toBe('failed'))
+      const view = state.service.get(state.learnerId, created.job.id)
+      expect(view.job).toMatchObject({ repairRound: 0, failureCode: 'mysql_runtime_start_failed', failureCategory: 'platform_fault' })
+      expect(view.case).toMatchObject({ status: 'failed', preflightStatus: 'failed', failureCode: 'mysql_runtime_start_failed', failureMessage: '受控 MySQL 运行时不可用' })
+      expect(view.failure).toMatchObject({ source: 'case_preflight', code: 'mysql_runtime_start_failed', category: 'platform_fault', canEnterLab: false })
     } finally { close(state) }
   })
 
