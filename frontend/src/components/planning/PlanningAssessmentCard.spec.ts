@@ -44,7 +44,9 @@ describe('PlanningAssessmentCard', () => {
     expect(host.textContent).not.toContain('schema validation details')
     expect(host.textContent).not.toContain('rubric')
 
-    host.querySelector('button')?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    const retryButton = host.querySelector('button')
+    expect(retryButton?.classList.contains('secondary-button')).toBe(true)
+    retryButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     expect(retry).toHaveBeenCalledTimes(1)
     app.unmount()
     host.remove()
@@ -112,6 +114,31 @@ describe('PlanningAssessmentCard', () => {
     expect(host.textContent).toContain('测评已结束')
     expect(host.textContent).toContain('查看逐题复核')
     expect(host.textContent).not.toContain('rubric')
+    app.unmount()
+    host.remove()
+  })
+
+  it('keeps skip and navigation lightweight while making abandonment explicitly dangerous', async () => {
+    const save = vi.fn()
+    const abandon = vi.fn()
+    const { host, app } = render({ assessment: assessment('answering'), onSave: save, onAbandon: abandon })
+    await nextTick()
+
+    const skip = Array.from(host.querySelectorAll('button')).find((button) => button.textContent?.includes('明确跳过'))
+    const previous = Array.from(host.querySelectorAll('button')).find((button) => button.textContent?.includes('上一题'))
+    const complete = Array.from(host.querySelectorAll('button')).find((button) => button.textContent?.includes('完成评估'))
+    const end = Array.from(host.querySelectorAll('button')).find((button) => button.textContent?.includes('结束评估'))
+
+    expect(skip?.classList.contains('text-button')).toBe(true)
+    expect(previous?.classList.contains('text-button')).toBe(true)
+    expect(complete?.classList.contains('primary-button')).toBe(true)
+    expect(end?.classList.contains('danger-button')).toBe(true)
+    expect(end?.classList.contains('text-button')).toBe(false)
+
+    skip?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    expect(save).toHaveBeenCalledWith({ q1: null }, ['q1'])
+    end?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    expect(abandon).toHaveBeenCalledWith({ q1: null }, ['q1'])
     app.unmount()
     host.remove()
   })

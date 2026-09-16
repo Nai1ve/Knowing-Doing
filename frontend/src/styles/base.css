@@ -7,11 +7,16 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
 a { color: inherit; }
 .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
 .eyebrow { color: #6c65b7; font-family: var(--mono); font-size: 9px; letter-spacing: .5px; text-transform: uppercase; }
-.primary-button, .secondary-button, .ghost-button { min-height: 32px; padding: 7px 11px; font-size: 10px; }
+.primary-button, .secondary-button, .ghost-button, .text-button, .danger-button { display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-height: 32px; padding: 7px 11px; font-size: 10px; }
 .primary-button { border: 1px solid var(--blue); background: var(--blue); color: var(--white); }
 .primary-button:hover { background: var(--blue-deep); }
 .secondary-button { border: 1px solid #b8bec0; background: transparent; color: #5d6863; }
 .secondary-button:hover { border-color: var(--blue); color: var(--blue); }
 .ghost-button { border: 1px solid #b8c1ec; background: transparent; color: #3347af; }
 .ghost-button:hover { background: var(--blue-soft); }
+.text-button { border: 1px solid transparent; background: transparent; color: var(--muted); }
+.text-button:hover { color: var(--blue); background: var(--blue-soft); }
+.danger-button { border: 1px solid #d9aaa3; background: transparent; color: var(--red); }
+.danger-button:hover { border-color: var(--red); background: var(--red-soft); }
+.primary-button:disabled, .secondary-button:disabled, .ghost-button:disabled, .text-button:disabled, .danger-button:disabled { opacity: .55; cursor: not-allowed; }
 .status-text { min-height: 16px; color: var(--green); font-size: 10px; line-height: 1.5; }
