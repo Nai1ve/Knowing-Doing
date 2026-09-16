@@ -118,6 +118,24 @@ describe('PlanningAssessmentCard', () => {
     host.remove()
   })
 
+  it('keeps a completed assessment compact until the learner asks to see the report', async () => {
+    const completed = assessment('completed', {
+      summary: { dimensions: [{ key: 'foundation', label: '基础', level: 'applied', confidence: 0.8, evidence: ['能解释索引'], nextValidation: '完成一次实践' }] },
+    })
+    const { host, app } = render({ assessment: completed, compact: true })
+    await nextTick()
+
+    expect(host.textContent).toContain('水平测评已完成')
+    expect(host.textContent).toContain('查看完整测评报告')
+    expect(host.textContent).not.toContain('能解释索引')
+
+    Array.from(host.querySelectorAll('button')).find((button) => button.textContent?.includes('查看完整测评报告'))?.click()
+    await nextTick()
+    expect(host.textContent).toContain('能解释索引')
+    app.unmount()
+    host.remove()
+  })
+
   it('keeps skip and navigation lightweight while making abandonment explicitly dangerous', async () => {
     const save = vi.fn()
     const abandon = vi.fn()

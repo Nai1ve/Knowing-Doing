@@ -77,6 +77,9 @@ describe('PlanningView stage rendering', () => {
     const { app, host } = await mountFor('requirements', assessment('completed'))
 
     expect(host.querySelector('.assessment-card')).not.toBeNull()
+    expect(host.querySelector('.assessment-compact')).not.toBeNull()
+    expect(host.querySelector('.next-step-banner')?.textContent).toContain('下一步：确认你的学习要求')
+    expect(host.querySelector('.requirements-flow')).not.toBeNull()
     expect(host.querySelector('.planning-chat')).not.toBeNull()
     expect(host.querySelector('textarea[aria-label="发送给知行 Planner"]')).not.toBeNull()
     app.unmount()
