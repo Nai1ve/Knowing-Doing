@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, nextTick, onMounted, ref } from 'vue'
 import { ArrowRight, Crosshair, GitBranch } from 'lucide-vue-next'
 import { useRoute, useRouter } from 'vue-router'
 import AsyncState from '@/components/shared/AsyncState.vue'
@@ -7,11 +7,11 @@ import PageHeader from '@/components/shared/PageHeader.vue'
 import RoadmapDraftNode from '@/components/roadmap/RoadmapDraftNode.vue'
 import { useRoadmapStore } from '@/stores/roadmap'
 
-const route = useRoute(); const router = useRouter(); const roadmap = useRoadmapStore(); const selectedStart = ref('')
+const route = useRoute(); const router = useRouter(); const roadmap = useRoadmapStore(); const selectedStart = ref(''); const treeOpen = ref(false); const startChoice = ref<HTMLElement | null>(null)
 const draft = computed(() => roadmap.draft); const roots = computed(() => draft.value?.nodes.filter((node) => !node.parentId).sort((a, b) => a.position - b.position) ?? [])
 const startOptions = computed(() => draft.value?.executionProposal?.options ?? []); const recommendedStart = computed(() => draft.value?.executionProposal?.recommendedUnitKey ?? '')
 function nodeTitle(key: string) { return draft.value?.nodes.find((node) => node.nodeKey === key)?.title ?? key }
-onMounted(async () => { await roadmap.loadDraft(String(route.params.roadmapId)); selectedStart.value = recommendedStart.value })
+onMounted(async () => { await roadmap.loadDraft(String(route.params.roadmapId)); selectedStart.value = recommendedStart.value; await nextTick(); startChoice.value?.focus({ preventScroll: true }); startChoice.value?.scrollIntoView({ behavior: 'smooth', block: 'start' }) })
 async function confirm() { if (!draft.value) return; await roadmap.confirm(draft.value.id, draft.value.revision, selectedStart.value || undefined); await router.push({ name: 'overview' }) }
 </script>
 
@@ -19,9 +19,9 @@ async function confirm() { if (!draft.value) return; await roadmap.confirm(draft
   <div class="page roadmap-preview-page"><AsyncState :loading="roadmap.loading" :error="roadmap.error"><template #default><PageHeader eyebrow="02 · Route draft" title="这是一张可以调整的长期路线图。" description="路线图描述能力之间的关系，确认后会从中切出当前可执行的学习计划。" :meta="[`${draft?.progress.total ?? 0} 个动态节点`, '路线草案', '确认后才切换正式计划']" />
     <template v-if="draft"><section class="draft-summary"><div><small>你的目标</small><h2>{{ draft.goal }}</h2><p>当前草案会优先打开一条能力分支，其余节点保留在长期路线中。</p></div><div class="progress-stat"><strong>{{ draft.progress.total }}</strong><span>个路线节点</span></div></section>
     <p class="dynamic-note">这份路线依据当前规划对话动态生成；想改变方向时，请请求规划助手生成调整草案。</p>
-    <section v-if="startOptions.length" class="start-choice" aria-labelledby="start-choice-title"><div class="section-label"><Crosshair :size="15" aria-hidden="true" /><span id="start-choice-title">先决定从哪里开始</span></div><p>路线图是长期能力树，确认时需要选择本周期的第一个执行节点。其他节点不会被丢弃。</p><div class="start-options"><label v-for="option in startOptions" :key="option.unitKey" class="start-option" :class="{ selected: selectedStart === option.unitKey }"><input v-model="selectedStart" type="radio" name="start-unit" :value="option.unitKey" /><span><strong>{{ nodeTitle(option.unitKey) }}</strong><em>{{ option.unitKey === recommendedStart ? 'Planner 建议' : '可选起点' }}</em><small>{{ option.rationale.join('；') }}</small><small>后续：{{ option.orderedInitialUnitKeys.map(nodeTitle).join(' → ') }}</small></span></label></div></section>
-    <section class="roadmap-draft" aria-labelledby="draft-title"><div class="section-label"><GitBranch :size="15" aria-hidden="true" /><span id="draft-title">能力树草案</span></div><p class="tree-intro">路线按生成结果展开；点击任意节点可查看完成标准、安排依据和下一层能力。</p><div class="draft-tree"><RoadmapDraftNode v-for="root in roots" :key="root.id" :node="root" :nodes="draft.nodes" /></div></section>
-    <section class="confirm-bar"><div><strong>确认这张路线图</strong><span>确认后会归档旧路线，并保留历史实践与文章。</span></div><button class="primary-button" type="button" :disabled="startOptions.length > 0 && !selectedStart" @click="confirm">确认并进入总览 <ArrowRight :size="14" aria-hidden="true" /></button></section></template>
+    <section v-if="startOptions.length" ref="startChoice" class="start-choice" tabindex="-1" aria-labelledby="start-choice-title"><div class="section-label"><Crosshair :size="15" aria-hidden="true" /><span id="start-choice-title">先决定从哪里开始</span></div><p>路线图是长期能力树，确认时需要选择本周期的第一个执行节点。其他节点不会被丢弃。</p><div class="start-options"><label v-for="option in startOptions" :key="option.unitKey" class="start-option" :class="{ selected: selectedStart === option.unitKey }"><input v-model="selectedStart" type="radio" name="start-unit" :value="option.unitKey" /><span><strong>{{ nodeTitle(option.unitKey) }}</strong><em>{{ option.unitKey === recommendedStart ? 'Planner 建议' : '可选起点' }}</em><small>{{ option.rationale.join('；') }}</small><small>后续：{{ option.orderedInitialUnitKeys.map(nodeTitle).join(' → ') }}</small></span></label></div></section>
+    <section class="confirm-bar"><div><strong>确认学习起点</strong><span>确认后会创建当前执行计划；完整能力树仍保留在路线总览中。</span></div><button class="primary-button" type="button" :disabled="startOptions.length > 0 && !selectedStart" @click="confirm">确认起点并进入总览 <ArrowRight :size="14" aria-hidden="true" /></button></section>
+    <section class="roadmap-draft" aria-label="完整路线"><button type="button" class="text-button tree-toggle" @click="treeOpen = !treeOpen"><GitBranch :size="15" aria-hidden="true" />{{ treeOpen ? '收起完整路线' : '查看完整路线' }}</button><template v-if="treeOpen"><p class="tree-intro">路线按生成结果展开；点击任意节点可查看完成标准、安排依据和下一层能力。</p><div class="draft-tree"><RoadmapDraftNode v-for="root in roots" :key="root.id" :node="root" :nodes="draft.nodes" /></div></template></section></template>
   </template></AsyncState></div>
 </template>
 
