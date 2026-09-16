@@ -80,7 +80,13 @@ if fetch_main; then
   if [ -z "$commit" ]; then
     commit="$(git -C "$repo_root" rev-parse origin/main)"
   fi
-  git -C "$repo_root" cat-file -e "${commit}^{commit}"
+  # A protected canary may name a commit from a non-main branch. If the local
+  # checkout does not contain it, use the same immutable archive fallback as
+  # a failed Git fetch rather than failing before the image can be rebuilt.
+  if ! git -C "$repo_root" cat-file -e "${commit}^{commit}" 2>/dev/null; then
+    fetch_commit_archive
+    source_archive_path="$commit_archive_path"
+  fi
 else
   if [ -z "$commit" ]; then
     echo 'Git fetch failed and no explicit commit was provided for archive fallback.' >&2
