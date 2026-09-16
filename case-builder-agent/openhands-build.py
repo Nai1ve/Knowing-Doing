@@ -28,7 +28,7 @@ WORKSPACE = Path("/workspace")
 REQUEST_PATH = Path(os.environ.get("CASE_BUILDER_REQUEST", str(WORKSPACE / "request.json")))
 MAX_FILE_BYTES = 256 * 1024
 MAX_TOTAL_FILE_BYTES = 2 * 1024 * 1024
-ALLOWED_FILE_SUFFIXES = (".py", ".json", ".md", ".txt")
+ALLOWED_FILE_SUFFIXES = (".py", ".json", ".md", ".txt", ".ini")
 SAFE_TOKEN = re.compile(r"^[A-Za-z0-9_.-]+$")
 SECRET_PATTERN = re.compile(
     r"(?:sk-[A-Za-z0-9_-]{12,}|(?:api[_-]?key|password|token)\s*[=:]\s*|authorization\s*[=:]\s*(?:bearer\s+)?)\S+",
@@ -69,6 +69,11 @@ def safe_relative_path(value: str) -> str:
         fail("asset_invalid", "Agent 生成了越界文件路径")
     if not value.endswith(ALLOWED_FILE_SUFFIXES):
         fail("asset_invalid", "Agent 生成了不受支持的文件类型")
+    # Pytest configuration is the only INI asset needed by the supported
+    # Python runtime. Do not turn this narrow exception into a generic config
+    # file channel for the Agent.
+    if value.endswith(".ini") and path.name != "pytest.ini":
+        fail("asset_invalid", "仅允许 pytest.ini 配置文件")
     return value
 
 
@@ -335,7 +340,7 @@ def openhands_task(request: dict[str, Any]) -> None:
     if runtime_kind == "docker_workspace":
         prompt += (
             "Create the public initial files under /workspace/starter and the private reference repair under /workspace/reference. "
-            "Use only .py, .json, .md, or .txt files. The starter must fail the server-declared pytest check and the reference overlay must pass it. "
+            "Use only .py, .json, .md, .txt, or a file named pytest.ini. The starter must fail the server-declared pytest check and the reference overlay must pass it. "
             "Run /app/.venv/bin/python -m pytest against both states before finishing. Keep the reference solution minimal and do not place it in starter. "
         )
     else:
