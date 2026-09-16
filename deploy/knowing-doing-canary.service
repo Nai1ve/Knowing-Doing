@@ -12,7 +12,7 @@ EnvironmentFile=/etc/knowing-doing/backend.env
 # must not rely on unit-file precedence with the shared EnvironmentFile: a
 # canary binding to production :3001 would collide with the live API. Every
 # business flag stays OFF while the staged release shares the product database.
-ExecStart=/usr/bin/env LAB_API_PORT=3002 LAB_CORS_ORIGIN=http://119.45.243.102:8082 SIGNED_DEVICE_SESSION_ENABLED=false ZHIHU_OAUTH_ENABLED=false ZHIHU_LOGIN_REQUIRED=false ZHIHU_SOURCE_SYNC_ENABLED=false ZHIHU_RESEARCH_ENABLED=false PLANNER_ASSESSMENT_V2_ENABLED=false PRACTICE_CARD_V2_ENABLED=false MIXED_GYM_ENABLED=false LEGACY_CASE_FLOW_ENABLED=true /usr/bin/node /home/ubuntu/knowing-doing-canary/backend/dist/src/server.js
+ExecStart=/usr/bin/env LAB_API_PORT=3002 LAB_CORS_ORIGIN=http://119.45.243.102:8888 SIGNED_DEVICE_SESSION_ENABLED=false ZHIHU_OAUTH_ENABLED=false ZHIHU_LOGIN_REQUIRED=false ZHIHU_SOURCE_SYNC_ENABLED=false ZHIHU_RESEARCH_ENABLED=false PLANNER_ASSESSMENT_V2_ENABLED=false PRACTICE_CARD_V2_ENABLED=false MIXED_GYM_ENABLED=false LEGACY_CASE_FLOW_ENABLED=true /usr/bin/node /home/ubuntu/knowing-doing-canary/backend/dist/src/server.js
 Restart=on-failure
 RestartSec=5
 TimeoutStopSec=15

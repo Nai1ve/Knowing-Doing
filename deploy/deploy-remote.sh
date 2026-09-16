@@ -255,7 +255,7 @@ if [ "${ZHIXING_CANARY_ONLY:-0}" = 1 ]; then
   sudo -n systemctl enable knowing-doing-canary.service >/dev/null
   sudo -n systemctl restart knowing-doing-canary.service
   wait_for_http_service 'Canary API' http://127.0.0.1:3002/healthz
-  echo "Canary ready at http://127.0.0.1:3002 (frontend http://119.45.243.102:8082)."
+  echo "Canary ready at http://127.0.0.1:3002 (frontend http://119.45.243.102:8888)."
   echo "Promote: re-run without ZHIXING_CANARY_ONLY. Roll back: systemctl disable --now knowing-doing-canary && rm -f \"$canary_link\""
   exit 0
 fi
